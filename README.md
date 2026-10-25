@@ -1,76 +1,168 @@
 # VPN Panel
 
-A Windows app for the WireSock WireGuard client (`wiresock-client.exe`): dark UI, tray icon, server list, per-app split tunneling, and a connection status based on the real WireGuard handshake. WPF on .NET Framework 4.8 (part of Windows), no dependencies besides WireSock. The UI is in Portuguese.
+App para Windows que deixa a VPN WireGuard fácil de usar: um clique para conectar, lista de servidores, escolha de quais apps passam pela VPN e aviso quando o servidor para de responder. Funciona com o cliente gratuito [WireSock](https://www.wiresock.net/) e com o arquivo `.conf` de qualquer provedor WireGuard (Proton VPN, Mullvad, Surfshark, IVPN...).
 
-## Sharing it with other people
+**[⬇ Baixar a versão mais recente](https://github.com/JMqz/VPN-Panel/releases/latest)**
 
-Send them **`dist\VPN Panel Setup.exe`** (one file, about 300 KB). The installer:
+---
 
-- copies the app to `C:\Program Files\VPN Panel\VpnPanel.exe`, a folder only admins can change, so the no-UAC task can only ever start the real app;
-- adds **VPN Panel** to the Start menu (all users) and, optionally, to the desktop;
-- registers it in Settings → Apps → Installed apps, with an uninstaller;
-- updates in place: running a newer setup over an older install replaces the exe and keeps servers and settings.
+## Guia de instalação
 
-On first open the app walks them through setup:
+Você vai precisar de:
 
-1. **Install WireSock:** the step has a download button and ticks itself once WireSock is installed (no restart needed).
-2. **Add a server:** pick or drag in the `.conf` from their VPN provider. "Como conseguir?" explains where Proton and Mullvad generate it.
+- Windows 10 ou 11;
+- uma conta em um provedor de VPN que ofereça **WireGuard** (o plano gratuito da Proton VPN serve);
+- uns 10 minutos.
 
-Windows asks for admin permission (UAC) only on the first launch. After that the app opens through a scheduled task with no prompt (option "Abrir sem pedir permissão").
+### 1. Instale o VPN Panel
 
-**Uninstall** (Settings → Apps, or `VpnPanel.exe --uninstall`): disconnects and removes the scheduled tasks, shortcuts, registry entry and the Program Files folder. Servers and settings in `%APPDATA%\VPN Panel` are kept unless the user turns on "Apagar meus servidores e configurações".
+1. Abra a página de [Releases](https://github.com/JMqz/VPN-Panel/releases/latest) e baixe **`VPN-Panel-Setup-2.2.exe`**.
+2. Abra o arquivo baixado.
+3. Se aparecer a tela azul **"O Windows protegeu o computador"**, clique em **Mais informações** e depois em **Executar assim mesmo**. O aviso aparece porque o app não tem assinatura digital paga.
+4. O Windows pede permissão de administrador: clique em **Sim**.
+5. Escolha se quer o atalho na área de trabalho e clique em **Instalar**.
+6. Clique em **Abrir o VPN Panel**.
 
-Neither exe is code-signed, so SmartScreen may warn on first run ("Mais informações → Executar assim mesmo"). `dist\VpnPanel.exe` also runs on its own, without installing (portable).
+O app fica em **Iniciar → VPN Panel**. Só na primeira vez que você abrir o app o Windows pede permissão. Depois disso, não pede mais.
 
-## Where things are
+### 2. Instale o WireSock
 
-| Path | What |
+O WireSock é o programa gratuito que faz a conexão. O VPN Panel controla ele por você.
+
+1. Na tela **"Vamos deixar tudo pronto"**, clique em **Baixar WireSock** (ou abra [wiresock.net](https://www.wiresock.net/)).
+2. Baixe o **WireSock Secure Connect** e instale com as opções padrão.
+3. Volte ao VPN Panel. O passo 1 fica marcado sozinho, sem precisar reabrir o app.
+
+### 3. Baixe o arquivo do servidor (`.conf`)
+
+Cada provedor gera um arquivo `.conf` com o servidor e a sua chave de acesso.
+
+**Proton VPN**
+1. Entre em [account.protonvpn.com](https://account.protonvpn.com/downloads).
+2. Vá em **Downloads → Configurações do WireGuard**.
+3. Escolha a plataforma **Windows** e um servidor (no plano grátis, os marcados como *Free*).
+4. Clique em **Criar** e depois em **Baixar**.
+
+**Mullvad**
+1. Entre em [mullvad.net](https://mullvad.net/account/wireguard-config) com o número da sua conta.
+2. Abra o **Gerador de configuração WireGuard** e escolha **Windows**.
+3. Gere uma chave, escolha o país/cidade e baixe o arquivo.
+
+**Outros provedores:** procure por "WireGuard" ou "configuração manual" no site ou no suporte do provedor.
+
+> ⚠️ O arquivo `.conf` funciona como uma senha. Não compartilhe e não publique.
+
+Dica: baixe arquivos de vários países e adicione todos. Assim dá para trocar de servidor com um clique.
+
+### 4. Adicione o servidor no app
+
+- Clique em **Escolher arquivo** (na primeira tela) ou em **Servidores → Adicionar**, **ou**
+- arraste o arquivo `.conf` para a janela do VPN Panel.
+
+O servidor aparece na lista com a sigla do país e a cidade.
+
+### 5. Conecte
+
+Na aba **Início**, clique no botão grande:
+
+| O botão fica... | Significa |
 |---|---|
-| `dist\VPN Panel Setup.exe` | Installer to hand out |
-| `dist\VpnPanel.exe` | The app (portable copy; the installed one is in `C:\Program Files\VPN Panel`) |
-| `%APPDATA%\VPN Panel\configs\*.conf` | Imported servers (contain private keys) |
-| `%APPDATA%\VPN Panel\settings.json` | Active server and options |
-| `%APPDATA%\VPN Panel\locations.json` | Cached country/city of each server endpoint |
-| `%APPDATA%\VPN Panel\wiresock.log` | WireSock output from the last connection |
-| `src\` | Source: `App.cs`, `MainWindow.cs`, `Dialogs.cs`, `Setup.cs`, `MainWindow.xaml`, `Theme.xaml`, `app.manifest`, `setup.manifest`, `build.ps1` |
+| Cinza | Desconectado |
+| Girando em âmbar | Conectando ao servidor |
+| **Verde** | Conectado e protegido. O servidor respondeu. |
+| Âmbar, "Sem resposta" | O servidor parou de responder. O app tenta de novo sozinho. |
 
-## Tabs
+Abaixo do botão aparece o que está protegido ("Todo o tráfego do PC está protegido") e há quanto tempo você está conectado. O quadro "Seu IP" mostra o endereço que os sites veem.
 
-- **Início:** the setup steps until WireSock and a server exist. Then the connect button:
-  - gray = off;
-  - amber spinner = connecting or reconnecting;
-  - green = connected (handshake done);
-  - amber "Sem resposta" = the server stopped answering.
+Pronto, já dá para usar. Os passos abaixo são opcionais.
 
-  Below the status it says what is protected: "Todo o tráfego do PC", "Só Discord passa pela VPN" or "Tudo, exceto ...". It also shows uptime, the server with its country and city, and your public IP. Failures show a banner in plain Portuguese (bad key, server unreachable, network driver...) with actions such as **Tentar de novo**, **Trocar servidor** or **Ver detalhes**.
-- **Servidores:** cards with a country badge and city (from the endpoint, via ipinfo.io). Click to use one; when connected, it switches right away. Add with the button or drag `.conf` files in; files added to the folder by hand show up on their own. Rename and delete (to the Recycle Bin) on each card.
-- **Apps:** Todos / Só estes / Todos, exceto. Add from running apps (with icons), by browsing for a program, or by name. Changes save automatically; when connected, a banner offers **Reconectar** to apply them.
-- **Opções:** reconnect if the connection drops (up to 3 tries, on by default), block the internet if the VPN drops (kill switch), start with Windows, connect on open, open without the UAC prompt, log, data folder, quit.
+### 6. Ajuste do seu jeito (opcional)
 
-Closing the window keeps the app in the tray. The tray icon is green when connected, amber when there's no response and gray when off. Its menu shows the status and has connect/disconnect, open, and quit.
+**Escolher quais apps usam a VPN** (aba **Apps**):
+- **Todos:** o computador inteiro passa pela VPN. É o mais seguro e o padrão.
+- **Só estes:** só os apps da lista usam a VPN; o resto usa sua internet normal. Por exemplo, só o navegador ou só o Discord.
+- **Todos, exceto:** tudo passa pela VPN, menos os apps da lista. Por exemplo, um jogo que fica lento com VPN.
 
-## How it works
+Adicione apps em **Apps abertos**, **Procurar programa** ou digitando o nome (ex.: `chrome`). As mudanças são salvas sozinhas. Se a VPN estiver ligada, clique em **Reconectar** para aplicar.
 
-- **Elevation:** the exe is `asInvoker`. Without admin rights and without arguments, it runs the scheduled task **VPN Panel - Abrir** (highest privileges, through the Task Scheduler COM API) if the task points to this exe. Otherwise it relaunches itself with `runas` (UAC). The elevated copy creates or updates the task. Installed in Program Files, only an admin can replace the exe the task starts. Turn off "Abrir sem pedir permissão" to remove the task.
-- **Start with Windows:** task **VPN Panel** (logon + 10 s, highest privileges, `VpnPanel.exe --tray`).
-- **Connect:** `cmd.exe /c wiresock-client.exe run -config <file> -log-level info [-network-lock enabled] > wiresock.log`, so the tunnel survives closing the app. Disconnect kills the process.
-- **Status:** "Conectado" requires a WireGuard handshake. The app follows `wiresock.log` for `Handshake initiation sent` / `Handshake response received`:
-  - **15 s** without a response: shows **Sem resposta**.
-  - **60 s** without a response: if the connection had worked before, the app reconnects (auto-reconnect). Otherwise it stops the tunnel and says the server didn't answer, so a kill switch never leaves the internet blocked without the user knowing.
+**Opções** (aba **Opções**):
 
-  The client exiting within 10 s counts as a failure (the banner explains the logged error); a later exit triggers auto-reconnect. Tunnels started outside the app (e.g. from a `.bat` file) have no log to check and show as connected.
-- **Split tunneling:** writes `AllowedApps` / `DisallowedApps` in `[Peer]` and leaves every other line byte-for-byte unchanged.
-- **Single instance:** mutex `Global\VpnPanelWireSock`; a second launch signals `Global\VpnPanelWireSockShow`.
+| Opção | Para que serve |
+|---|---|
+| Reconectar se a conexão cair | Tenta voltar sozinho até 3 vezes (vem ligada) |
+| Bloquear a internet se a VPN cair | *Kill switch*: nada sai do PC sem proteção enquanto a VPN estiver ligada |
+| Iniciar com o Windows | O app abre escondido na bandeja, perto do relógio |
+| Conectar ao abrir | Liga a VPN assim que o app abre. Junto com a opção anterior, você fica protegido desde que liga o PC. |
+| Abrir sem pedir permissão | O Windows só pergunta na primeira vez (vem ligada) |
 
-## Building
+**Bandeja do Windows:** fechar a janela não fecha o app, ele continua perto do relógio. O ícone fica verde quando conectado, âmbar quando o servidor não responde e cinza quando desconectado. Clique com o botão direito para conectar, desconectar ou sair.
+
+---
+
+## Problemas comuns
+
+| O que aparece | O que fazer |
+|---|---|
+| **"Sem resposta"** ou **"O servidor não respondeu"** | O servidor pode estar fora do ar ou a sua rede bloqueia VPN (comum em redes de empresa, escola ou Wi-Fi público). Troque de servidor em **Servidores**. Se nenhum funcionar, teste em outra rede. |
+| **"O arquivo deste servidor tem uma chave inválida"** | O arquivo foi alterado ou a chave foi revogada no site do provedor. Baixe um arquivo novo. |
+| **"WireSock não encontrado"** ou o passo 1 não marca | Instale o WireSock Secure Connect (passo 2). |
+| **"O WireSock não conseguiu preparar a rede"** | Reinstale o WireSock e reinicie o computador. |
+| O **IP mostrado continua o meu** estando conectado | Normal no modo **Só estes**: o app mostra o IP dos apps fora da VPN. No modo **Todos**, deve aparecer o IP do servidor. Clique no ↻ ao lado de "Seu IP" para verificar de novo. |
+| **Fiquei sem internet** | Se o *kill switch* estiver ligado e o servidor parar de responder, a internet fica bloqueada. Clique em **Desconectar** ou troque de servidor. |
+| O **antivírus** reclamou do instalador | Acontece com apps sem assinatura digital paga. Baixe sempre pela página de [Releases](https://github.com/JMqz/VPN-Panel/releases) deste repositório. |
+| Quero ver o que aconteceu | **Opções → Ver log da conexão**. |
+
+## Desinstalar
+
+**Configurações → Aplicativos → Aplicativos instalados → VPN Panel → Desinstalar.**
+
+A VPN é desconectada e o app é removido. Os seus servidores e configurações ficam guardados (para o caso de instalar de novo), a não ser que você ligue **"Apagar meus servidores e configurações"**. O WireSock é um programa separado e pode ser desinstalado do mesmo jeito.
+
+## Sem instalar (versão portátil)
+
+Na página de Releases também tem o **`VpnPanel-2.2-portatil.exe`**: é o mesmo app, sem instalador e sem atalho no menu Iniciar. Basta abrir.
+
+---
+
+## Para desenvolvedores
+
+### Onde ficam as coisas
+
+| Caminho | O que é |
+|---|---|
+| `src\` | Código: `App.cs`, `MainWindow.cs`, `Dialogs.cs`, `Setup.cs`, `MainWindow.xaml`, `Theme.xaml`, `app.manifest`, `setup.manifest`, `build.ps1` |
+| `C:\Program Files\VPN Panel\VpnPanel.exe` | App instalado (pasta que só administradores alteram) |
+| `%APPDATA%\VPN Panel\configs\*.conf` | Servidores importados (contêm chaves privadas) |
+| `%APPDATA%\VPN Panel\settings.json` | Servidor ativo e opções |
+| `%APPDATA%\VPN Panel\locations.json` | País/cidade de cada servidor (cache) |
+| `%APPDATA%\VPN Panel\wiresock.log` | Saída do WireSock da última conexão |
+
+### Compilar
 
 ```
 powershell -NoProfile -ExecutionPolicy Bypass -File src\build.ps1
 ```
 
-Produces `dist\VpnPanel.exe` and `dist\VPN Panel Setup.exe` (the installer is also attached to each GitHub Release). The setup is the same sources with entry point `VpnPanel.SetupProgram`, the app embedded as a resource, and an admin manifest. Compiles with `csc.exe` from `C:\Windows\Microsoft.NET\Framework64\v4.0.30319` (C# 5: no `$"..."`, `?.`, `=>` members). XAML and the icon are embedded and loaded with `XamlReader`; events are wired in code by `x:Name`. To update an installed copy after building, run the new setup ("Reinstalar"/"Atualizar").
+O build gera `dist\VpnPanel.exe` e `dist\VPN Panel Setup.exe` com o `csc.exe` que já vem no Windows (`C:\Windows\Microsoft.NET\Framework64\v4.0.30319`, .NET Framework 4.8), sem instalar nada. O compilador é C# 5, então não use sintaxe nova (`$"..."`, `?.`, membros com `=>`). O instalador usa o mesmo código, com o ponto de entrada `VpnPanel.SetupProgram`, o app embutido como recurso e um manifesto de administrador. O XAML e o ícone ficam embutidos e são carregados com `XamlReader`; os eventos são ligados no código pelo `x:Name`. Para atualizar uma cópia instalada, rode o setup novo ("Reinstalar"/"Atualizar").
 
-## Roadmap
+### Como funciona
 
-- Code signing (no SmartScreen warning)
-- Run as a Windows service so it connects before login
+- **Permissão de administrador:** o exe é `asInvoker`.
+  - Sem admin e sem argumentos, ele executa a tarefa agendada **VPN Panel - Abrir** (privilégio mais alto, via API COM do Agendador de Tarefas), se ela apontar para este exe.
+  - Se não, ele se reabre com `runas` (UAC).
+  - A cópia elevada cria ou atualiza a tarefa. Desligar "Abrir sem pedir permissão" remove a tarefa.
+- **Iniciar com o Windows:** tarefa **VPN Panel** (no logon, + 10 s, `VpnPanel.exe --tray`).
+- **Conectar:** `cmd.exe /c wiresock-client.exe run -config <arquivo> -log-level info [-network-lock enabled] > wiresock.log`. Assim o túnel continua se o app fechar. Desconectar encerra o processo.
+- **Status:** "Conectado" exige o handshake do WireGuard. O app acompanha o `wiresock.log` procurando `Handshake initiation sent` / `Handshake response received`.
+  - **15 s** sem resposta: mostra "Sem resposta".
+  - **60 s** sem resposta: se a conexão já tinha funcionado, reconecta; se nunca funcionou, derruba o túnel e avisa. Assim o *kill switch* nunca deixa a internet bloqueada sem a pessoa saber.
+  - Se o cliente fechar em menos de 10 s, conta como falha, e o aviso traduz o erro do log.
+  - Túneis iniciados fora do app não têm log para conferir e aparecem como conectados.
+- **Apps na VPN:** grava `AllowedApps` / `DisallowedApps` na seção `[Peer]` e mantém todas as outras linhas idênticas, byte a byte. Segundo relatos no fórum do WireSock, `DisallowedApps` falhou em algumas versões.
+- **Instância única:** mutex `Global\VpnPanelWireSock`. Abrir o app de novo sinaliza `Global\VpnPanelWireSockShow`, e a janela aberta aparece.
+- **Desinstalar:** `VpnPanel.exe --uninstall` remove as tarefas, os atalhos, a chave em `HKLM\...\Uninstall\VPN Panel` e a pasta em Program Files.
+
+### Próximos passos
+
+- Assinatura de código (sem o aviso do SmartScreen)
+- Rodar como serviço do Windows, para conectar antes do login
