@@ -1,0 +1,15 @@
+# WireGuard configs contain private keys
+*.conf
+*.conf.tmp
+
+# Local settings and logs
+vpn-panel.json
+wiresock.log
+
+# Build output (published as GitHub Releases) and generated icon
+dist/
+src/vpn.ico
+
+# Old PowerShell version (personal paths)
+vpn-panel.ps1
+ligar-vpn.bat
