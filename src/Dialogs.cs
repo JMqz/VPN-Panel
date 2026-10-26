@@ -8,6 +8,8 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
+using System.Windows.Media.Animation;
+using System.Windows.Shapes;
 
 namespace VpnPanel
 {
@@ -93,40 +95,102 @@ namespace VpnPanel
             d.ShowDialog();
         }
 
-        // Where to get WireGuard .conf files, per provider
-        public static void ConfHelp(Window owner)
+        static Button LinkButton(string text, string url, bool filled)
         {
-            Window d = Frame(owner, "Como conseguir o arquivo .conf", 380);
+            var b = new Button { Style = S("GhostButton"), Background = filled ? B("Hover") : Brushes.Transparent, HorizontalAlignment = HorizontalAlignment.Left, Padding = new Thickness(12, 6, 12, 6) };
+            var label = new StackPanel { Orientation = Orientation.Horizontal };
+            label.Children.Add(new TextBlock { Text = text });
+            label.Children.Add(new TextBlock { Text = "", FontFamily = (FontFamily)Application.Current.FindResource("Icons"), FontSize = 11, Margin = new Thickness(8, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center });
+            b.Content = label;
+            b.Click += (s, e) => { try { Process.Start(url); } catch { } };
+            return b;
+        }
+
+        // Numbered step: badge + text (+ optional controls below)
+        static UIElement GuideStep(string number, string text, params UIElement[] extra)
+        {
+            var g = new Grid { Margin = new Thickness(0, 14, 0, 0) };
+            g.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            g.ColumnDefinitions.Add(new ColumnDefinition());
+            var badge = new Border { Width = 24, Height = 24, CornerRadius = new CornerRadius(12), Background = B("Surface2"), VerticalAlignment = VerticalAlignment.Top };
+            badge.Child = new TextBlock { Text = number, FontWeight = FontWeights.SemiBold, FontSize = 12, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
+            g.Children.Add(badge);
+            var sp = new StackPanel { Margin = new Thickness(12, 2, 0, 0) };
+            sp.Children.Add(new TextBlock { Text = text, TextWrapping = TextWrapping.Wrap, LineHeight = 19 });
+            foreach (UIElement x in extra) sp.Children.Add(x);
+            Grid.SetColumn(sp, 1);
+            g.Children.Add(sp);
+            return g;
+        }
+
+        // How to get a server (.conf) from the VPN provider. Proton first: it's what people use and it's free.
+        // While it's open the main window watches Downloads and closes it when the file arrives.
+        // ShowDialog() returns true when the user wants to pick the file by hand.
+        public static Window ProviderGuide(Window owner, bool otherProvider)
+        {
+            Window d = Frame(owner, "Adicionar servidor", 370);
             var body = new StackPanel();
-            body.Children.Add(Message("O arquivo .conf é a \"chave\" do servidor. Cada provedor de VPN gera o seu no site, na área de configuração manual do WireGuard."));
-            Action<string, string, string> provider = (name, steps, url) =>
+
+            var proton = new StackPanel();
+            proton.Children.Add(Message("O Proton VPN gera um arquivo com o servidor. Leva uns dois minutos e funciona também no plano grátis."));
+            var signup = LinkButton("Não tenho conta: criar grátis", "https://account.protonvpn.com/signup?plan=free", false);
+            signup.Margin = new Thickness(-12, 2, 0, 0);
+            signup.Foreground = B("Accent");
+            var openProton = LinkButton("Abrir o Proton", "https://account.protonvpn.com/downloads", true);
+            openProton.Margin = new Thickness(0, 8, 0, 0);
+            proton.Children.Add(GuideStep("1", "Abra o site do Proton e entre na sua conta.", openProton, signup));
+            proton.Children.Add(GuideStep("2", "Em Downloads, desça até “Configuração do WireGuard” (WireGuard configuration)."));
+            proton.Children.Add(GuideStep("3", "Digite um nome (ex.: PC), escolha Windows e um servidor. Clique em Criar e depois em Baixar."));
+
+            var other = new StackPanel { Visibility = Visibility.Collapsed };
+            other.Children.Add(Message("Cada provedor gera o arquivo no site, na área de configuração manual do WireGuard. Procure por “WireGuard” ou “configuração manual”."));
+            var mullvad = new Border { Style = S("Card"), Margin = new Thickness(0, 12, 0, 0), Background = B("Surface2") };
+            var mv = new StackPanel();
+            mv.Children.Add(new TextBlock { Text = "Mullvad", FontWeight = FontWeights.SemiBold });
+            mv.Children.Add(new TextBlock { Text = "Entre na conta → Gerador de configuração WireGuard → Windows. Escolha o país e baixe (pode ser um .zip com vários).", Style = S("Caption"), Margin = new Thickness(0, 4, 0, 8), LineHeight = 18 });
+            mv.Children.Add(LinkButton("Abrir site", "https://mullvad.net/account/wireguard-config", true));
+            mullvad.Child = mv;
+            other.Children.Add(mullvad);
+
+            var swap = new Button { Style = S("GhostButton"), Background = Brushes.Transparent, HorizontalAlignment = HorizontalAlignment.Left, Padding = new Thickness(12, 6, 12, 6), Margin = new Thickness(-12, 10, 0, 0), Content = "Usa outro provedor?", Foreground = B("Accent") };
+            swap.Click += (s, e) =>
             {
-                var card = new Border { Style = S("Card"), Margin = new Thickness(0, 12, 0, 0), Background = B("Surface2") };
-                var sp = new StackPanel();
-                sp.Children.Add(new TextBlock { Text = name, FontWeight = FontWeights.SemiBold });
-                sp.Children.Add(new TextBlock { Text = steps, Style = S("Caption"), Margin = new Thickness(0, 4, 0, 8), LineHeight = 18 });
-                var open = new Button { Style = S("GhostButton"), Background = B("Hover"), HorizontalAlignment = HorizontalAlignment.Left, Padding = new Thickness(12, 6, 12, 6) };
-                var label = new StackPanel { Orientation = Orientation.Horizontal };
-                label.Children.Add(new TextBlock { Text = "Abrir site" });
-                label.Children.Add(new TextBlock { Text = "", FontFamily = (FontFamily)Application.Current.FindResource("Icons"), FontSize = 11, Margin = new Thickness(8, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center });
-                open.Content = label;
-                open.Click += (s, e) => { try { Process.Start(url); } catch { } };
-                sp.Children.Add(open);
-                card.Child = sp;
-                body.Children.Add(card);
+                bool toOther = other.Visibility != Visibility.Visible;
+                other.Visibility = toOther ? Visibility.Visible : Visibility.Collapsed;
+                proton.Visibility = toOther ? Visibility.Collapsed : Visibility.Visible;
+                swap.Content = toOther ? "Voltar para o Proton VPN" : "Usa outro provedor?";
             };
-            provider("Proton VPN", "Entre na sua conta → Downloads → Configurações do WireGuard. Escolha Windows, um servidor e clique em Criar.", "https://account.protonvpn.com/downloads");
-            provider("Mullvad", "Entre na sua conta → Gerador de configuração WireGuard → Windows. Escolha o país e baixe.", "https://mullvad.net/account/wireguard-config");
-            body.Children.Add(new TextBlock
-            {
-                Text = "Outros provedores: procure por \"WireGuard\" ou \"configuração manual\" no site. Depois é só adicionar o arquivo aqui no app.",
-                Style = S("Caption"), Margin = new Thickness(0, 12, 0, 0), LineHeight = 18,
-            });
-            Button ok = Btn("Entendi", "PrimaryButton");
-            ok.IsDefault = true;
-            ok.IsCancel = true;
-            Layout(d, "Como conseguir o arquivo .conf", body, ok);
-            d.ShowDialog();
+            if (otherProvider) swap.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+
+            // waiting for the download
+            var wait = new Border { Style = S("Card"), Margin = new Thickness(0, 16, 0, 0), Background = B("AccentSoft"), Padding = new Thickness(12, 10, 12, 10) };
+            var wg = new Grid();
+            wg.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            wg.ColumnDefinitions.Add(new ColumnDefinition());
+            var spin = new Ellipse { Width = 16, Height = 16, Stroke = B("Accent"), StrokeThickness = 2.5, StrokeDashArray = new DoubleCollection { 8, 200 }, StrokeDashCap = PenLineCap.Round, RenderTransformOrigin = new Point(0.5, 0.5), VerticalAlignment = VerticalAlignment.Top, Margin = new Thickness(0, 2, 0, 0) };
+            var rotate = new RotateTransform();
+            spin.RenderTransform = rotate;
+            rotate.BeginAnimation(RotateTransform.AngleProperty, new DoubleAnimation(0, 360, TimeSpan.FromSeconds(1.1)) { RepeatBehavior = RepeatBehavior.Forever });
+            wg.Children.Add(spin);
+            var wt = new StackPanel { Margin = new Thickness(10, 0, 0, 0) };
+            wt.Children.Add(new TextBlock { Text = "Esperando o arquivo...", FontWeight = FontWeights.SemiBold });
+            wt.Children.Add(new TextBlock { Text = "Quando ele chegar na pasta Downloads, entra aqui sozinho.", Style = S("Caption"), TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 2, 0, 0) });
+            Grid.SetColumn(wt, 1);
+            wg.Children.Add(wt);
+            wait.Child = wg;
+
+            body.Children.Add(proton);
+            body.Children.Add(other);
+            body.Children.Add(swap);
+            body.Children.Add(wait);
+
+            Button pick = Btn("Já baixei", "GhostButton");
+            pick.Click += (s, e) => d.DialogResult = true;
+            Button close = Btn("Fechar", "GhostButton");
+            close.IsCancel = true;
+            close.Click += (s, e) => d.Close();
+            Layout(d, "Adicionar servidor", body, pick, close);
+            return d;
         }
 
         // Returns the text, or null when cancelled. validate returns an error message or null.

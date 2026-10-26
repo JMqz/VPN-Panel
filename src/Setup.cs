@@ -242,7 +242,18 @@ namespace VpnPanel
             label.Children.Add(new TextBlock { Text = "Atalho na área de trabalho", FontWeight = FontWeights.SemiBold });
             label.Children.Add(new TextBlock { Text = "O atalho no menu Iniciar é criado sempre.", Style = S("Caption"), Margin = new Thickness(0, 2, 0, 0) });
             desktop.Content = label;
-            card.Child = desktop;
+            var options = new StackPanel();
+            options.Children.Add(desktop);
+            // WireSock is required; installed along unless it's already there
+            bool needWireSock = Paths.WireSock == null;
+            if (needWireSock)
+            {
+                var ws = new StackPanel { Margin = new Thickness(0, 14, 0, 0) };
+                ws.Children.Add(new TextBlock { Text = "WireSock (necessário)", FontWeight = FontWeights.SemiBold });
+                ws.Children.Add(new TextBlock { Text = "Programa que faz a conexão. É instalado junto, de graça para uso pessoal.", Style = S("Caption"), TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 2, 0, 0) });
+                options.Children.Add(ws);
+            }
+            card.Child = options;
             body.Children.Add(card);
 
             body.Children.Add(new TextBlock
@@ -268,10 +279,13 @@ namespace VpnPanel
                 var worker = new Thread(() =>
                 {
                     Exception error = null;
+                    string wireSockError = null;
                     try { Installer.Install(exe, wantDesktop); } catch (Exception ex) { error = ex; }
+                    if (error == null && needWireSock)
+                        wireSockError = WireSockSetup.Install(text => Window.Dispatcher.BeginInvoke(new Action(() => install.Content = text)));
                     Window.Dispatcher.BeginInvoke(new Action(() =>
                     {
-                        if (error == null) { ShowDone(wantDesktop); return; }
+                        if (error == null) { ShowDone(wantDesktop, wireSockError); return; }
                         Dialogs.Info(Window, "Não foi possível instalar", error.Message);
                         install.IsEnabled = true;
                         install.Content = "Tentar de novo";
@@ -283,7 +297,7 @@ namespace VpnPanel
             body.Children.Add(install);
         }
 
-        void ShowDone(bool desktop)
+        void ShowDone(bool desktop, string wireSockError)
         {
             body.Children.Clear();
             var check = new Border { Width = 72, Height = 72, CornerRadius = new CornerRadius(36), Background = B("AccentSoft"), Margin = new Thickness(0, 6, 0, 0) };
@@ -295,6 +309,12 @@ namespace VpnPanel
                 Text = "O VPN Panel está no menu Iniciar" + (desktop ? " e na área de trabalho." : "."),
                 Foreground = B("Muted"), TextWrapping = TextWrapping.Wrap, TextAlignment = TextAlignment.Center, Margin = new Thickness(0, 6, 0, 0),
             });
+            if (wireSockError != null)
+                body.Children.Add(new TextBlock
+                {
+                    Text = "O WireSock não foi instalado agora. O VPN Panel tenta de novo quando você abrir.",
+                    Style = S("Caption"), TextWrapping = TextWrapping.Wrap, TextAlignment = TextAlignment.Center, Margin = new Thickness(0, 10, 0, 0),
+                });
             var open = new Button { Style = S("PrimaryButton"), Content = "Abrir o VPN Panel", Padding = new Thickness(14, 11, 14, 11), Margin = new Thickness(0, 24, 0, 0), IsDefault = true };
             open.Click += (s, e) =>
             {

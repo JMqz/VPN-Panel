@@ -25,19 +25,17 @@ Você vai precisar de:
 
 O aplicativo fica em **Iniciar → VPN Panel**. O Windows só pede permissão na primeira vez que você abre o aplicativo.
 
-### 2. Instale o WireSock
+### 2. WireSock (automático)
 
-O WireSock é o programa gratuito que faz a conexão. O VPN Panel controla ele por você.
+O WireSock é o programa gratuito (para uso pessoal) que faz a conexão. O VPN Panel controla ele por você.
 
-1. Na tela **"Vamos deixar tudo pronto"**, clique em **Baixar WireSock** (ou abra [wiresock.net](https://www.wiresock.net/)).
-2. Baixe o **WireSock Secure Connect** e instale com as opções padrão.
-3. Volte ao VPN Panel. O passo 1 fica marcado sozinho, sem precisar reabrir.
+Você não precisa fazer nada: o instalador do VPN Panel já instala o WireSock junto. Se por algum motivo ele não for instalado, o VPN Panel tenta de novo sozinho quando você abrir, e mostra o andamento na tela **"Vamos deixar tudo pronto"**. Se mesmo assim der errado, aparecem os botões **Tentar de novo** e **Baixar no site** ([wiresock.net](https://www.wiresock.net/)).
 
 ### 3. Baixe o arquivo do servidor (`.conf`)
 
-Cada provedor gera um arquivo `.conf` com o servidor e a sua chave de acesso.
+Cada provedor gera um arquivo `.conf` com o servidor e a sua chave de acesso. Na primeira tela, o botão **Pegar no Proton VPN** mostra o passo a passo e abre o site certo. **Outro provedor** mostra as instruções gerais.
 
-**Proton VPN**
+**Proton VPN** (também funciona no plano grátis; sem conta, crie uma em [account.protonvpn.com](https://account.protonvpn.com/signup?plan=free))
 1. Entre em [account.protonvpn.com](https://account.protonvpn.com/downloads).
 2. Vá em **Downloads → Configurações do WireGuard**.
 3. Escolha a plataforma **Windows** e um servidor. No plano grátis, use os marcados como gratuitos.
@@ -56,7 +54,14 @@ Dica: baixe arquivos de vários países e adicione todos. Assim você troca de s
 
 ### 4. Adicione o servidor no aplicativo
 
-Clique em **Escolher arquivo** (na primeira tela) ou em **Servidores → Adicionar**. Também dá para arrastar o arquivo `.conf` para a janela do VPN Panel.
+Na maioria das vezes não precisa fazer nada: com o VPN Panel aberto, o arquivo que chega na pasta **Downloads** entra sozinho. Isso vale enquanto você ainda não tem nenhum servidor, e por 20 minutos depois de abrir o passo a passo. Se o arquivo já estava em Downloads antes, a primeira tela mostra **Adicionar este**.
+
+Outras formas:
+- **Já tenho o arquivo** (na primeira tela) ou **Servidores → Adicionar**.
+- Arrastar o arquivo para a janela.
+- Copiar o arquivo (ou o texto da configuração) e apertar **Ctrl+V** na janela.
+
+O VPN Panel aceita `.conf` e também `.zip` com vários `.conf` dentro (como o da Mullvad).
 
 O servidor aparece na lista com a sigla do país e a cidade.
 
@@ -104,7 +109,7 @@ Adicione programas por **Apps abertos**, por **Procurar programa** ou digitando 
 |---|---|
 | **"Sem resposta"** ou **"O servidor não respondeu"** | O servidor pode estar fora do ar, ou a sua rede pode bloquear VPN (comum em redes de empresa, escola e Wi-Fi público). Troque de servidor em **Servidores**. Se nenhum funcionar, teste em outra rede. |
 | **"O arquivo deste servidor tem uma chave inválida"** | O arquivo foi alterado ou a chave foi cancelada no site do provedor. Baixe um arquivo novo. |
-| **"WireSock não encontrado"**, ou o passo 1 não fica marcado | Instale o WireSock Secure Connect (passo 2). |
+| **"WireSock não encontrado"**, ou o passo 1 não fica marcado | Clique em **Tentar de novo** no passo 1, ou instale pelo site (veja o passo 2). |
 | **"O WireSock não conseguiu preparar a rede"** | Reinstale o WireSock e reinicie o computador. |
 | O **IP mostrado continua o meu**, mesmo conectado | É normal no modo **Só estes**: o aplicativo mostra o IP dos programas fora da VPN. No modo **Todos**, deve aparecer o IP do servidor. Clique em ↻ ao lado de "Seu IP" para verificar de novo. |
 | **Fiquei sem internet** | Se "Bloquear a internet se a VPN cair" estiver ligada e o servidor parar de responder, a internet fica bloqueada. Clique em **Desconectar** ou troque de servidor. |
@@ -156,6 +161,7 @@ Gera `dist\VpnPanel.exe` e `dist\VPN Panel Setup.exe` usando o compilador `csc.e
   - Se não, ele se reabre pedindo permissão (`runas`).
   - A cópia com privilégio cria ou atualiza essa tarefa. Desligar "Abrir sem pedir permissão" remove a tarefa.
 - **Iniciar com o Windows:** tarefa **VPN Panel**, que roda 10 s depois de você entrar no Windows (`VpnPanel.exe --tray`).
+- **Instalar o WireSock:** `winget install --id NTKERNEL.WireSockVPNClientCLI --exact --source winget --silent`. Sem winget, baixa o instalador mais recente de wiresock.net, confere a assinatura digital (válida e da The Anti-Cloud Corporation / NT Kernel) e roda com `/S`.
 - **Conectar:** `cmd.exe /c wiresock-client.exe run -config <arquivo> -log-level info [-network-lock enabled] > wiresock.log`. Assim o túnel continua ativo mesmo se o aplicativo fechar. Desconectar encerra o processo.
 - **Status:** "Conectado" exige a confirmação do servidor (o *handshake* do WireGuard). O aplicativo acompanha o `wiresock.log` procurando as linhas `Handshake initiation sent` (pedido enviado) e `Handshake response received` (servidor respondeu).
   - **15 s** sem resposta: mostra "Sem resposta".

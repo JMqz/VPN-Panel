@@ -53,7 +53,7 @@ $w.Close()
 
 $fw = "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319"
 $refs = 'System.Windows.Forms.dll', 'System.Drawing.dll', 'System.Management.dll', 'System.Web.Extensions.dll', 'System.Xaml.dll',
-        'Microsoft.VisualBasic.dll', 'Microsoft.CSharp.dll', 'WPF\PresentationFramework.dll', 'WPF\PresentationCore.dll', 'WPF\WindowsBase.dll' |
+        'Microsoft.VisualBasic.dll', 'System.IO.Compression.dll', 'System.IO.Compression.FileSystem.dll', 'Microsoft.CSharp.dll', 'System.ServiceProcess.dll', 'WPF\PresentationFramework.dll', 'WPF\PresentationCore.dll', 'WPF\WindowsBase.dll' |
     ForEach-Object { "/r:$fw\$_" }
 $resources = 'Theme.xaml', 'MainWindow.xaml', 'vpn.ico' | ForEach-Object { "/resource:$(Join-Path $src $_),VpnPanel.$_" }
 $sources = Get-ChildItem $src -Filter *.cs | ForEach-Object { $_.FullName }

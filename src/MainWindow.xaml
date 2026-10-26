@@ -50,14 +50,27 @@
                            Text="Programa gratuito que faz a conexão segura. O VPN Panel controla ele para você."/>
                 <TextBlock x:Name="Step1Done" Text="Instalado" Foreground="{StaticResource Accent}" FontWeight="SemiBold" Margin="0,8,0,0" Visibility="Collapsed"/>
                 <StackPanel x:Name="Step1Actions" Margin="0,10,0,0">
-                  <Button x:Name="BtnGetWireSock" AutomationProperties.Name="Baixar WireSock" Style="{StaticResource PrimaryButton}" HorizontalAlignment="Left" Padding="14,7">
-                    <StackPanel Orientation="Horizontal">
-                      <TextBlock Text="Baixar WireSock" VerticalAlignment="Center"/>
-                      <TextBlock Text="&#xE8A7;" FontFamily="{StaticResource Icons}" FontSize="11" VerticalAlignment="Center" Margin="8,0,0,0"/>
+                  <StackPanel x:Name="Step1Working" Orientation="Horizontal">
+                    <Ellipse x:Name="Step1Spinner" Width="18" Height="18" Stroke="{StaticResource Accent}" StrokeThickness="2.5" StrokeDashArray="8 200"
+                             StrokeDashCap="Round" RenderTransformOrigin="0.5,0.5" VerticalAlignment="Center">
+                      <Ellipse.RenderTransform><RotateTransform/></Ellipse.RenderTransform>
+                    </Ellipse>
+                    <TextBlock x:Name="Step1Status" Text="Instalando o WireSock..." FontWeight="SemiBold" VerticalAlignment="Center" Margin="10,0,0,0"/>
+                  </StackPanel>
+                  <StackPanel x:Name="Step1Failed" Visibility="Collapsed">
+                    <TextBlock x:Name="Step1Error" Style="{StaticResource Caption}" Foreground="{StaticResource Danger}" TextWrapping="Wrap"/>
+                    <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
+                      <Button x:Name="BtnInstallWireSock" Style="{StaticResource PrimaryButton}" Content="Tentar de novo" Padding="14,7"/>
+                      <Button x:Name="BtnGetWireSock" AutomationProperties.Name="Baixar no site do WireSock" Style="{StaticResource GhostButton}" Background="Transparent" Padding="10,7" Margin="6,0,0,0">
+                        <StackPanel Orientation="Horizontal">
+                          <TextBlock Text="Baixar no site" VerticalAlignment="Center"/>
+                          <TextBlock Text="&#xE8A7;" FontFamily="{StaticResource Icons}" FontSize="11" VerticalAlignment="Center" Margin="8,0,0,0"/>
+                        </StackPanel>
+                      </Button>
                     </StackPanel>
-                  </Button>
+                  </StackPanel>
                   <TextBlock Style="{StaticResource Caption}" Margin="0,8,0,0"
-                             Text="Instale normalmente e volte aqui. Esta tela atualiza sozinha."/>
+                             Text="É automático e leva menos de um minuto. Gratuito para uso pessoal."/>
                 </StackPanel>
               </StackPanel>
             </Grid>
@@ -75,12 +88,20 @@
               <StackPanel Grid.Column="1" Margin="12,3,0,0">
                 <TextBlock Text="Adicionar um servidor" FontWeight="SemiBold" FontSize="14"/>
                 <TextBlock Style="{StaticResource Caption}" Margin="0,3,0,0"
-                           Text="É um arquivo .conf que você baixa no site do seu provedor de VPN (Proton, Mullvad...)."/>
-                <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
-                  <Button x:Name="BtnSetupAdd" Style="{StaticResource PrimaryButton}" Content="Escolher arquivo" Padding="14,7"/>
-                  <Button x:Name="BtnSetupHelp" Style="{StaticResource GhostButton}" Background="Transparent" Content="Como conseguir?" Padding="10,7" Margin="6,0,0,0"/>
-                </StackPanel>
-                <TextBlock Style="{StaticResource Caption}" Margin="0,8,0,0" Text="Você também pode arrastar o arquivo para esta janela."/>
+                           Text="O servidor vem num arquivo que você baixa no site da sua VPN. No Proton VPN é grátis."/>
+                <Border x:Name="Step2Found" Background="{StaticResource AccentSoft}" CornerRadius="8" Padding="12,10" Margin="0,10,0,0" Visibility="Collapsed">
+                  <StackPanel>
+                    <TextBlock x:Name="TxtStep2Found" TextWrapping="Wrap"/>
+                    <Button x:Name="BtnStep2Found" Style="{StaticResource PrimaryButton}" Content="Adicionar este" HorizontalAlignment="Left" Padding="12,6" Margin="0,8,0,0"/>
+                  </StackPanel>
+                </Border>
+                <Button x:Name="BtnSetupProton" Style="{StaticResource PrimaryButton}" Content="Pegar no Proton VPN" Padding="14,8" Margin="0,10,0,0"/>
+                <WrapPanel Margin="0,6,0,0">
+                  <Button x:Name="BtnSetupHelp" Style="{StaticResource GhostButton}" Background="Transparent" Content="Outro provedor" Padding="10,7"/>
+                  <Button x:Name="BtnSetupAdd" Style="{StaticResource GhostButton}" Background="Transparent" Content="Já tenho o arquivo" Padding="10,7"/>
+                </WrapPanel>
+                <TextBlock Style="{StaticResource Caption}" Margin="0,6,0,0" TextWrapping="Wrap"
+                           Text="Quando o arquivo chega na pasta Downloads, ele entra aqui sozinho. Também dá para arrastar ou colar (Ctrl+V)."/>
               </StackPanel>
             </Grid>
           </Border>

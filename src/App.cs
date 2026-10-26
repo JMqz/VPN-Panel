@@ -26,8 +26,8 @@ using System.Windows.Shell;
 
 [assembly: AssemblyTitle("VPN Panel")]
 [assembly: AssemblyProduct("VPN Panel")]
-[assembly: AssemblyVersion("2.2.0.0")]
-[assembly: AssemblyFileVersion("2.2.0.0")]
+[assembly: AssemblyVersion("2.3.0.0")]
+[assembly: AssemblyFileVersion("2.3.0.0")]
 
 namespace VpnPanel
 {
@@ -36,7 +36,7 @@ namespace VpnPanel
         // Same mutex as the old vpn-panel.ps1, so they never run together
         const string MutexName = @"Global\VpnPanelWireSock";
         public const string ShowEventName = @"Global\VpnPanelWireSockShow";
-        public const string Version = "2.2";
+        public const string Version = "2.3";
 
         [STAThread]
         static void Main(string[] args)
@@ -117,17 +117,99 @@ namespace VpnPanel
             }
         }
 
+        static string wireSockFound;
+        static DateTime wireSockSearched;
+
+        // Look again right away (after installing WireSock)
+        public static void ForgetWireSock() { wireSockFound = null; wireSockSearched = DateTime.MinValue; }
+
+        // wiresock-client.exe from any WireSock package: the SDK (no UI), the full app with UI,
+        // or the older VPN Client. Known spots first, then a search of WireSock's install folders.
         public static string WireSock
         {
             get
             {
+                if (wireSockFound != null && File.Exists(wireSockFound)) return wireSockFound;
+                // searching is cheap but not free: at most every 3 s while it's missing
+                if ((DateTime.Now - wireSockSearched).TotalSeconds < 3) return null;
+                wireSockSearched = DateTime.Now;
                 string[] candidates =
                 {
                     @"%ProgramFiles%\WireSock Secure Connect\sdk\wiresock-client.exe",
+                    @"%ProgramFiles%\WireSock Secure Connect\bin\wiresock-client.exe",
                     @"%ProgramFiles%\WireSock Secure Connect\wiresock-client.exe",
                     @"%ProgramFiles%\WireSock VPN Client\bin\wiresock-client.exe",
                 };
-                return candidates.Select(Environment.ExpandEnvironmentVariables).FirstOrDefault(File.Exists);
+                wireSockFound = candidates.Select(Environment.ExpandEnvironmentVariables).FirstOrDefault(File.Exists);
+                if (wireSockFound == null)
+                {
+                    foreach (string dir in WireSockDirs())
+                    {
+                        try { wireSockFound = Directory.GetFiles(dir, "wiresock-client.exe", SearchOption.AllDirectories).FirstOrDefault(); }
+                        catch { }
+                        if (wireSockFound != null) break;
+                    }
+                }
+                return wireSockFound;
+            }
+        }
+
+        // Folders where a WireSock package may live: Program Files\WireSock* and installer records
+        static IEnumerable<string> WireSockDirs()
+        {
+            var dirs = new List<string>();
+            foreach (var folder in new[] { Environment.SpecialFolder.ProgramFiles, Environment.SpecialFolder.ProgramFilesX86 })
+            {
+                try { dirs.AddRange(Directory.GetDirectories(Environment.GetFolderPath(folder), "WireSock*")); } catch { }
+            }
+            foreach (var view in new[] { Microsoft.Win32.RegistryView.Registry64, Microsoft.Win32.RegistryView.Registry32 })
+            {
+                try
+                {
+                    using (var hklm = Microsoft.Win32.RegistryKey.OpenBaseKey(Microsoft.Win32.RegistryHive.LocalMachine, view))
+                    using (var uninstall = hklm.OpenSubKey(@"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"))
+                    {
+                        foreach (string sub in uninstall.GetSubKeyNames())
+                        {
+                            using (var k = uninstall.OpenSubKey(sub))
+                            {
+                                string name = k.GetValue("DisplayName") as string;
+                                string location = k.GetValue("InstallLocation") as string;
+                                if (name != null && name.IndexOf("WireSock", StringComparison.OrdinalIgnoreCase) >= 0 &&
+                                    !string.IsNullOrEmpty(location) && Directory.Exists(location))
+                                    dirs.Add(location.TrimEnd('\\'));
+                            }
+                        }
+                    }
+                }
+                catch { }
+            }
+            return dirs.Distinct(StringComparer.OrdinalIgnoreCase);
+        }
+
+        // WireSock's own Windows service (used by its UI app) is connected
+        public static bool WireSockServiceRunning
+        {
+            get
+            {
+                try
+                {
+                    return System.ServiceProcess.ServiceController.GetServices().Any(s =>
+                        s.ServiceName.StartsWith("wiresock-", StringComparison.OrdinalIgnoreCase) &&
+                        s.Status == System.ServiceProcess.ServiceControllerStatus.Running);
+                }
+                catch { return false; }
+            }
+        }
+
+        public static void StopWireSockService()
+        {
+            foreach (var s in System.ServiceProcess.ServiceController.GetServices())
+            {
+                if (!s.ServiceName.StartsWith("wiresock-", StringComparison.OrdinalIgnoreCase) ||
+                    s.Status != System.ServiceProcess.ServiceControllerStatus.Running) continue;
+                s.Stop();
+                s.WaitForStatus(System.ServiceProcess.ServiceControllerStatus.Stopped, TimeSpan.FromSeconds(15));
             }
         }
 
@@ -147,6 +229,21 @@ namespace VpnPanel
         }
 
         public static string Conf(string name) { return Path.Combine(Configs, name + ".conf"); }
+
+        // The user's Downloads folder (it can be moved, so ask Windows)
+        public static string Downloads
+        {
+            get
+            {
+                IntPtr p;
+                if (SHGetKnownFolderPath(new Guid("374DE290-123F-4565-9164-39C4925E467B"), 0, IntPtr.Zero, out p) != 0) return null;
+                try { return Marshal.PtrToStringUni(p); }
+                finally { Marshal.FreeCoTaskMem(p); }
+            }
+        }
+
+        [DllImport("shell32.dll")]
+        static extern int SHGetKnownFolderPath([MarshalAs(UnmanagedType.LPStruct)] Guid id, uint flags, IntPtr token, out IntPtr path);
 
         public static string[] ConfigNames()
         {
@@ -364,22 +461,79 @@ namespace VpnPanel
             return null;
         }
 
-        // Copies a .conf into the configs folder and returns its name
-        public static string Import(string source)
+        public static bool IsWireGuard(string text)
         {
-            string text = File.ReadAllText(source);
-            if (!Regex.IsMatch(text, @"^\s*\[Interface\]", RegexOptions.IgnoreCase | RegexOptions.Multiline) ||
-                !Regex.IsMatch(text, @"^\s*\[Peer\]", RegexOptions.IgnoreCase | RegexOptions.Multiline) ||
-                !Regex.IsMatch(text, @"^\s*PrivateKey\s*=", RegexOptions.IgnoreCase | RegexOptions.Multiline))
-                throw new InvalidDataException("não parece uma configuração WireGuard (faltam [Interface], [Peer] ou PrivateKey).");
+            return text != null &&
+                   Regex.IsMatch(text, @"^\s*\[Interface\]", RegexOptions.IgnoreCase | RegexOptions.Multiline) &&
+                   Regex.IsMatch(text, @"^\s*\[Peer\]", RegexOptions.IgnoreCase | RegexOptions.Multiline) &&
+                   Regex.IsMatch(text, @"^\s*PrivateKey\s*=", RegexOptions.IgnoreCase | RegexOptions.Multiline);
+        }
 
-            string baseName = Path.GetFileNameWithoutExtension(source).Trim();
+        // Text of a .conf as bytes, BOM or not
+        static string Decode(byte[] data)
+        {
+            using (var reader = new StreamReader(new MemoryStream(data), Encoding.UTF8, true)) return reader.ReadToEnd();
+        }
+
+        public static bool IsImportable(string path)
+        {
+            string ext = Path.GetExtension(path);
+            return ext.Equals(".conf", StringComparison.OrdinalIgnoreCase) || ext.Equals(".zip", StringComparison.OrdinalIgnoreCase);
+        }
+
+        // WireGuard configs inside a .conf or a .zip (Mullvad hands out a zip with many), as (name, bytes)
+        public static List<KeyValuePair<string, byte[]>> ReadConfs(string source)
+        {
+            var found = new List<KeyValuePair<string, byte[]>>();
+            if (Path.GetExtension(source).Equals(".zip", StringComparison.OrdinalIgnoreCase))
+            {
+                using (var zip = System.IO.Compression.ZipFile.OpenRead(source))
+                    foreach (var entry in zip.Entries)
+                    {
+                        if (!entry.Name.EndsWith(".conf", StringComparison.OrdinalIgnoreCase) || entry.Length > 64 * 1024) continue;
+                        using (Stream st = entry.Open())
+                        using (var ms = new MemoryStream())
+                        {
+                            st.CopyTo(ms);
+                            if (IsWireGuard(Decode(ms.ToArray())))
+                                found.Add(new KeyValuePair<string, byte[]>(Path.GetFileNameWithoutExtension(entry.Name), ms.ToArray()));
+                        }
+                    }
+                return found;
+            }
+            if (new FileInfo(source).Length > 64 * 1024) return found;
+            byte[] data = File.ReadAllBytes(source);
+            if (IsWireGuard(Decode(data))) found.Add(new KeyValuePair<string, byte[]>(Path.GetFileNameWithoutExtension(source), data));
+            return found;
+        }
+
+        // Copies the configs of a .conf or .zip into the configs folder and returns their names
+        public static List<string> Import(string source)
+        {
+            var confs = ReadConfs(source);
+            if (confs.Count == 0)
+                throw new InvalidDataException(source.EndsWith(".zip", StringComparison.OrdinalIgnoreCase)
+                    ? "o .zip não tem nenhuma configuração WireGuard."
+                    : "não parece uma configuração WireGuard (faltam [Interface], [Peer] ou PrivateKey).");
+            return confs.Select(c => Save(c.Value, c.Key)).ToList();
+        }
+
+        // A config pasted as text
+        public static string ImportText(string text, string name)
+        {
+            if (!IsWireGuard(text)) throw new InvalidDataException("o texto não parece uma configuração WireGuard.");
+            return Save(new UTF8Encoding(false).GetBytes(text), name);
+        }
+
+        static string Save(byte[] data, string wanted)
+        {
+            string baseName = wanted.Trim();
             foreach (char ch in Path.GetInvalidFileNameChars()) baseName = baseName.Replace(ch, '_');
             if (baseName.Length == 0) baseName = "config";
             if (baseName.Length > 60) baseName = baseName.Substring(0, 60);
             string name = baseName;
             for (int n = 2; File.Exists(Paths.Conf(name)); n++) name = baseName + " (" + n + ")";
-            File.Copy(source, Paths.Conf(name));
+            File.WriteAllBytes(Paths.Conf(name), data);
             return name;
         }
 

@@ -37,7 +37,9 @@ namespace VpnPanel
         // Início (setup)
         readonly FrameworkElement pageSetup, step1Actions;
         readonly Border step1Badge, step2Badge;
-        readonly TextBlock step1Mark, step2Mark, step1Done;
+        readonly TextBlock step1Mark, step2Mark, step1Done, step1Status, step1Error;
+        readonly FrameworkElement step1Working, step1Failed;
+        readonly RotateTransform step1SpinnerRotate;
         // Início
         readonly Border errorBanner;
         readonly TextBlock txtErrTitle, txtErrDetail;
@@ -77,13 +79,22 @@ namespace VpnPanel
         Action bannerPrimary, bannerSecondary;
 
         // handshake tracking from the WireSock log, for tunnels this app started
-        bool monitoring, handshakeOk;
+        bool monitoring, handshakeOk, sawHandshake;
         DateTime? pendingSince;
         long logPos;
         string logRest = "";
         string runningConfig;
         ConfigInfo active;
-        bool wireSockInstalled;
+        bool wireSockInstalled, installingWireSock, triedWireSock;
+
+        // servers arriving in Downloads (see WatchDownloads)
+        FileSystemWatcher downloadsWatcher;
+        DispatcherTimer downloadsTimer;
+        readonly Dictionary<string, DateTime> pendingDownloads = new Dictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
+        readonly HashSet<string> handledDownloads = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        DateTime expectDownloadUntil;
+        Window guide;
+        string foundDownload;
 
         // apps editor
         AppMode editMode;
@@ -107,6 +118,11 @@ namespace VpnPanel
             step1Mark = E<TextBlock>("Step1Mark");
             step2Mark = E<TextBlock>("Step2Mark");
             step1Done = E<TextBlock>("Step1Done");
+            step1Status = E<TextBlock>("Step1Status");
+            step1Error = E<TextBlock>("Step1Error");
+            step1Working = E<FrameworkElement>("Step1Working");
+            step1Failed = E<FrameworkElement>("Step1Failed");
+            step1SpinnerRotate = (RotateTransform)E<Ellipse>("Step1Spinner").RenderTransform;
             errorBanner = E<Border>("ErrorBanner");
             txtErrTitle = E<TextBlock>("TxtErrTitle");
             txtErrDetail = E<TextBlock>("TxtErrDetail");
@@ -181,9 +197,12 @@ namespace VpnPanel
             tabOptions.Checked += (s, e) => ShowPage(pageOptions);
 
             // setup
+            E<Button>("BtnInstallWireSock").Click += (s, e) => InstallWireSock();
             E<Button>("BtnGetWireSock").Click += (s, e) => OpenUrl("https://www.wiresock.net/");
             E<Button>("BtnSetupAdd").Click += (s, e) => BrowseImport();
-            E<Button>("BtnSetupHelp").Click += (s, e) => Dialogs.ConfHelp(w);
+            E<Button>("BtnSetupProton").Click += (s, e) => OpenGuide(false);
+            E<Button>("BtnSetupHelp").Click += (s, e) => OpenGuide(true);
+            E<Button>("BtnStep2Found").Click += (s, e) => { if (foundDownload != null) Import(new[] { foundDownload }); };
 
             // Início
             btnPower.Click += (s, e) => Toggle();
@@ -195,14 +214,20 @@ namespace VpnPanel
 
             // Servidores
             E<Button>("BtnImport").Click += (s, e) => BrowseImport();
-            E<Button>("BtnEmptyHelp").Click += (s, e) => Dialogs.ConfHelp(w);
-            E<Button>("BtnServersHelp").Click += (s, e) => Dialogs.ConfHelp(w);
+            E<Button>("BtnEmptyHelp").Click += (s, e) => OpenGuide(false);
+            E<Button>("BtnServersHelp").Click += (s, e) => OpenGuide(false);
             w.DragOver += (s, e) =>
             {
                 e.Effects = DroppedConfs(e).Any() ? DragDropEffects.Copy : DragDropEffects.None;
                 e.Handled = true;
             };
             w.Drop += (s, e) => Import(DroppedConfs(e));
+            // Ctrl+V: a copied .conf file, or the config text itself
+            w.PreviewKeyDown += (s, e) =>
+            {
+                if (e.Key == Key.V && Keyboard.Modifiers == ModifierKeys.Control && !(Keyboard.FocusedElement is TextBox))
+                    e.Handled = Paste();
+            };
 
             // Apps
             segAll.Checked += (s, e) => SetMode(AppMode.All);
@@ -256,8 +281,7 @@ namespace VpnPanel
             tray.BalloonTipClicked += (s, e) => ShowWindow();
 
             wireSockInstalled = Paths.WireSock != null;
-            string ws = Paths.WireSockVersion;
-            E<TextBlock>("TxtAbout").Text = "VPN Panel " + Program.Version + "  ·  " + (ws != null ? "WireSock " + ws : "WireSock não instalado");
+            UpdateAbout();
 
             RefreshConfigs();
             LoadAppsEditor();
@@ -273,6 +297,7 @@ namespace VpnPanel
 
             ListenForShowRequests();
             WatchConfigs();
+            WatchDownloads();
             SyncTasks();
             if (!startInTray) w.Show();
             w.Dispatcher.BeginInvoke(new Action(OnStart));
@@ -282,6 +307,8 @@ namespace VpnPanel
         {
             Poll();
             pollTimer.Start();
+            // WireSock is required: install it as soon as someone is looking (not on a silent tray start)
+            if (w.IsVisible && !wireSockInstalled) InstallWireSock();
             if (settings.AutoConnect && wasRunning == false && Ready) Connect();
             else CheckIp();
         }
@@ -337,6 +364,38 @@ namespace VpnPanel
             w.Show();
             if (w.WindowState == WindowState.Minimized) w.WindowState = WindowState.Normal;
             w.Activate();
+            if (!wireSockInstalled && !triedWireSock) InstallWireSock();
+        }
+
+        void UpdateAbout()
+        {
+            string ws = Paths.WireSockVersion;
+            E<TextBlock>("TxtAbout").Text = "VPN Panel " + Program.Version + "  ·  " + (ws != null ? "WireSock " + ws : "WireSock não instalado");
+        }
+
+        // Step 1 of the setup: winget (or the download from wiresock.net) in the background
+        void InstallWireSock()
+        {
+            if (installingWireSock || wireSockInstalled) return;
+            installingWireSock = triedWireSock = true;
+            step1Status.Text = "Instalando o WireSock...";
+            step1Working.Visibility = Visibility.Visible;
+            step1Failed.Visibility = Visibility.Collapsed;
+            step1SpinnerRotate.BeginAnimation(RotateTransform.AngleProperty,
+                new DoubleAnimation(0, 360, TimeSpan.FromSeconds(1.1)) { RepeatBehavior = RepeatBehavior.Forever });
+            new Thread(() =>
+            {
+                string error = WireSockSetup.Install(text => w.Dispatcher.BeginInvoke(new Action(() => step1Status.Text = text)));
+                w.Dispatcher.BeginInvoke(new Action(() =>
+                {
+                    installingWireSock = false;
+                    step1SpinnerRotate.BeginAnimation(RotateTransform.AngleProperty, null);
+                    if (error == null) { Poll(); return; }
+                    step1Error.Text = error;
+                    step1Working.Visibility = Visibility.Collapsed;
+                    step1Failed.Visibility = Visibility.Visible;
+                }));
+            }) { IsBackground = true }.Start();
         }
 
         void Quit()
@@ -377,6 +436,11 @@ namespace VpnPanel
             step1Done.Visibility = wireSockInstalled ? Visibility.Visible : Visibility.Collapsed;
             step1Actions.Visibility = wireSockInstalled ? Visibility.Collapsed : Visibility.Visible;
             SetStep(step2Badge, step2Mark, "2", active != null);
+            // a server downloaded before the app was open
+            foundDownload = active == null ? RecentDownload() : null;
+            E<FrameworkElement>("Step2Found").Visibility = foundDownload != null ? Visibility.Visible : Visibility.Collapsed;
+            if (foundDownload != null)
+                E<TextBlock>("TxtStep2Found").Text = "Achamos \u201c" + System.IO.Path.GetFileName(foundDownload) + "\u201d na pasta Downloads.";
             if (tabHome.IsChecked == true && HomePage.Visibility != Visibility.Visible) ShowPage(HomePage);
         }
 
@@ -447,6 +511,21 @@ namespace VpnPanel
                 ShowPage(HomePage);
                 return;
             }
+            // WireSock's own app (with UI) may already hold a tunnel through its service
+            if (Paths.WireSockServiceRunning)
+            {
+                ShowWindow();
+                if (!Dialogs.Confirm(w, "O WireSock já está conectado",
+                        "O aplicativo do WireSock está com uma conexão ativa. Para conectar pelo VPN Panel, essa conexão precisa ser desligada.",
+                        "Desligar e conectar", false))
+                    return;
+                try { Paths.StopWireSockService(); }
+                catch (Exception ex)
+                {
+                    Dialogs.Info(w, "Não foi possível desligar", "Desconecte pelo aplicativo do WireSock e tente de novo.\n\n" + ex.Message);
+                    return;
+                }
+            }
             Tunnel.Start(Paths.WireSock, active.Name, settings.NetworkLock);
             SaveSettings();
             connecting = true;
@@ -481,6 +560,7 @@ namespace VpnPanel
         {
             monitoring = true;
             handshakeOk = false;
+            sawHandshake = false;
             pendingSince = fresh ? (DateTime?)DateTime.Now : null;
             logPos = 0;
             logRest = "";
@@ -504,8 +584,12 @@ namespace VpnPanel
                     if (cut < 0) return;
                     foreach (string line in text.Substring(0, cut).Split('\n'))
                     {
-                        if (line.Contains("Handshake response received")) { handshakeOk = true; pendingSince = null; }
-                        else if (line.Contains("Handshake initiation sent") && pendingSince == null) pendingSince = DateTime.Now;
+                        if (line.Contains("Handshake response received")) { handshakeOk = sawHandshake = true; pendingSince = null; }
+                        else if (line.Contains("Handshake initiation sent"))
+                        {
+                            sawHandshake = true;
+                            if (pendingSince == null) pendingSince = DateTime.Now;
+                        }
                     }
                 }
             }
@@ -584,6 +668,7 @@ namespace VpnPanel
             if (wireSockInstalled != (Paths.WireSock != null))
             {
                 wireSockInstalled = !wireSockInstalled;
+                UpdateAbout();
                 UpdateSetup();
             }
 
@@ -640,6 +725,12 @@ namespace VpnPanel
             if (running && monitoring)
             {
                 ReadHandshakes();
+                // a WireSock version that logs handshakes differently: don't judge the connection by the log
+                if (!sawHandshake && (DateTime.Now - startedAt).TotalSeconds > 10)
+                {
+                    monitoring = false;
+                    pendingSince = null;
+                }
                 // no handshake response for too long: the server is down or blocked
                 if (pendingSince != null && (DateTime.Now - pendingSince.Value).TotalSeconds > GiveUpAfter)
                 {
@@ -934,7 +1025,7 @@ namespace VpnPanel
         static IEnumerable<string> DroppedConfs(DragEventArgs e)
         {
             var files = e.Data.GetData(DataFormats.FileDrop) as string[];
-            return (files ?? new string[0]).Where(f => f.EndsWith(".conf", StringComparison.OrdinalIgnoreCase));
+            return (files ?? new string[0]).Where(ConfFile.IsImportable);
         }
 
         void BrowseImport()
@@ -942,7 +1033,7 @@ namespace VpnPanel
             var ofd = new Microsoft.Win32.OpenFileDialog
             {
                 Title = "Adicionar servidor",
-                Filter = "Arquivo de servidor WireGuard (*.conf)|*.conf",
+                Filter = "Arquivo de servidor WireGuard (*.conf, *.zip)|*.conf;*.zip",
                 Multiselect = true,
             };
             if (ofd.ShowDialog(w) == true) Import(ofd.FileNames);
@@ -950,14 +1041,19 @@ namespace VpnPanel
 
         void Import(IEnumerable<string> files)
         {
-            bool wasReady = Ready;
             var errors = new List<string>();
             var added = new List<string>();
             foreach (string f in files)
             {
-                try { added.Add(ConfFile.Import(f)); }
+                try { added.AddRange(ConfFile.Import(f)); }
                 catch (Exception ex) { errors.Add(System.IO.Path.GetFileName(f) + ": " + ex.Message); }
             }
+            Imported(added, errors);
+        }
+
+        void Imported(List<string> added, List<string> errors)
+        {
+            bool wasReady = Ready;
             if (added.Count > 0 && active == null) settings.Config = added[0];
             RefreshConfigs();
             LoadAppsEditor();
@@ -966,6 +1062,137 @@ namespace VpnPanel
             // finishing setup lands on Início, ready to connect; otherwise show the new server in the list
             if (added.Count > 0) { if (!wasReady && Ready) tabHome.IsChecked = true; else tabServers.IsChecked = true; }
             if (errors.Count > 0) Dialogs.Info(w, added.Count > 0 ? "Alguns arquivos não foram adicionados" : "Arquivo não adicionado", string.Join("\n", errors));
+        }
+
+        // Ctrl+V on the window; false when the clipboard has nothing to import
+        bool Paste()
+        {
+            try
+            {
+                if (Clipboard.ContainsFileDropList())
+                {
+                    var files = Clipboard.GetFileDropList().Cast<string>().Where(ConfFile.IsImportable).ToList();
+                    if (files.Count == 0) return false;
+                    Import(files);
+                    return true;
+                }
+                string text = Clipboard.ContainsText() ? Clipboard.GetText() : null;
+                if (!ConfFile.IsWireGuard(text)) return false;
+                string name = Dialogs.Prompt(w, "Servidor colado", "Dê um nome para este servidor:", PastedName(text), n => ConfFile.CheckName(n, null));
+                if (name != null) Imported(new List<string> { ConfFile.ImportText(text, name) }, new List<string>());
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Dialogs.Info(w, "Não deu para colar", ex.Message);
+                return true;
+            }
+        }
+
+        // The endpoint's host name (node-br-05 from node-br-05.example.net), or "Servidor"
+        static string PastedName(string text)
+        {
+            Match m = Regex.Match(text, @"^\s*Endpoint\s*=\s*([A-Za-z][\w-]*)\.", RegexOptions.IgnoreCase | RegexOptions.Multiline);
+            string baseName = m.Success ? m.Groups[1].Value : "Servidor";
+            string name = baseName;
+            for (int n = 2; File.Exists(Paths.Conf(name)); n++) name = baseName + " " + n;
+            return name;
+        }
+
+        // ---------- servers arriving in Downloads ----------
+
+        // Expect a download during setup, and for a while after the guide was opened
+        bool ExpectingDownload { get { return active == null || DateTime.Now < expectDownloadUntil; } }
+
+        void OpenGuide(bool otherProvider)
+        {
+            if (guide != null) { guide.Activate(); return; }
+            expectDownloadUntil = DateTime.Now.AddMinutes(20);
+            guide = Dialogs.ProviderGuide(w, otherProvider);
+            bool browse = guide.ShowDialog() == true;
+            guide = null;
+            if (browse) BrowseImport();
+        }
+
+        void WatchDownloads()
+        {
+            string dir = Paths.Downloads;
+            if (dir == null || !Directory.Exists(dir)) return;
+            downloadsTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
+            downloadsTimer.Tick += (s, e) => CheckDownloads();
+            try
+            {
+                downloadsWatcher = new FileSystemWatcher(dir) { NotifyFilter = NotifyFilters.FileName | NotifyFilters.LastWrite | NotifyFilters.Size };
+                FileSystemEventHandler seen = (s, e) => w.Dispatcher.BeginInvoke(new Action(() => OnDownload(e.FullPath)));
+                downloadsWatcher.Created += seen;
+                downloadsWatcher.Changed += seen;
+                downloadsWatcher.Renamed += (s, e) => w.Dispatcher.BeginInvoke(new Action(() => OnDownload(e.FullPath)));
+                downloadsWatcher.EnableRaisingEvents = true;
+            }
+            catch { downloadsWatcher = null; }
+        }
+
+        static string DownloadKey(string path)
+        {
+            try { return path + "|" + File.GetLastWriteTimeUtc(path).Ticks; } catch { return path; }
+        }
+
+        void OnDownload(string path)
+        {
+            if (downloadsTimer == null || !ExpectingDownload || !ConfFile.IsImportable(path) || handledDownloads.Contains(DownloadKey(path))) return;
+            if (!pendingDownloads.ContainsKey(path)) pendingDownloads[path] = DateTime.Now;
+            downloadsTimer.Start();
+        }
+
+        // Browsers write the file in steps (empty file, .part, rename): import once it reads as a server
+        void CheckDownloads()
+        {
+            foreach (string path in pendingDownloads.Keys.ToList())
+            {
+                bool ready = false;
+                try
+                {
+                    using (File.Open(path, FileMode.Open, FileAccess.Read, FileShare.Read)) { } // fails while still being written
+                    ready = ConfFile.ReadConfs(path).Count > 0;
+                }
+                catch { }
+                if (ready)
+                {
+                    pendingDownloads.Remove(path);
+                    handledDownloads.Add(DownloadKey(path));
+                    Downloaded(path);
+                }
+                else if ((DateTime.Now - pendingDownloads[path]).TotalSeconds > 30) pendingDownloads.Remove(path);
+            }
+            if (pendingDownloads.Count == 0) downloadsTimer.Stop();
+        }
+
+        void Downloaded(string path)
+        {
+            if (guide != null) guide.Close();
+            int before = Paths.ConfigNames().Length;
+            ShowWindow();
+            Import(new[] { path });
+            int added = Paths.ConfigNames().Length - before;
+            if (added > 0)
+                tray.ShowBalloonTip(3000, "VPN Panel", added == 1 ? "Servidor adicionado. Pronto para conectar." : added + " servidores adicionados.", WF.ToolTipIcon.Info);
+        }
+
+        // Newest server file in Downloads from the last week, if any
+        static string RecentDownload()
+        {
+            try
+            {
+                string dir = Paths.Downloads;
+                if (dir == null) return null;
+                return new DirectoryInfo(dir).EnumerateFiles()
+                    .Where(f => ConfFile.IsImportable(f.Name) && f.LastWriteTime > DateTime.Now.AddDays(-7))
+                    .OrderByDescending(f => f.LastWriteTime)
+                    .Take(10)
+                    .Select(f => f.FullName)
+                    .FirstOrDefault(f => { try { return ConfFile.ReadConfs(f).Count > 0; } catch { return false; } });
+            }
+            catch { return null; }
         }
 
         // ---------- apps (split tunneling) ----------
