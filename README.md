@@ -16,7 +16,7 @@ Você vai precisar de:
 
 ### 1. Instale o VPN Panel
 
-1. Abra a [página de downloads](https://github.com/JMqz/VPN-Panel/releases/latest) e baixe o arquivo **`VPN-Panel-Setup-2.2.exe`**.
+1. Abra a [página de downloads](https://github.com/JMqz/VPN-Panel/releases/latest) e baixe o arquivo **`VPN-Panel-Setup-2.3.exe`**.
 2. Abra o arquivo baixado.
 3. Se aparecer a tela azul **"O Windows protegeu o computador"**, clique em **Mais informações** e depois em **Executar assim mesmo**. O aviso aparece porque o aplicativo não tem assinatura digital paga.
 4. O Windows pede permissão de administrador: clique em **Sim**.
@@ -124,7 +124,7 @@ A VPN é desconectada e o aplicativo é removido. Os seus servidores e configura
 
 ## Sem instalar (versão portátil)
 
-Na [página de downloads](https://github.com/JMqz/VPN-Panel/releases/latest) também tem o **`VpnPanel-2.2-portatil.exe`**. É o mesmo aplicativo, sem instalador e sem atalho no menu Iniciar. Basta abrir.
+Na [página de downloads](https://github.com/JMqz/VPN-Panel/releases/latest) também tem o **`VpnPanel-2.3-portatil.exe`**. É o mesmo aplicativo, sem instalador e sem atalho no menu Iniciar. Basta abrir.
 
 ---
 
@@ -134,7 +134,7 @@ Na [página de downloads](https://github.com/JMqz/VPN-Panel/releases/latest) tam
 
 | Caminho | O que é |
 |---|---|
-| `src\` | Código-fonte: `App.cs`, `MainWindow.cs`, `Dialogs.cs`, `Setup.cs`, `MainWindow.xaml`, `Theme.xaml`, `app.manifest`, `setup.manifest`, `build.ps1` |
+| `src\` | Código-fonte: `App.cs`, `MainWindow.cs`, `Dialogs.cs`, `Setup.cs`, `WireSockSetup.cs`, `MainWindow.xaml`, `Theme.xaml`, `app.manifest`, `setup.manifest`, `build.ps1` |
 | `C:\Program Files\VPN Panel\VpnPanel.exe` | Aplicativo instalado (pasta que só administradores alteram) |
 | `%APPDATA%\VPN Panel\configs\*.conf` | Servidores importados (contêm chaves privadas) |
 | `%APPDATA%\VPN Panel\settings.json` | Servidor ativo e opções |
