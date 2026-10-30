@@ -171,6 +171,7 @@ namespace VpnPanel
             var rotate = new RotateTransform();
             spin.RenderTransform = rotate;
             rotate.BeginAnimation(RotateTransform.AngleProperty, new DoubleAnimation(0, 360, TimeSpan.FromSeconds(1.1)) { RepeatBehavior = RepeatBehavior.Forever });
+            d.Closed += (s, e) => rotate.BeginAnimation(RotateTransform.AngleProperty, null);
             wg.Children.Add(spin);
             var wt = new StackPanel { Margin = new Thickness(10, 0, 0, 0) };
             wt.Children.Add(new TextBlock { Text = "Esperando o arquivo...", FontWeight = FontWeights.SemiBold });
@@ -233,20 +234,23 @@ namespace VpnPanel
         public static List<string> PickProcesses(Window owner, Func<string, string, ImageSource> icon)
         {
             int session = Process.GetCurrentProcess().SessionId;
+            HashSet<int> windowed = ProcUtil.WindowedPids();
             var entries = new Dictionary<string, ProcessEntry>(StringComparer.OrdinalIgnoreCase);
             foreach (Process p in Process.GetProcesses())
             {
                 try
                 {
-                    if (p.SessionId != session || HiddenProcesses.Contains(p.ProcessName)) continue;
+                    string procName = p.ProcessName;
+                    if (HiddenProcesses.Contains(procName) || p.SessionId != session) continue;
+                    int pid = p.Id;
                     ProcessEntry e;
-                    if (!entries.TryGetValue(p.ProcessName, out e))
+                    if (!entries.TryGetValue(procName, out e))
                     {
-                        e = new ProcessEntry { Name = p.ProcessName };
-                        try { e.Path = p.MainModule.FileName; } catch { }
-                        entries[p.ProcessName] = e;
+                        e = new ProcessEntry { Name = procName, Path = ProcUtil.ExePath(pid) };
+                        entries[procName] = e;
                     }
-                    if (p.MainWindowHandle != IntPtr.Zero) e.Windowed = true;
+                    else if (e.Path == null) e.Path = ProcUtil.ExePath(pid);
+                    if (windowed.Contains(pid)) e.Windowed = true;
                 }
                 catch { }
                 finally { p.Dispose(); }

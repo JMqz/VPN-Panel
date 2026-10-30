@@ -61,6 +61,20 @@ namespace VpnPanel
             s.Save();
         }
 
+        // Keeps the user's choice when updating without the window
+        public static bool HasDesktopShortcut
+        {
+            get
+            {
+                using (RegistryKey k = Registry.LocalMachine.OpenSubKey(UninstallKey))
+                {
+                    string link = k != null ? k.GetValue("DesktopShortcut") as string : null;
+                    if (!string.IsNullOrEmpty(link) && File.Exists(link)) return true;
+                }
+                return File.Exists(DesktopLink);
+            }
+        }
+
         public static void Install(byte[] exe, bool desktopShortcut)
         {
             StopApp();
@@ -95,7 +109,7 @@ namespace VpnPanel
         public static void Uninstall(bool removeData)
         {
             StopApp();
-            Tunnel.Stop();
+            Tunnel.Stop(true); // never leave the kill switch blocking a machine without the panel
             try { Tasks.Delete(Tasks.Logon); } catch { }
             try { Tasks.Delete(Tasks.Open); } catch { }
 
@@ -163,8 +177,16 @@ namespace VpnPanel
     static class SetupProgram
     {
         [STAThread]
-        static void Main()
+        static void Main(string[] args)
         {
+            // --silent: update in place without the window (the running tunnel is left alone), then reopen the panel
+            if (args.Any(a => a.Equals("--silent", StringComparison.OrdinalIgnoreCase)))
+            {
+                Installer.Install(Res.Bytes("VpnPanel.exe"), Installer.HasDesktopShortcut);
+                if (Paths.WireSock == null) WireSockSetup.Install(text => { });
+                try { Process.Start(new ProcessStartInfo(Installer.Exe) { WorkingDirectory = Installer.Dir }).Dispose(); } catch { }
+                return;
+            }
             Application app = Installer.ThemedApp();
             app.ShutdownMode = ShutdownMode.OnMainWindowClose;
             app.Run(new SetupWindow().Window);
@@ -273,9 +295,7 @@ namespace VpnPanel
                 install.IsEnabled = false;
                 install.Content = "Instalando...";
                 bool wantDesktop = desktop.IsChecked == true;
-                byte[] exe;
-                using (Stream st = Res.Open("VpnPanel.exe"))
-                using (var ms = new MemoryStream()) { st.CopyTo(ms); exe = ms.ToArray(); }
+                byte[] exe = Res.Bytes("VpnPanel.exe");
                 var worker = new Thread(() =>
                 {
                     Exception error = null;

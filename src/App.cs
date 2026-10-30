@@ -26,8 +26,8 @@ using System.Windows.Shell;
 
 [assembly: AssemblyTitle("VPN Panel")]
 [assembly: AssemblyProduct("VPN Panel")]
-[assembly: AssemblyVersion("2.3.0.0")]
-[assembly: AssemblyFileVersion("2.3.0.0")]
+[assembly: AssemblyVersion("2.4.0.0")]
+[assembly: AssemblyFileVersion("2.4.0.0")]
 
 namespace VpnPanel
 {
@@ -36,7 +36,7 @@ namespace VpnPanel
         // Same mutex as the old vpn-panel.ps1, so they never run together
         const string MutexName = @"Global\VpnPanelWireSock";
         public const string ShowEventName = @"Global\VpnPanelWireSockShow";
-        public const string Version = "2.3";
+        public const string Version = "2.4";
 
         [STAThread]
         static void Main(string[] args)
@@ -90,6 +90,12 @@ namespace VpnPanel
         {
             using (var r = new StreamReader(Open(name))) return r.ReadToEnd();
         }
+
+        public static byte[] Bytes(string name)
+        {
+            using (Stream st = Open(name))
+            using (var ms = new MemoryStream()) { st.CopyTo(ms); return ms.ToArray(); }
+        }
     }
 
     static class Paths
@@ -114,14 +120,30 @@ namespace VpnPanel
                 {
                     try { File.Copy(f, Path.Combine(Configs, Path.GetFileName(f))); } catch { }
                 }
+                ConfigsChanged();
             }
         }
 
+        static readonly string[] WireSockCandidates = new[]
+        {
+            @"%ProgramFiles%\WireSock Secure Connect\sdk\wiresock-client.exe",
+            @"%ProgramFiles%\WireSock Secure Connect\bin\wiresock-client.exe",
+            @"%ProgramFiles%\WireSock Secure Connect\wiresock-client.exe",
+            @"%ProgramFiles%\WireSock VPN Client\bin\wiresock-client.exe",
+        }.Select(Environment.ExpandEnvironmentVariables).ToArray();
+
         static string wireSockFound;
         static DateTime wireSockSearched;
+        static DateTime wireSockVerified;
+        public static bool SearchingFast;
 
         // Look again right away (after installing WireSock)
-        public static void ForgetWireSock() { wireSockFound = null; wireSockSearched = DateTime.MinValue; }
+        public static void ForgetWireSock()
+        {
+            wireSockFound = null;
+            wireSockSearched = DateTime.MinValue;
+            wireSockVerified = DateTime.MinValue;
+        }
 
         // wiresock-client.exe from any WireSock package: the SDK (no UI), the full app with UI,
         // or the older VPN Client. Known spots first, then a search of WireSock's install folders.
@@ -129,18 +151,17 @@ namespace VpnPanel
         {
             get
             {
-                if (wireSockFound != null && File.Exists(wireSockFound)) return wireSockFound;
-                // searching is cheap but not free: at most every 3 s while it's missing
-                if ((DateTime.Now - wireSockSearched).TotalSeconds < 3) return null;
-                wireSockSearched = DateTime.Now;
-                string[] candidates =
+                DateTime now = DateTime.UtcNow;
+                if (wireSockFound != null)
                 {
-                    @"%ProgramFiles%\WireSock Secure Connect\sdk\wiresock-client.exe",
-                    @"%ProgramFiles%\WireSock Secure Connect\bin\wiresock-client.exe",
-                    @"%ProgramFiles%\WireSock Secure Connect\wiresock-client.exe",
-                    @"%ProgramFiles%\WireSock VPN Client\bin\wiresock-client.exe",
-                };
-                wireSockFound = candidates.Select(Environment.ExpandEnvironmentVariables).FirstOrDefault(File.Exists);
+                    if ((now - wireSockVerified).TotalSeconds < 30) return wireSockFound;
+                    if (File.Exists(wireSockFound)) { wireSockVerified = now; return wireSockFound; }
+                    wireSockFound = null;
+                }
+                // searching is cheap but not free: 3 s while installing, 30 s otherwise
+                if ((now - wireSockSearched).TotalSeconds < (SearchingFast ? 3 : 30)) return null;
+                wireSockSearched = now;
+                wireSockFound = WireSockCandidates.FirstOrDefault(File.Exists);
                 if (wireSockFound == null)
                 {
                     foreach (string dir in WireSockDirs())
@@ -150,6 +171,7 @@ namespace VpnPanel
                         if (wireSockFound != null) break;
                     }
                 }
+                if (wireSockFound != null) wireSockVerified = now;
                 return wireSockFound;
             }
         }
@@ -245,12 +267,30 @@ namespace VpnPanel
         [DllImport("shell32.dll")]
         static extern int SHGetKnownFolderPath([MarshalAs(UnmanagedType.LPStruct)] Guid id, uint flags, IntPtr token, out IntPtr path);
 
+        // The folder listing is cached: the app's own writes and the configs watcher call ConfigsChanged
+        static string[] configNames;
+        static int configsVersion;
+
+        // Bumped on every change to the configs folder (lets the tray menu rebuild only when needed)
+        public static int ConfigsVersion { get { return configsVersion; } }
+
+        public static void ConfigsChanged()
+        {
+            configNames = null;
+            configsVersion++;
+        }
+
+        // Sorted names of the configs; the array is shared, so callers must not modify it
         public static string[] ConfigNames()
         {
-            return Directory.GetFiles(Configs, "*.conf").Where(IsConf)
-                .Select(f => Path.GetFileNameWithoutExtension(f))
-                .OrderBy(n => n, StringComparer.OrdinalIgnoreCase)
-                .ToArray();
+            if (configNames == null)
+            {
+                configNames = Directory.GetFiles(Configs, "*.conf").Where(IsConf)
+                    .Select(f => Path.GetFileNameWithoutExtension(f))
+                    .OrderBy(n => n, StringComparer.OrdinalIgnoreCase)
+                    .ToArray();
+            }
+            return configNames;
         }
     }
 
@@ -261,6 +301,27 @@ namespace VpnPanel
         public bool AutoConnect;
         public bool AutoReconnect = true;
         public bool SkipUac = true;
+        public bool SharedApps = true;
+        public AppMode AppsMode = AppMode.All;
+        public List<string> Apps = new List<string>();
+        public bool HasSharedAppsKey;
+        public List<string> Recent = new List<string>(); // servers connected to, newest first
+
+        const int MaxRecent = 5;
+
+        public void AddRecent(string name)
+        {
+            if (name == null) return;
+            Recent.RemoveAll(n => n.Equals(name, StringComparison.OrdinalIgnoreCase));
+            Recent.Insert(0, name);
+            if (Recent.Count > MaxRecent) Recent.RemoveRange(MaxRecent, Recent.Count - MaxRecent);
+        }
+
+        public void RenameRecent(string oldName, string newName)
+        {
+            int i = Recent.FindIndex(n => n.Equals(oldName, StringComparison.OrdinalIgnoreCase));
+            if (i >= 0) Recent[i] = newName;
+        }
 
         public static Settings Load()
         {
@@ -276,6 +337,31 @@ namespace VpnPanel
                 if (d.TryGetValue("autoConnect", out v) && v is bool) s.AutoConnect = (bool)v;
                 if (d.TryGetValue("autoReconnect", out v) && v is bool) s.AutoReconnect = (bool)v;
                 if (d.TryGetValue("skipUac", out v) && v is bool) s.SkipUac = (bool)v;
+                if (d.TryGetValue("sharedApps", out v) && v is bool) { s.SharedApps = (bool)v; s.HasSharedAppsKey = true; }
+                if (d.TryGetValue("appsMode", out v) && v is string)
+                {
+                    AppMode m;
+                    if (Enum.TryParse((string)v, true, out m)) s.AppsMode = m;
+                }
+                var apps = d.TryGetValue("apps", out v) ? v as System.Collections.IEnumerable : null;
+                if (apps != null && !(apps is string))
+                {
+                    foreach (object o in apps)
+                    {
+                        string a = o as string;
+                        if (!string.IsNullOrEmpty(a) && !s.Apps.Contains(a, StringComparer.OrdinalIgnoreCase)) s.Apps.Add(a);
+                    }
+                }
+                var list = d.TryGetValue("recent", out v) ? v as System.Collections.IEnumerable : null;
+                if (list != null && !(list is string))
+                {
+                    foreach (object o in list)
+                    {
+                        string n = o as string;
+                        if (!string.IsNullOrEmpty(n) && s.Recent.Count < MaxRecent &&
+                            !s.Recent.Contains(n, StringComparer.OrdinalIgnoreCase)) s.Recent.Add(n);
+                    }
+                }
             }
             catch { }
             return s;
@@ -288,7 +374,8 @@ namespace VpnPanel
                 var d = new Dictionary<string, object>
                 {
                     { "config", Config }, { "networkLock", NetworkLock }, { "autoConnect", AutoConnect },
-                    { "autoReconnect", AutoReconnect }, { "skipUac", SkipUac },
+                    { "autoReconnect", AutoReconnect }, { "skipUac", SkipUac }, { "recent", Recent },
+                    { "sharedApps", SharedApps }, { "appsMode", AppsMode.ToString() }, { "apps", Apps },
                 };
                 File.WriteAllText(Paths.Settings, new JavaScriptSerializer().Serialize(d));
             }
@@ -301,6 +388,8 @@ namespace VpnPanel
     // What the UI shows about one config
     class ConfigInfo
     {
+        static readonly Dictionary<string, ConfigInfo> cache = new Dictionary<string, ConfigInfo>(StringComparer.OrdinalIgnoreCase);
+
         public string Name;
         public string Server;    // first comment in [Peer], e.g. "# US-FREE#40" in Proton configs
         public string Endpoint;  // host only
@@ -308,30 +397,56 @@ namespace VpnPanel
         public List<string> Apps = new List<string>();
         public bool Readable;
 
+        // Every write by the app invalidates its entry, and the configs watcher clears the cache for
+        // changes made outside the app, so a cached entry is trusted without touching the disk.
+        public static void Invalidate(string name)
+        {
+            if (name != null) cache.Remove(name);
+            Paths.ConfigsChanged();
+        }
+
+        public static void InvalidateAll()
+        {
+            cache.Clear();
+            Paths.ConfigsChanged();
+        }
+
         public static ConfigInfo Read(string name)
         {
+            ConfigInfo cached;
+            if (cache.TryGetValue(name, out cached)) return cached;
+
+            string path = Paths.Conf(name);
             var c = new ConfigInfo { Name = name };
             try
             {
+                string[] lines = File.ReadAllLines(path);
                 bool inPeer = false;
-                foreach (string line in File.ReadAllLines(Paths.Conf(name)))
+                foreach (string line in lines)
                 {
                     Match m = ConfFile.SectionLine.Match(line);
                     if (m.Success) { inPeer = m.Groups[1].Value.Equals("Peer", StringComparison.OrdinalIgnoreCase); continue; }
                     if (!inPeer) continue;
-                    m = Regex.Match(line, @"^\s*#\s*(.+?)\s*$");
-                    if (m.Success && c.Server == null && m.Groups[1].Value.Length <= 40 && !m.Groups[1].Value.Contains(" the "))
-                        c.Server = m.Groups[1].Value;
-                    m = Regex.Match(line, @"^\s*Endpoint\s*=\s*(\S+)", RegexOptions.IgnoreCase);
-                    if (m.Success && c.Endpoint == null)
+                    if (c.Server == null)
                     {
-                        string ep = m.Groups[1].Value;
-                        c.Endpoint = ep.StartsWith("[") ? ep.Substring(1, Math.Max(0, ep.IndexOf(']') - 1))
-                                   : ep.Contains(':') ? ep.Substring(0, ep.LastIndexOf(':')) : ep;
+                        m = ConfFile.CommentLine.Match(line);
+                        if (m.Success && m.Groups[1].Value.Length <= 40 && !m.Groups[1].Value.Contains(" the "))
+                            c.Server = m.Groups[1].Value;
+                    }
+                    if (c.Endpoint == null)
+                    {
+                        m = ConfFile.EndpointLine.Match(line);
+                        if (m.Success)
+                        {
+                            string ep = m.Groups[1].Value;
+                            c.Endpoint = ep.StartsWith("[") ? ep.Substring(1, Math.Max(0, ep.IndexOf(']') - 1))
+                                       : ep.Contains(':') ? ep.Substring(0, ep.LastIndexOf(':')) : ep;
+                        }
                     }
                 }
-                c.Mode = ConfFile.ReadApps(Paths.Conf(name), c.Apps);
+                c.Mode = ConfFile.ReadApps(lines, c.Apps);
                 c.Readable = true;
+                cache[name] = c;
             }
             catch { }
             return c;
@@ -375,21 +490,23 @@ namespace VpnPanel
     // in the [Peer] section, leaving every other line of the file untouched.
     static class ConfFile
     {
-        public static readonly Regex SectionLine = new Regex(@"^\s*\[(\w+)\]\s*$");
-        static readonly Regex AppsLine = new Regex(@"^\s*(AllowedApps|DisallowedApps)\s*=\s*([^#]*)", RegexOptions.IgnoreCase);
-        static readonly Regex AllowedIpsLine = new Regex(@"^\s*AllowedIPs\s*=", RegexOptions.IgnoreCase);
+        public static readonly Regex SectionLine = new Regex(@"^\s*\[(\w+)\]\s*$", RegexOptions.Compiled);
+        public static readonly Regex CommentLine = new Regex(@"^\s*#\s*(.+?)\s*$", RegexOptions.Compiled);
+        public static readonly Regex EndpointLine = new Regex(@"^\s*Endpoint\s*=\s*(\S+)", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+        static readonly Regex AppsLine = new Regex(@"^\s*(AllowedApps|DisallowedApps)\s*=\s*([^#]*)", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+        static readonly Regex AllowedIpsLine = new Regex(@"^\s*AllowedIPs\s*=", RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
         static bool IsPeer(Match section)
         {
             return section.Groups[1].Value.Equals("Peer", StringComparison.OrdinalIgnoreCase);
         }
 
-        public static AppMode ReadApps(string path, List<string> apps)
+        public static AppMode ReadApps(IEnumerable<string> lines, List<string> apps)
         {
             apps.Clear();
             var mode = AppMode.All;
             bool inPeer = false;
-            foreach (string line in File.ReadAllLines(path))
+            foreach (string line in lines)
             {
                 Match m = SectionLine.Match(line);
                 if (m.Success) { inPeer = IsPeer(m); continue; }
@@ -411,8 +528,15 @@ namespace VpnPanel
         {
             byte[] raw = File.ReadAllBytes(path);
             bool bom = raw.Length >= 3 && raw[0] == 0xEF && raw[1] == 0xBB && raw[2] == 0xBF;
-            var utf8 = new UTF8Encoding(false);
-            string text = utf8.GetString(raw, bom ? 3 : 0, raw.Length - (bom ? 3 : 0));
+            int offset = bom ? 3 : 0, count = raw.Length - offset;
+            Encoding enc = new UTF8Encoding(false, true);
+            string text;
+            try { text = enc.GetString(raw, offset, count); }
+            catch (DecoderFallbackException)
+            {
+                enc = Encoding.Default;
+                text = enc.GetString(raw, offset, count);
+            }
             string nl = text.Contains("\r\n") ? "\r\n" : "\n";
             bool trailingNewline = text.EndsWith("\n");
             List<string> lines = text.Split('\n').Select(l => l.TrimEnd('\r')).ToList();
@@ -438,7 +562,7 @@ namespace VpnPanel
             if (mode != AppMode.All && apps.Count > 0)
                 lines.Insert(insertAt, (mode == AppMode.Only ? "AllowedApps" : "DisallowedApps") + " = " + string.Join(", ", apps));
 
-            byte[] body = utf8.GetBytes(string.Join(nl, lines) + (trailingNewline ? nl : ""));
+            byte[] body = enc.GetBytes(string.Join(nl, lines) + (trailingNewline ? nl : ""));
             string tmp = path + ".tmp";
             using (var fs = File.Create(tmp))
             {
@@ -447,6 +571,19 @@ namespace VpnPanel
             }
             try { File.Replace(tmp, path, null); }
             catch (IOException) { File.Copy(tmp, path, true); File.Delete(tmp); }
+            lastWriteName = Path.GetFileNameWithoutExtension(path);
+            lastWriteAt = DateTime.UtcNow;
+            ConfigInfo.Invalidate(lastWriteName);
+        }
+
+        static string lastWriteName;
+        static DateTime lastWriteAt;
+
+        // The configs watcher also sees the app's own writes; those are already reflected in memory
+        public static bool IsOwnWrite(string name)
+        {
+            return lastWriteName != null && lastWriteName.Equals(name, StringComparison.OrdinalIgnoreCase) &&
+                   (DateTime.UtcNow - lastWriteAt).TotalSeconds < 2;
         }
 
         // Returns an error message, or null when the name can be used
@@ -534,6 +671,7 @@ namespace VpnPanel
             string name = baseName;
             for (int n = 2; File.Exists(Paths.Conf(name)); n++) name = baseName + " (" + n + ")";
             File.WriteAllBytes(Paths.Conf(name), data);
+            ConfigInfo.Invalidate(name);
             return name;
         }
 
@@ -548,6 +686,8 @@ namespace VpnPanel
                 File.Move(tmp, to);
             }
             else File.Move(from, to);
+            ConfigInfo.Invalidate(oldName);
+            ConfigInfo.Invalidate(newName);
         }
 
         public static void Delete(string name)
@@ -555,6 +695,7 @@ namespace VpnPanel
             Microsoft.VisualBasic.FileIO.FileSystem.DeleteFile(Paths.Conf(name),
                 Microsoft.VisualBasic.FileIO.UIOption.OnlyErrorDialogs,
                 Microsoft.VisualBasic.FileIO.RecycleOption.SendToRecycleBin);
+            ConfigInfo.Invalidate(name);
         }
     }
 
@@ -662,18 +803,28 @@ namespace VpnPanel
         public class Place
         {
             public string Country, City;
+            string countryName;
 
             public string CountryName
             {
                 get
                 {
-                    try { return new RegionInfo(Country).DisplayName; } catch { return Country; }
+                    if (countryName == null)
+                    {
+                        try { countryName = new RegionInfo(Country).DisplayName; }
+                        catch { countryName = Country ?? ""; }
+                    }
+                    return countryName;
                 }
             }
         }
 
+        const int MaxConcurrent = 3;
         static Dictionary<string, Place> cache;
         static readonly HashSet<string> pending = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        static readonly Dictionary<string, DateTime> failed = new Dictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
+        static readonly Queue<Action> queue = new Queue<Action>();
+        static int activeLookups;
 
         static void Load()
         {
@@ -709,19 +860,27 @@ namespace VpnPanel
         public static void Lookup(string host, Action onFound)
         {
             Load();
-            if (cache.ContainsKey(host) || !pending.Add(host)) return;
-            var ui = System.Windows.Threading.Dispatcher.CurrentDispatcher;
-            new Thread(() =>
+            if (cache.ContainsKey(host)) return;
+            DateTime failTime;
+            if (failed.TryGetValue(host, out failTime) && (DateTime.UtcNow - failTime).TotalMinutes < 10) return;
+            if (!pending.Add(host)) return;
+
+            var ui = Application.Current != null ? Application.Current.Dispatcher : System.Windows.Threading.Dispatcher.CurrentDispatcher;
+            queue.Enqueue(() =>
             {
                 Place place = null;
                 try
                 {
                     IPAddress ip;
                     if (!IPAddress.TryParse(host, out ip)) ip = Dns.GetHostAddresses(host).First();
-                    using (var wc = new WebClient { Encoding = Encoding.UTF8 })
+                    var req = (HttpWebRequest)WebRequest.Create("https://ipinfo.io/" + ip + "/json");
+                    req.UserAgent = "vpn-panel";
+                    req.Timeout = 6000;
+                    req.ReadWriteTimeout = 6000;
+                    using (var resp = req.GetResponse())
+                    using (var sr = new StreamReader(resp.GetResponseStream(), Encoding.UTF8))
                     {
-                        wc.Headers["User-Agent"] = "vpn-panel";
-                        var j = new JavaScriptSerializer().Deserialize<Dictionary<string, object>>(wc.DownloadString("https://ipinfo.io/" + ip + "/json"));
+                        var j = new JavaScriptSerializer().Deserialize<Dictionary<string, object>>(sr.ReadToEnd());
                         object country, city;
                         if (j.TryGetValue("country", out country))
                             place = new Place { Country = Convert.ToString(country), City = j.TryGetValue("city", out city) ? Convert.ToString(city) : "" };
@@ -731,19 +890,290 @@ namespace VpnPanel
                 ui.BeginInvoke(new Action(() =>
                 {
                     pending.Remove(host);
-                    if (place == null) return;
+                    activeLookups--;
+                    PumpQueue();
+                    if (place == null)
+                    {
+                        failed[host] = DateTime.UtcNow;
+                        return;
+                    }
+                    failed.Remove(host);
                     cache[host] = place;
                     Save();
                     onFound();
                 }));
-            }) { IsBackground = true }.Start();
+            });
+            PumpQueue();
+        }
+
+        static void PumpQueue()
+        {
+            while (activeLookups < MaxConcurrent && queue.Count > 0)
+            {
+                Action work = queue.Dequeue();
+                activeLookups++;
+                ThreadPool.QueueUserWorkItem(_ => work());
+            }
+        }
+    }
+
+    // Ping (ICMP) to server endpoints. Only measured on demand while the Servidores tab is visible,
+    // kept in memory only (latency from an earlier session or network says little about now).
+    static class Latency
+    {
+        public class Result
+        {
+            public int Ms = -1;         // -1: no ICMP reply (many WireGuard servers filter ping)
+            public bool ViaTunnel;      // measured while a tunnel was up: other servers' traffic goes through the VPN
+            public DateTime At;
+            public bool Ok { get { return Ms >= 0; } }
+        }
+
+        const int MaxConcurrent = 4;
+        const int FirstTimeoutMs = 1500, SecondTimeoutMs = 1000;
+        public static readonly TimeSpan MaxAge = TimeSpan.FromSeconds(60);
+
+        static readonly Dictionary<string, Result> cache = new Dictionary<string, Result>(StringComparer.OrdinalIgnoreCase);
+        static readonly HashSet<string> pending = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        static readonly Queue<KeyValuePair<string, Action>> queue = new Queue<KeyValuePair<string, Action>>();
+        static int active, generation;
+
+        // Fired on the UI thread with the host whose result arrived
+        public static event Action<string> Measured;
+
+        public static bool IsPending(string host) { return host != null && pending.Contains(host); }
+
+        public static Result Cached(string host)
+        {
+            Result r;
+            return host != null && cache.TryGetValue(host, out r) ? r : null;
+        }
+
+        // Queues each host that has no result younger than MaxAge (all of them when force); duplicates are ignored
+        public static void Measure(IEnumerable<string> hosts, bool force, bool viaTunnel)
+        {
+            var ui = Application.Current != null ? Application.Current.Dispatcher : System.Windows.Threading.Dispatcher.CurrentDispatcher;
+            foreach (string host in hosts.Where(h => !string.IsNullOrEmpty(h)).Distinct(StringComparer.OrdinalIgnoreCase))
+            {
+                Result old = Cached(host);
+                if (!force && old != null && DateTime.UtcNow - old.At < MaxAge) continue;
+                if (force) cache.Remove(host);
+                if (!pending.Add(host)) continue;
+
+                string h = host;
+                int gen = generation;
+                queue.Enqueue(new KeyValuePair<string, Action>(h, () =>
+                {
+                    int ms = Probe(h);
+                    ui.BeginInvoke(new Action(() =>
+                    {
+                        active--;
+                        // routing changed meanwhile (connected/disconnected): this number no longer applies
+                        if (gen == generation)
+                        {
+                            pending.Remove(h);
+                            cache[h] = new Result { Ms = ms, ViaTunnel = viaTunnel, At = DateTime.UtcNow };
+                            if (Measured != null) Measured(h);
+                        }
+                        Pump();
+                    }));
+                }));
+            }
+            Pump();
+        }
+
+        // Window hidden: drop what hasn't started yet (the few running probes end within ~2.5 s)
+        public static void CancelQueued()
+        {
+            while (queue.Count > 0) pending.Remove(queue.Dequeue().Key);
+        }
+
+        // Connected or disconnected: the path to every server changed, so old numbers are discarded
+        public static void RouteChanged()
+        {
+            generation++;
+            cache.Clear();
+            CancelQueued();
+            pending.Clear();
+        }
+
+        static void Pump()
+        {
+            while (active < MaxConcurrent && queue.Count > 0)
+            {
+                Action work = queue.Dequeue().Value;
+                active++;
+                ThreadPool.QueueUserWorkItem(_ => work());
+            }
+        }
+
+        // Best of two echoes (the first can include ARP/route setup); a host that ignores the first isn't asked again
+        static int Probe(string host)
+        {
+            try
+            {
+                IPAddress ip;
+                if (!IPAddress.TryParse(host, out ip)) ip = Dns.GetHostAddresses(host).First();
+                using (var ping = new System.Net.NetworkInformation.Ping())
+                {
+                    var first = ping.Send(ip, FirstTimeoutMs);
+                    if (first.Status != System.Net.NetworkInformation.IPStatus.Success) return -1;
+                    long best = first.RoundtripTime;
+                    var second = ping.Send(ip, SecondTimeoutMs);
+                    if (second.Status == System.Net.NetworkInformation.IPStatus.Success) best = Math.Min(best, second.RoundtripTime);
+                    return (int)Math.Max(1, best);
+                }
+            }
+            catch { return -1; }
+        }
+    }
+
+    // Bytes through the physical network card: wiresock-client (no -lac) filters it directly, there's no virtual adapter to read.
+    // The kernel counters are cumulative, so a baseline taken on connect gives the session total even after hours in the tray
+    // with no calls at all. Sampling allocates nothing: one unmanaged MIB_IF_ROW2 buffer, read in place.
+    static class Traffic
+    {
+        [DllImport("iphlpapi.dll")]
+        static extern int GetBestInterface(uint destAddr, out uint bestIfIndex);
+        [DllImport("iphlpapi.dll")]
+        static extern int GetIfEntry2(IntPtr row);
+
+        // MIB_IF_ROW2 is 1352 bytes on x86 and x64; only these fields are touched
+        const int RowSize = 1352, OffLuid = 0, OffIndex = 8, OffInOctets = 1208, OffOutOctets = 1280;
+        const uint FallbackDest = 0x01010101; // 1.1.1.1 when the endpoint is a name or IPv6 (no DNS here)
+
+        static IntPtr row;
+        static uint dest, ifIndex;
+        static ulong baseIn, baseOut, lastIn, lastOut, carriedIn, carriedOut;
+        static long lastTicks;
+
+        public static bool Running { get; private set; }
+        public static ulong SessionIn { get { return carriedIn + (lastIn - baseIn); } }
+        public static ulong SessionOut { get { return carriedOut + (lastOut - baseOut); } }
+        public static double InRate { get; private set; }  // bytes/s, -1 until two samples close together
+        public static double OutRate { get; private set; }
+
+        // Connected (first handshake): the route to the server carries the encapsulated traffic
+        public static void Start(string endpoint)
+        {
+            IPAddress ip;
+            dest = endpoint != null && IPAddress.TryParse(endpoint, out ip) && ip.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork
+                ? BitConverter.ToUInt32(ip.GetAddressBytes(), 0) : FallbackDest;
+            carriedIn = carriedOut = 0;
+            ifIndex = 0;
+            Running = true;
+            InRate = OutRate = -1;
+            lastTicks = 0;
+            ulong i, o;
+            if (Read(out i, out o)) { baseIn = lastIn = i; baseOut = lastOut = o; lastTicks = Stopwatch.GetTimestamp(); }
+            else baseIn = lastIn = baseOut = lastOut = 0;
+        }
+
+        public static void Stop() { Running = false; }
+
+        // Call about once a second while someone is looking; false when the counters can't be read
+        public static bool Sample()
+        {
+            if (!Running) return false;
+            uint before = ifIndex;
+            ulong i, o;
+            if (!Read(out i, out o)) return false;
+            long now = Stopwatch.GetTimestamp();
+            // another card (Wi-Fi -> cable), a reset adapter or a baseline that failed: keep what was counted, restart from here
+            if (ifIndex != before || lastTicks == 0 || i < lastIn || o < lastOut)
+            {
+                if (lastTicks != 0) { carriedIn += lastIn - baseIn; carriedOut += lastOut - baseOut; }
+                baseIn = lastIn = i; baseOut = lastOut = o;
+                lastTicks = now;
+                InRate = OutRate = -1;
+                return true;
+            }
+            double dt = (now - lastTicks) / (double)Stopwatch.Frequency;
+            if (dt < 0.5) return true; // too close to the previous sample (page switch right before a tick)
+            if (dt > 3) InRate = OutRate = -1; // back from the tray or another tab: a long average isn't "now"
+            else
+            {
+                double inNow = (i - lastIn) / dt, outNow = (o - lastOut) / dt;
+                InRate = InRate < 0 ? inNow : InRate * 0.4 + inNow * 0.6;
+                OutRate = OutRate < 0 ? outNow : OutRate * 0.4 + outNow * 0.6;
+            }
+            lastIn = i; lastOut = o; lastTicks = now;
+            return true;
+        }
+
+        static bool Read(out ulong inOctets, out ulong outOctets)
+        {
+            inOctets = outOctets = 0;
+            uint idx;
+            if (GetBestInterface(dest, out idx) != 0 || idx == 0) return false;
+            ifIndex = idx;
+            if (row == IntPtr.Zero) row = Marshal.AllocHGlobal(RowSize); // kept for the life of the process
+            Marshal.WriteInt64(row, OffLuid, 0); // zero LUID: GetIfEntry2 looks the row up by index
+            Marshal.WriteInt32(row, OffIndex, (int)idx);
+            if (GetIfEntry2(row) != 0) return false;
+            inOctets = (ulong)Marshal.ReadInt64(row, OffInOctets);
+            outOctets = (ulong)Marshal.ReadInt64(row, OffOutOctets);
+            return true;
         }
     }
 
     // The wiresock-client process
     static class Tunnel
     {
+        static int currentPid;
+        static IntPtr currentHandle;
+        static bool lockHint; // the tracked tunnel runs with -network-lock
+        public static string LastStartedConfig { get; private set; }
+        public static DateTime LastStartedAt { get; private set; }
+        public static int Pid { get { return currentPid; } }
+        public static DateTime StartTime { get; private set; }
+
         public static Process[] Find() { return Process.GetProcessesByName("wiresock-client"); }
+
+        static void ReleaseCurrent()
+        {
+            ProcUtil.Close(ref currentHandle);
+            currentPid = 0;
+        }
+
+        static void Track(int pid, IntPtr handle)
+        {
+            ReleaseCurrent();
+            currentPid = pid;
+            currentHandle = handle;
+            StartTime = ProcUtil.StartTime(handle);
+        }
+
+        // True while the tracked client lives, avoiding a full system process scan on every tick.
+        // Holding currentHandle prevents Windows from reusing the PID while open.
+        public static bool Active(bool allowScan)
+        {
+            if (currentPid != 0)
+            {
+                if (ProcUtil.IsAlive(currentHandle)) return true;
+                ReleaseCurrent();
+            }
+            if (!allowScan) return false;
+            bool found = false; // running but not openable: reported now, scanned again next tick
+            foreach (Process p in Find())
+            {
+                found = true;
+                if (currentPid == 0)
+                {
+                    IntPtr h = ProcUtil.OpenForMonitor(p.Id);
+                    if (h != IntPtr.Zero) Track(p.Id, h);
+                }
+                p.Dispose();
+            }
+            if (found && currentPid == 0) StartTime = DateTime.Now;
+            return found;
+        }
+
+        // Called with the command line of a tunnel this instance did not start
+        public static void NoteCommandLine(string commandLine)
+        {
+            lockHint = commandLine != null && Regex.IsMatch(commandLine, "-network-lock\\s+(enabled|on)\\b", RegexOptions.IgnoreCase);
+        }
 
         public static string CommandLine(int pid)
         {
@@ -766,25 +1196,292 @@ namespace VpnPanel
 
         public static void Start(string exe, string config, bool networkLock)
         {
+            LastStartedConfig = config;
+            LastStartedAt = DateTime.UtcNow;
             // "info" logs handshakes, which is how the app knows the server really answered
-            string args = "run -config \"" + Paths.Conf(config) + "\" -log-level info";
-            if (networkLock) args += " -network-lock enabled";
-            // cmd.exe redirects the output to the log and keeps the tunnel alive if the panel exits
-            var psi = new ProcessStartInfo("cmd.exe", "/c \"\"" + exe + "\" " + args + " > \"" + Paths.Log + "\" 2>&1\"")
-            {
-                UseShellExecute = false,
-                CreateNoWindow = true,
-            };
-            Process.Start(psi).Dispose();
+            string cmdLine = "\"" + exe + "\" run -config \"" + Paths.Conf(config) + "\" -log-level info";
+            if (networkLock) cmdLine += " -network-lock enabled";
+            // The client writes straight to the log file it inherits, so it keeps running (and logging)
+            // after the panel exits, and any later instance can follow the same file
+            int pid;
+            IntPtr h = ProcUtil.StartLogged(exe, cmdLine, Paths.Log, out pid);
+            Track(pid, h);
+            lockHint = networkLock;
         }
 
-        public static void Stop()
+        // resetLock: the kill switch may be on. A killed client leaves the driver blocking all traffic,
+        // so the lock is reset once every client is gone (harmless when no lock is active).
+        public static void Stop(bool resetLock)
         {
+            LastStartedConfig = null;
+            resetLock |= lockHint;
+            lockHint = false;
+            bool stoppedCleanly = false;
+            // Ctrl+C first: WireSock then drops the tunnel and releases the lock by itself
+            if (currentPid != 0) stoppedCleanly = ProcUtil.Shutdown(currentPid, 3000);
+            ReleaseCurrent();
             foreach (Process p in Find())
             {
-                try { p.Kill(); } catch { }
+                stoppedCleanly = ProcUtil.Shutdown(p.Id, 3000) && stoppedCleanly;
                 p.Dispose();
             }
+            if (resetLock && !stoppedCleanly) ResetNetworkLock();
+        }
+
+        static void ResetNetworkLock()
+        {
+            string exe = Paths.WireSock;
+            if (exe == null) return;
+            try
+            {
+                var psi = new ProcessStartInfo(exe, "reset-network-lock") { UseShellExecute = false, CreateNoWindow = true };
+                using (Process p = Process.Start(psi)) p.WaitForExit(5000);
+            }
+            catch { }
+        }
+    }
+
+    // Fast Win32 process helpers: avoids Process.MainModule exceptions and per-process EnumWindows
+    static class ProcUtil
+    {
+        const uint PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
+        const uint SYNCHRONIZE = 0x00100000;
+        const uint WAIT_TIMEOUT = 0x00000102;
+
+        delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        static extern IntPtr OpenProcess(uint access, bool inherit, int pid);
+
+        [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+        static extern bool QueryFullProcessImageNameW(IntPtr hProcess, uint flags, StringBuilder exeName, ref uint size);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        static extern uint WaitForSingleObject(IntPtr hHandle, uint dwMilliseconds);
+
+        [DllImport("kernel32.dll")]
+        static extern bool CloseHandle(IntPtr hObject);
+
+        [DllImport("user32.dll")]
+        static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
+
+        [DllImport("user32.dll")]
+        static extern bool IsWindowVisible(IntPtr hWnd);
+
+        [DllImport("user32.dll")]
+        static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
+
+        const uint PROCESS_TERMINATE = 0x0001;
+        const uint WAIT_OBJECT_0 = 0;
+        const uint GENERIC_WRITE = 0x40000000;
+        const uint FILE_SHARE_ALL = 0x7; // read | write | delete
+        const uint CREATE_ALWAYS = 2;
+        const uint FILE_ATTRIBUTE_NORMAL = 0x80;
+        const int STARTF_USESTDHANDLES = 0x100;
+        const uint CREATE_NO_WINDOW = 0x08000000;
+        const uint EXTENDED_STARTUPINFO_PRESENT = 0x00080000;
+        static readonly IntPtr PROC_THREAD_ATTRIBUTE_HANDLE_LIST = (IntPtr)0x20002;
+        static readonly IntPtr INVALID_HANDLE_VALUE = (IntPtr)(-1);
+        const uint CTRL_C_EVENT = 0;
+
+        [StructLayout(LayoutKind.Sequential)]
+        struct SECURITY_ATTRIBUTES
+        {
+            public int nLength;
+            public IntPtr lpSecurityDescriptor;
+            public bool bInheritHandle;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        struct STARTUPINFOEX
+        {
+            public int cb;
+            public IntPtr lpReserved, lpDesktop, lpTitle;
+            public int dwX, dwY, dwXSize, dwYSize, dwXCountChars, dwYCountChars, dwFillAttribute, dwFlags;
+            public short wShowWindow, cbReserved2;
+            public IntPtr lpReserved2, hStdInput, hStdOutput, hStdError;
+            public IntPtr lpAttributeList;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        struct PROCESS_INFORMATION
+        {
+            public IntPtr hProcess, hThread;
+            public int dwProcessId, dwThreadId;
+        }
+
+        [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+        static extern IntPtr CreateFileW(string name, uint access, uint share, ref SECURITY_ATTRIBUTES sa, uint disposition, uint flags, IntPtr template);
+
+        [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+        static extern bool CreateProcessW(string app, StringBuilder cmdLine, IntPtr procAttr, IntPtr threadAttr, bool inherit,
+            uint flags, IntPtr env, string dir, ref STARTUPINFOEX si, out PROCESS_INFORMATION pi);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        static extern bool InitializeProcThreadAttributeList(IntPtr list, int count, int flags, ref IntPtr size);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        static extern bool UpdateProcThreadAttribute(IntPtr list, uint flags, IntPtr attr, IntPtr value, IntPtr size, IntPtr prev, IntPtr retSize);
+
+        [DllImport("kernel32.dll")]
+        static extern void DeleteProcThreadAttributeList(IntPtr list);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        static extern bool GetProcessTimes(IntPtr h, out long creation, out long exit, out long kernel, out long user);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        static extern bool TerminateProcess(IntPtr h, uint exitCode);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        static extern bool AttachConsole(int pid);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        static extern bool FreeConsole();
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        static extern bool SetConsoleCtrlHandler(IntPtr handler, bool add);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        static extern bool GenerateConsoleCtrlEvent(uint ctrlEvent, int processGroupId);
+
+        public static IntPtr OpenForMonitor(int pid)
+        {
+            return OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, false, pid);
+        }
+
+        public static DateTime StartTime(IntPtr handle)
+        {
+            long creation, exit, kernel, user;
+            if (handle != IntPtr.Zero && GetProcessTimes(handle, out creation, out exit, out kernel, out user))
+                return DateTime.FromFileTime(creation);
+            return DateTime.Now;
+        }
+
+        // Starts a hidden console program with stdout and stderr going to logPath (truncated), no cmd.exe in between.
+        // Only the log handle is inherited (PROC_THREAD_ATTRIBUTE_HANDLE_LIST), so the child never holds
+        // anything else of the panel's. Returns the process handle (full access); throws Win32Exception.
+        public static IntPtr StartLogged(string exe, string cmdLine, string logPath, out int pid)
+        {
+            var sa = new SECURITY_ATTRIBUTES { nLength = Marshal.SizeOf(typeof(SECURITY_ATTRIBUTES)), bInheritHandle = true };
+            IntPtr log = CreateFileW(logPath, GENERIC_WRITE, FILE_SHARE_ALL, ref sa, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, IntPtr.Zero);
+            if (log == INVALID_HANDLE_VALUE) log = IntPtr.Zero; // log in use or unwritable: run without one
+            IntPtr attrs = IntPtr.Zero, handles = IntPtr.Zero;
+            bool attrsReady = false;
+            try
+            {
+                var si = new STARTUPINFOEX { cb = Marshal.SizeOf(typeof(STARTUPINFOEX)) };
+                uint flags = CREATE_NO_WINDOW;
+                if (log != IntPtr.Zero)
+                {
+                    IntPtr size = IntPtr.Zero;
+                    InitializeProcThreadAttributeList(IntPtr.Zero, 1, 0, ref size);
+                    attrs = Marshal.AllocHGlobal(size);
+                    if (!InitializeProcThreadAttributeList(attrs, 1, 0, ref size)) throw new Win32Exception();
+                    attrsReady = true;
+                    handles = Marshal.AllocHGlobal(IntPtr.Size);
+                    Marshal.WriteIntPtr(handles, log);
+                    if (!UpdateProcThreadAttribute(attrs, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, handles, (IntPtr)IntPtr.Size, IntPtr.Zero, IntPtr.Zero))
+                        throw new Win32Exception();
+                    si.lpAttributeList = attrs;
+                    si.dwFlags = STARTF_USESTDHANDLES;
+                    si.hStdOutput = si.hStdError = log; // same handle: one file pointer, like 2>&1
+                    flags |= EXTENDED_STARTUPINFO_PRESENT;
+                }
+                PROCESS_INFORMATION pi;
+                bool created;
+                lock (consoleLock)
+                {
+                    // The child inherits "ignore Ctrl+C" from us (and we may have inherited it from whoever
+                    // launched the panel); clear it so Shutdown can stop the client gracefully later
+                    SetConsoleCtrlHandler(IntPtr.Zero, false);
+                    created = CreateProcessW(exe, new StringBuilder(cmdLine), IntPtr.Zero, IntPtr.Zero, log != IntPtr.Zero,
+                        flags, IntPtr.Zero, Path.GetDirectoryName(exe), ref si, out pi);
+                }
+                if (!created) throw new Win32Exception();
+                CloseHandle(pi.hThread);
+                pid = pi.dwProcessId;
+                return pi.hProcess;
+            }
+            finally
+            {
+                if (attrsReady) DeleteProcThreadAttributeList(attrs);
+                if (attrs != IntPtr.Zero) Marshal.FreeHGlobal(attrs);
+                if (handles != IntPtr.Zero) Marshal.FreeHGlobal(handles);
+                if (log != IntPtr.Zero) CloseHandle(log); // the child keeps its own copy
+            }
+        }
+
+        static readonly object consoleLock = new object();
+
+        // Ends a console process the way Ctrl+C would, so it can clean up; terminates it after graceMs.
+        // Returns true if it exited by itself.
+        public static bool Shutdown(int pid, int graceMs)
+        {
+            IntPtr h = OpenProcess(SYNCHRONIZE | PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION, false, pid);
+            if (h == IntPtr.Zero) return false;
+            try
+            {
+                if (!IsAlive(h)) return true;
+                lock (consoleLock)
+                {
+                    // The panel has no console: borrow the client's for a moment, ignoring the event ourselves
+                    // until the client is gone (the ignore flag is inherited, so it can't stay on)
+                    if (AttachConsole(pid))
+                    {
+                        SetConsoleCtrlHandler(IntPtr.Zero, true);
+                        bool sent = GenerateConsoleCtrlEvent(CTRL_C_EVENT, 0);
+                        FreeConsole();
+                        bool exited = sent && WaitForSingleObject(h, (uint)graceMs) == WAIT_OBJECT_0;
+                        SetConsoleCtrlHandler(IntPtr.Zero, false);
+                        if (exited) return true;
+                    }
+                }
+                TerminateProcess(h, 1);
+                WaitForSingleObject(h, 3000);
+                return false;
+            }
+            finally { CloseHandle(h); }
+        }
+
+        public static bool IsAlive(IntPtr handle)
+        {
+            return handle != IntPtr.Zero && WaitForSingleObject(handle, 0) == WAIT_TIMEOUT;
+        }
+
+        public static void Close(ref IntPtr handle)
+        {
+            if (handle == IntPtr.Zero) return;
+            CloseHandle(handle);
+            handle = IntPtr.Zero;
+        }
+
+        public static string ExePath(int pid)
+        {
+            IntPtr h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid);
+            if (h == IntPtr.Zero) return null;
+            try
+            {
+                var sb = new StringBuilder(1024);
+                uint size = (uint)sb.Capacity;
+                return QueryFullProcessImageNameW(h, 0, sb, ref size) ? sb.ToString(0, (int)size) : null;
+            }
+            finally { CloseHandle(h); }
+        }
+
+        public static HashSet<int> WindowedPids()
+        {
+            var pids = new HashSet<int>();
+            EnumWindows((hWnd, lParam) =>
+            {
+                if (IsWindowVisible(hWnd))
+                {
+                    uint pid;
+                    GetWindowThreadProcessId(hWnd, out pid);
+                    if (pid != 0) pids.Add((int)pid);
+                }
+                return true;
+            }, IntPtr.Zero);
+            return pids;
         }
     }
 

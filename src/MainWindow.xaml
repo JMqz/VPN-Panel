@@ -144,7 +144,7 @@
         </Border>
 
         <Grid Grid.Row="1" Width="176" Height="176" Margin="0,22,0,0" HorizontalAlignment="Center">
-          <Ellipse x:Name="Glow" Width="150" Height="150" Fill="{StaticResource Accent}" Opacity="0">
+          <Ellipse x:Name="Glow" Width="150" Height="150" Fill="{StaticResource Accent}" Opacity="0" Visibility="Collapsed">
             <Ellipse.Effect><BlurEffect Radius="48"/></Ellipse.Effect>
           </Ellipse>
           <Ellipse x:Name="Ring" Stroke="{StaticResource Line}" StrokeThickness="2" Fill="{StaticResource Surface}"/>
@@ -164,6 +164,21 @@
                      HorizontalAlignment="Center" TextAlignment="Center" TextWrapping="Wrap" Margin="12,4,12,0"/>
           <TextBlock x:Name="TxtUptime" Text="" Foreground="{StaticResource Muted}" FontSize="12"
                      HorizontalAlignment="Center" Margin="0,3,0,0" Visibility="Collapsed"/>
+          <!-- fixed widths: a new number re-measures only these TextBlocks, never the page -->
+          <Grid x:Name="TrafficRow" HorizontalAlignment="Center" Margin="0,5,0,0" Visibility="Collapsed" Background="Transparent" ToolTip="">
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition Width="112"/>
+              <ColumnDefinition Width="112"/>
+            </Grid.ColumnDefinitions>
+            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,0,10,0">
+              <TextBlock Text="&#xE896;" FontFamily="{StaticResource Icons}" FontSize="11" Foreground="{StaticResource Accent}" VerticalAlignment="Center"/>
+              <TextBlock x:Name="TxtDown" Text="—" FontSize="12" FontWeight="SemiBold" Width="76" Margin="5,0,0,0" VerticalAlignment="Center"/>
+            </StackPanel>
+            <StackPanel Grid.Column="1" Orientation="Horizontal" Margin="10,0,0,0">
+              <TextBlock Text="&#xE898;" FontFamily="{StaticResource Icons}" FontSize="11" Foreground="{StaticResource Muted}" VerticalAlignment="Center"/>
+              <TextBlock x:Name="TxtUp" Text="—" FontSize="12" FontWeight="SemiBold" Width="76" Margin="5,0,0,0" VerticalAlignment="Center"/>
+            </StackPanel>
+          </Grid>
         </StackPanel>
 
         <Button x:Name="BtnServerCard" Grid.Row="4" AutomationProperties.Name="Trocar de servidor" Style="{StaticResource CardButton}" ToolTip="Trocar de servidor">
@@ -182,7 +197,10 @@
               </Grid>
             </Border>
             <StackPanel Grid.Column="1" Margin="12,0,8,0" VerticalAlignment="Center">
-              <TextBlock Text="SERVIDOR" FontSize="10" FontWeight="SemiBold" Foreground="{StaticResource Muted}"/>
+              <StackPanel Orientation="Horizontal">
+                <TextBlock Text="SERVIDOR" FontSize="10" FontWeight="SemiBold" Foreground="{StaticResource Muted}" VerticalAlignment="Center"/>
+                <TextBlock x:Name="TxtSrvPing" Text="" FontSize="10" FontWeight="SemiBold" Margin="8,0,0,0" VerticalAlignment="Center" Visibility="Collapsed"/>
+              </StackPanel>
               <TextBlock x:Name="TxtSrvName" Text="—" FontWeight="SemiBold" FontSize="14" TextTrimming="CharacterEllipsis" Margin="0,1,0,0"/>
               <TextBlock x:Name="TxtSrvDetail" Text="" Style="{StaticResource Caption}" TextWrapping="NoWrap"
                          TextTrimming="CharacterEllipsis" Margin="0,1,0,0"/>
@@ -235,6 +253,8 @@
               <TextBlock Text="Adicionar" VerticalAlignment="Center"/>
             </StackPanel>
           </Button>
+          <Button x:Name="BtnPing" AutomationProperties.Name="Medir latência dos servidores" DockPanel.Dock="Right" Style="{StaticResource IconButton}"
+                  Content="&#xE72C;" FontSize="12" Padding="8" Margin="0,0,6,0" VerticalAlignment="Center" ToolTip="Medir a latência (ping) de novo"/>
           <StackPanel>
             <TextBlock Text="Servidores" Style="{StaticResource Title}"/>
             <TextBlock Text="Escolha por onde sua conexão vai passar" Style="{StaticResource Caption}" Margin="0,2,0,0"/>
@@ -278,19 +298,24 @@
         <StackPanel Margin="0,8,0,0">
           <TextBlock Text="Quais apps usam a VPN" Style="{StaticResource Title}"/>
           <TextBlock x:Name="TxtAppsCfg" Text="" Style="{StaticResource Caption}" Margin="0,2,0,0"/>
+          <Border Style="{StaticResource Card}" Padding="14,10" Margin="0,10,0,0">
+            <CheckBox x:Name="ChkSharedApps" AutomationProperties.Name="Usar em todos os servidores" Style="{StaticResource Switch}">
+              <TextBlock Text="Usar em todos os servidores" FontWeight="SemiBold" VerticalAlignment="Center"/>
+            </CheckBox>
+          </Border>
         </StackPanel>
 
         <Border Grid.Row="1" Background="{StaticResource Surface}" BorderBrush="{StaticResource Line}" BorderThickness="1"
-                CornerRadius="10" Padding="3" Margin="0,16,0,0">
+                CornerRadius="10" Padding="3" Margin="0,10,0,0">
           <UniformGrid Columns="3">
             <RadioButton x:Name="SegAll" Style="{StaticResource Segment}" GroupName="seg" Content="Todos"/>
             <RadioButton x:Name="SegOnly" Style="{StaticResource Segment}" GroupName="seg" Content="Só estes"/>
             <RadioButton x:Name="SegExcept" Style="{StaticResource Segment}" GroupName="seg" Content="Todos, exceto"/>
           </UniformGrid>
         </Border>
-        <TextBlock x:Name="TxtModeHint" Grid.Row="2" Style="{StaticResource Caption}" Margin="4,8,4,0"/>
+        <TextBlock x:Name="TxtModeHint" Grid.Row="2" Style="{StaticResource Caption}" Margin="4,6,4,0"/>
 
-        <StackPanel x:Name="AppsAdd" Grid.Row="3" Margin="0,14,0,0">
+        <StackPanel x:Name="AppsAdd" Grid.Row="3" Margin="0,10,0,0">
           <UniformGrid Columns="2">
             <Button x:Name="BtnRunningApps" AutomationProperties.Name="Escolher dos apps abertos" Style="{StaticResource GhostButton}" Margin="0,0,4,0">
               <StackPanel Orientation="Horizontal">

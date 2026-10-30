@@ -44,8 +44,11 @@ namespace VpnPanel
         readonly Border errorBanner;
         readonly TextBlock txtErrTitle, txtErrDetail;
         readonly Button btnPower;
-        readonly TextBlock powerGlyph, txtStatus, txtScope, txtUptime;
-        readonly TextBlock txtFlag, txtFlagGlobe, txtSrvName, txtSrvDetail;
+        readonly TextBlock powerGlyph, txtStatus, txtScope, txtUptime, txtDown, txtUp;
+        readonly FrameworkElement trafficRow;
+        int downKey = -1, upKey = -1, totalKey = -1; // what the traffic labels show now (see SpeedKey)
+        string totalText = "";
+        readonly TextBlock txtFlag, txtFlagGlobe, txtSrvName, txtSrvDetail, txtSrvPing;
         readonly TextBlock txtIp, txtLoc, txtOrg, txtIpNote;
         readonly Ellipse glow, ring, spinner;
         readonly RotateTransform spinnerRotate;
@@ -53,6 +56,7 @@ namespace VpnPanel
         readonly StackPanel serverList, emptyServers;
         // Apps
         readonly TextBlock txtAppsCfg, txtModeHint, txtAppsSaved;
+        readonly CheckBox chkSharedApps;
         readonly RadioButton segAll, segOnly, segExcept;
         readonly FrameworkElement appsAdd;
         readonly TextBox txtAppName;
@@ -65,27 +69,40 @@ namespace VpnPanel
         readonly FrameworkElement pageHome, pageServers, pageApps, pageOptions;
 
         readonly WF.NotifyIcon tray;
-        readonly WF.ToolStripMenuItem miStatus, miToggle;
+        readonly WF.ContextMenuStrip trayMenu;
+        readonly WF.ToolStripMenuItem miStatus, miToggle, miAllServers;
+        readonly WF.ToolStripSeparator miServersEnd;
+        readonly List<WF.ToolStripItem> miRecent = new List<WF.ToolStripItem>();
+        string trayMenuKey; // what the server items were built from (see UpdateTrayServers)
         readonly SD.Icon trayOn, trayOff, trayWarn;
-        readonly DispatcherTimer pollTimer, ipTimer, reconnectTimer;
+        readonly DispatcherTimer pollTimer, ipTimer, reconnectTimer, geoDebounce;
         readonly Dictionary<string, ImageSource> iconCache = new Dictionary<string, ImageSource>(StringComparer.OrdinalIgnoreCase);
+        readonly Dictionary<string, DateTime> iconMisses = new Dictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
 
-        bool exiting, hintShown, loading;
+        bool exiting, hintShown, loading, serversDirty, appsDirty;
         bool? wasRunning;
         bool userStopped, connecting, reconnectPending;
         int reconnectAttempts;
-        DateTime connectRequested, startedAt;
+        DateTime connectRequested, startedAt, lastProcScan;
         Conn shown = Conn.Off;
         Action bannerPrimary, bannerSecondary;
 
         // handshake tracking from the WireSock log, for tunnels this app started
-        bool monitoring, handshakeOk, sawHandshake;
+        bool monitoring, handshakeOk, sawHandshake, seekToTail;
+        bool spinnerRunning, step1SpinnerRunning;
         DateTime? pendingSince;
+        FileStream logStream;
+        readonly byte[] logBuf = new byte[8192];
+        readonly char[] logChars = new char[Encoding.UTF8.GetMaxCharCount(8192)];
+        readonly Decoder logDecoder = Encoding.UTF8.GetDecoder();
         long logPos;
         string logRest = "";
         string runningConfig;
         ConfigInfo active;
         bool wireSockInstalled, installingWireSock, triedWireSock;
+        EventWaitHandle showEvent;
+        RegisteredWaitHandle showWaitReg;
+        WebClient ipClient;
 
         // servers arriving in Downloads (see WatchDownloads)
         FileSystemWatcher downloadsWatcher;
@@ -131,10 +148,20 @@ namespace VpnPanel
             txtStatus = E<TextBlock>("TxtStatus");
             txtScope = E<TextBlock>("TxtScope");
             txtUptime = E<TextBlock>("TxtUptime");
+            txtDown = E<TextBlock>("TxtDown");
+            txtUp = E<TextBlock>("TxtUp");
+            trafficRow = E<FrameworkElement>("TrafficRow");
+            trafficRow.ToolTipOpening += (s, e) =>
+            {
+                string tip = TrafficTip();
+                if (tip == null) e.Handled = true;
+                else trafficRow.ToolTip = tip;
+            };
             txtFlag = E<TextBlock>("TxtFlag");
             txtFlagGlobe = E<TextBlock>("TxtFlagGlobe");
             txtSrvName = E<TextBlock>("TxtSrvName");
             txtSrvDetail = E<TextBlock>("TxtSrvDetail");
+            txtSrvPing = E<TextBlock>("TxtSrvPing");
             txtIp = E<TextBlock>("TxtIp");
             txtLoc = E<TextBlock>("TxtLoc");
             txtOrg = E<TextBlock>("TxtOrg");
@@ -148,6 +175,7 @@ namespace VpnPanel
             txtAppsCfg = E<TextBlock>("TxtAppsCfg");
             txtModeHint = E<TextBlock>("TxtModeHint");
             txtAppsSaved = E<TextBlock>("TxtAppsSaved");
+            chkSharedApps = E<CheckBox>("ChkSharedApps");
             segAll = E<RadioButton>("SegAll");
             segOnly = E<RadioButton>("SegOnly");
             segExcept = E<RadioButton>("SegExcept");
@@ -188,11 +216,13 @@ namespace VpnPanel
                     hintShown = true;
                 }
             };
+            w.IsVisibleChanged += (s, e) => OnVisibilityChanged();
+            w.StateChanged += (s, e) => OnVisibilityChanged();
             Application.Current.SessionEnding += (s, e) => Quit();
 
             // tabs
             tabHome.Checked += (s, e) => ShowPage(HomePage);
-            tabServers.Checked += (s, e) => ShowPage(pageServers);
+            tabServers.Checked += (s, e) => { ShowPage(pageServers); MeasureLatency(false); };
             tabApps.Checked += (s, e) => ShowPage(pageApps);
             tabOptions.Checked += (s, e) => ShowPage(pageOptions);
 
@@ -216,6 +246,8 @@ namespace VpnPanel
             E<Button>("BtnImport").Click += (s, e) => BrowseImport();
             E<Button>("BtnEmptyHelp").Click += (s, e) => OpenGuide(false);
             E<Button>("BtnServersHelp").Click += (s, e) => OpenGuide(false);
+            E<Button>("BtnPing").Click += (s, e) => MeasureLatency(true);
+            Latency.Measured += OnLatencyMeasured;
             w.DragOver += (s, e) =>
             {
                 e.Effects = DroppedConfs(e).Any() ? DragDropEffects.Copy : DragDropEffects.None;
@@ -259,6 +291,7 @@ namespace VpnPanel
             onToggle(chkAuto, SaveSettings);
             onToggle(chkSkipUac, () => { SaveSettings(); SyncTasks(); });
             onToggle(chkStartup, ToggleStartup);
+            onToggle(chkSharedApps, ToggleSharedApps);
             E<Button>("BtnLog").Click += (s, e) => OpenLog();
             E<Button>("BtnDataDir").Click += (s, e) => Process.Start("explorer.exe", "\"" + Paths.Data + "\"");
             E<Button>("BtnQuit").Click += (s, e) => Quit();
@@ -267,15 +300,27 @@ namespace VpnPanel
             trayOn = TrayIcon(SD.Color.FromArgb(47, 191, 113));
             trayOff = TrayIcon(SD.Color.FromArgb(110, 117, 130));
             trayWarn = TrayIcon(SD.Color.FromArgb(227, 165, 53));
-            var menu = new WF.ContextMenuStrip { Renderer = new DarkMenuRenderer(), ShowImageMargin = false, Font = new SD.Font("Segoe UI", 9.5F) };
+            var renderer = new DarkMenuRenderer();
+            var menu = trayMenu = new WF.ContextMenuStrip { Renderer = renderer, ShowImageMargin = false, ShowCheckMargin = true, Font = new SD.Font("Segoe UI", 9.5F) };
             miStatus = (WF.ToolStripMenuItem)menu.Items.Add("Desconectado");
             miStatus.Enabled = false;
             menu.Items.Add(new WF.ToolStripSeparator());
             miToggle = (WF.ToolStripMenuItem)menu.Items.Add("Conectar", null, (s, e) => Toggle());
+            menu.Items.Add(new WF.ToolStripSeparator());
+            // recent servers go here (UpdateTrayServers), then every server in a submenu
+            miAllServers = (WF.ToolStripMenuItem)menu.Items.Add("Todos os servidores");
+            var allDrop = (WF.ToolStripDropDownMenu)miAllServers.DropDown;
+            allDrop.Renderer = renderer; // submenus don't inherit the parent's renderer
+            allDrop.ShowImageMargin = false;
+            allDrop.ShowCheckMargin = true;
+            miServersEnd = new WF.ToolStripSeparator();
+            menu.Items.Add(miServersEnd);
             menu.Items.Add("Abrir VPN Panel", null, (s, e) => ShowWindow());
             menu.Items.Add(new WF.ToolStripSeparator());
             menu.Items.Add("Sair (a VPN continua como está)", null, (s, e) => Quit());
-            foreach (WF.ToolStripItem item in menu.Items) item.Padding = new WF.Padding(6, 4, 6, 4);
+            foreach (WF.ToolStripItem item in menu.Items) item.Padding = TrayPadding;
+            // built when the menu opens, never in the background
+            menu.Opening += (s, e) => UpdateTrayServers();
             tray = new WF.NotifyIcon { Icon = trayOff, Text = "VPN Panel", ContextMenuStrip = menu, Visible = true };
             tray.MouseClick += (s, e) => { if (e.Button == WF.MouseButtons.Left) ShowWindow(); };
             tray.BalloonTipClicked += (s, e) => ShowWindow();
@@ -283,7 +328,11 @@ namespace VpnPanel
             wireSockInstalled = Paths.WireSock != null;
             UpdateAbout();
 
+            geoDebounce = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(250) };
+            geoDebounce.Tick += (s, e) => { geoDebounce.Stop(); RefreshConfigs(); };
+
             RefreshConfigs();
+            MigrateSharedApps();
             LoadAppsEditor();
             UpdateSetup();
 
@@ -303,6 +352,41 @@ namespace VpnPanel
             w.Dispatcher.BeginInvoke(new Action(OnStart));
         }
 
+        bool WindowShowing { get { return w != null && w.IsVisible && w.WindowState != WindowState.Minimized; } }
+
+        void OnVisibilityChanged()
+        {
+            UpdateSpinnerAnimation();
+            if (!WindowShowing) Latency.CancelQueued();
+            if (WindowShowing)
+            {
+                if (serversDirty) RenderServerList();
+                if (appsDirty) RenderApps();
+                UpdateTraffic();
+                if (wasRunning == true) UpdateUptimeText();
+                MeasureLatency(false);
+                if (shown == Conn.On)
+                {
+                    glow.Visibility = Visibility.Visible;
+                    glow.Opacity = 0.28;
+                }
+            }
+            else if (glow.Visibility == Visibility.Visible)
+            {
+                glow.BeginAnimation(UIElement.OpacityProperty, null);
+                glow.Visibility = Visibility.Collapsed;
+            }
+            UpdatePollInterval();
+        }
+
+        void UpdatePollInterval()
+        {
+            if (pollTimer == null) return;
+            bool fast = connecting || reconnectPending || WindowShowing || (wasRunning == true && monitoring && (!handshakeOk || pendingSince != null));
+            TimeSpan wanted = TimeSpan.FromSeconds(fast ? 1 : 3);
+            if (pollTimer.Interval != wanted) pollTimer.Interval = wanted;
+        }
+
         void OnStart()
         {
             Poll();
@@ -316,17 +400,10 @@ namespace VpnPanel
         // A second launch of the exe signals this event instead of opening another window
         void ListenForShowRequests()
         {
-            var ev = new EventWaitHandle(false, EventResetMode.AutoReset, Program.ShowEventName);
-            var t = new Thread(() =>
-            {
-                while (true)
-                {
-                    ev.WaitOne();
-                    w.Dispatcher.BeginInvoke(new Action(ShowWindow));
-                }
-            });
-            t.IsBackground = true;
-            t.Start();
+            showEvent = new EventWaitHandle(false, EventResetMode.AutoReset, Program.ShowEventName);
+            showWaitReg = ThreadPool.RegisterWaitForSingleObject(showEvent,
+                (state, timedOut) => w.Dispatcher.BeginInvoke(new Action(ShowWindow)),
+                null, -1, false);
         }
 
         FileSystemWatcher configWatcher;
@@ -339,16 +416,24 @@ namespace VpnPanel
             configDebounce.Tick += (s, e) =>
             {
                 configDebounce.Stop();
+                ConfigInfo.InvalidateAll();
                 RefreshConfigs();
                 LoadAppsEditor();
                 UpdateSetup();
             };
             configWatcher = new FileSystemWatcher(Paths.Configs, "*.conf") { NotifyFilter = NotifyFilters.FileName | NotifyFilters.LastWrite };
-            FileSystemEventHandler changed = (s, e) => w.Dispatcher.BeginInvoke(new Action(() => { configDebounce.Stop(); configDebounce.Start(); }));
+            FileSystemEventHandler changed = (s, e) => w.Dispatcher.BeginInvoke(new Action(() =>
+            {
+                // WriteApps (e.g. Connect applying the shared apps) already updated the cache: no full reload
+                if (e != null && ConfFile.IsOwnWrite(System.IO.Path.GetFileNameWithoutExtension(e.Name)) && File.Exists(e.FullPath)) return;
+                configDebounce.Stop();
+                configDebounce.Start();
+            }));
             configWatcher.Created += changed;
             configWatcher.Deleted += changed;
             configWatcher.Changed += changed;
             configWatcher.Renamed += (s, e) => changed(s, e);
+            configWatcher.Error += (s, e) => changed(s, null);
             configWatcher.EnableRaisingEvents = true;
         }
 
@@ -356,7 +441,7 @@ namespace VpnPanel
         void SyncTasks()
         {
             bool skip = settings.SkipUac;
-            new Thread(() => Tasks.Sync(skip)) { IsBackground = true }.Start();
+            ThreadPool.QueueUserWorkItem(_ => Tasks.Sync(skip));
         }
 
         void ShowWindow()
@@ -378,18 +463,19 @@ namespace VpnPanel
         {
             if (installingWireSock || wireSockInstalled) return;
             installingWireSock = triedWireSock = true;
+            Paths.SearchingFast = true;
             step1Status.Text = "Instalando o WireSock...";
             step1Working.Visibility = Visibility.Visible;
             step1Failed.Visibility = Visibility.Collapsed;
-            step1SpinnerRotate.BeginAnimation(RotateTransform.AngleProperty,
-                new DoubleAnimation(0, 360, TimeSpan.FromSeconds(1.1)) { RepeatBehavior = RepeatBehavior.Forever });
+            UpdateSpinnerAnimation();
             new Thread(() =>
             {
                 string error = WireSockSetup.Install(text => w.Dispatcher.BeginInvoke(new Action(() => step1Status.Text = text)));
                 w.Dispatcher.BeginInvoke(new Action(() =>
                 {
                     installingWireSock = false;
-                    step1SpinnerRotate.BeginAnimation(RotateTransform.AngleProperty, null);
+                    Paths.SearchingFast = false;
+                    UpdateSpinnerAnimation();
                     if (error == null) { Poll(); return; }
                     step1Error.Text = error;
                     step1Working.Visibility = Visibility.Collapsed;
@@ -402,6 +488,9 @@ namespace VpnPanel
         {
             exiting = true;
             pollTimer.Stop();
+            CloseLogStream();
+            if (showWaitReg != null) { try { showWaitReg.Unregister(null); } catch { } }
+            if (showEvent != null) { try { showEvent.Dispose(); } catch { } }
             tray.Visible = false;
             tray.Dispose();
             Application.Current.Shutdown();
@@ -428,6 +517,9 @@ namespace VpnPanel
             foreach (FrameworkElement p in new[] { pageSetup, pageHome, pageServers, pageApps, pageOptions })
                 p.Visibility = p == page ? Visibility.Visible : Visibility.Collapsed;
             page.BeginAnimation(UIElement.OpacityProperty, new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(160)));
+            // pings nobody will see: drop what hasn't started (going back to Servidores queues them again)
+            if (page != pageServers) Latency.CancelQueued();
+            if (page == pageHome) { UpdateTraffic(); if (shown == Conn.On) UpdateUptimeText(); }
         }
 
         void UpdateSetup()
@@ -526,7 +618,28 @@ namespace VpnPanel
                     return;
                 }
             }
-            Tunnel.Start(Paths.WireSock, active.Name, settings.NetworkLock);
+            if (settings.SharedApps && !SameApps(active, settings.AppsMode, settings.Apps))
+            {
+                AppMode m = settings.AppsMode != AppMode.All && settings.Apps.Count == 0 ? AppMode.All : settings.AppsMode;
+                try
+                {
+                    ConfFile.WriteApps(Paths.Conf(active.Name), m, m == AppMode.All ? new List<string>() : settings.Apps);
+                    active = ConfigInfo.Read(active.Name);
+                }
+                catch (Exception ex)
+                {
+                    Dialogs.Info(w, "Não foi possível aplicar os apps", ex.Message);
+                    return;
+                }
+            }
+            CloseLogStream();
+            try { Tunnel.Start(Paths.WireSock, active.Name, settings.NetworkLock); }
+            catch (Exception ex)
+            {
+                ShowError("Não foi possível iniciar o WireSock", ex.Message);
+                return;
+            }
+            settings.AddRecent(active.Name);
             SaveSettings();
             connecting = true;
             connectRequested = DateTime.Now;
@@ -534,6 +647,7 @@ namespace VpnPanel
             appsNeedReconnect = false;
             UpdateAppsSaved();
             UpdateState();
+            UpdatePollInterval();
         }
 
         // byUser: the user asked for it (resets the auto-reconnect budget)
@@ -541,11 +655,12 @@ namespace VpnPanel
         {
             userStopped = true;
             connecting = false;
-            monitoring = false;
+            StopMonitoring();
             if (byUser) reconnectAttempts = 0;
-            Tunnel.Stop();
+            Tunnel.Stop(settings.NetworkLock);
             ipTimer.Stop();
             ipTimer.Start();
+            UpdatePollInterval();
         }
 
         void Reconnect()
@@ -555,45 +670,92 @@ namespace VpnPanel
             Disconnect(false);
         }
 
+        void CloseLogStream()
+        {
+            if (logStream == null) return;
+            try { logStream.Dispose(); } catch { }
+            logStream = null;
+        }
+
+        void StopMonitoring()
+        {
+            monitoring = false;
+            CloseLogStream();
+        }
+
         // Follows the WireSock log (written at -log-level info) for handshake events
         void StartMonitoring(bool fresh)
         {
+            CloseLogStream();
             monitoring = true;
             handshakeOk = false;
             sawHandshake = false;
+            seekToTail = !fresh;
             pendingSince = fresh ? (DateTime?)DateTime.Now : null;
             logPos = 0;
             logRest = "";
+            logDecoder.Reset();
+        }
+
+        void InspectHandshakeLine(string line)
+        {
+            if (line.Contains("Handshake response received")) { handshakeOk = sawHandshake = true; pendingSince = null; }
+            else if (line.Contains("Handshake initiation sent"))
+            {
+                sawHandshake = true;
+                if (pendingSince == null) pendingSince = DateTime.Now;
+            }
         }
 
         void ReadHandshakes()
         {
             try
             {
-                using (var fs = new FileStream(Paths.Log, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+                if (logStream == null)
                 {
-                    if (fs.Length < logPos) { logPos = 0; logRest = ""; } // log was recreated
-                    if (fs.Length == logPos) return;
-                    fs.Seek(logPos, SeekOrigin.Begin);
-                    var buf = new byte[fs.Length - logPos];
-                    int n = fs.Read(buf, 0, buf.Length);
-                    logPos += n;
-                    string text = logRest + Encoding.UTF8.GetString(buf, 0, n);
-                    int cut = text.LastIndexOf('\n');
-                    logRest = cut >= 0 ? text.Substring(cut + 1) : text;
-                    if (cut < 0) return;
-                    foreach (string line in text.Substring(0, cut).Split('\n'))
-                    {
-                        if (line.Contains("Handshake response received")) { handshakeOk = sawHandshake = true; pendingSince = null; }
-                        else if (line.Contains("Handshake initiation sent"))
-                        {
-                            sawHandshake = true;
-                            if (pendingSince == null) pendingSince = DateTime.Now;
-                        }
-                    }
+                    if (!File.Exists(Paths.Log)) return;
+                    logStream = new FileStream(Paths.Log, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, 1);
+                    logDecoder.Reset();
                 }
+                long len = logStream.Length;
+                if (seekToTail)
+                {
+                    seekToTail = false;
+                    if (len > 65536) logPos = len - 65536;
+                }
+                if (len < logPos)
+                {
+                    // log was recreated/truncated
+                    logPos = 0;
+                    logRest = "";
+                    logDecoder.Reset();
+                }
+                if (len == logPos) return;
+                logStream.Seek(logPos, SeekOrigin.Begin);
+                var sb = new StringBuilder(logRest);
+                while (logPos < len)
+                {
+                    int toRead = (int)Math.Min(logBuf.Length, len - logPos);
+                    int n = logStream.Read(logBuf, 0, toRead);
+                    if (n <= 0) break;
+                    logPos += n;
+                    int chars = logDecoder.GetChars(logBuf, 0, n, logChars, 0, false);
+                    sb.Append(logChars, 0, chars);
+                }
+                string text = sb.ToString();
+                int cut = text.LastIndexOf('\n');
+                logRest = cut >= 0 ? text.Substring(cut + 1) : text;
+                if (cut >= 0)
+                {
+                    foreach (string line in text.Substring(0, cut).Split('\n'))
+                        InspectHandshakeLine(line);
+                }
+                if (logRest.Length > 0) InspectHandshakeLine(logRest);
             }
-            catch { }
+            catch
+            {
+                CloseLogStream();
+            }
         }
 
         void Balloon(string text)
@@ -638,11 +800,14 @@ namespace VpnPanel
             try
             {
                 using (var fs = new FileStream(Paths.Log, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
-                using (var r = new StreamReader(fs))
                 {
-                    string last = r.ReadToEnd().Split('\n').Select(l => l.Trim()).LastOrDefault(l => l.Contains("\"log_level\":\"error\""));
-                    Match m = last != null ? Regex.Match(last, "\"message\"\\s*:\\s*\"((?:[^\"\\\\]|\\\\.)*)\"") : Match.Empty;
-                    if (m.Success) message = Regex.Replace(m.Groups[1].Value, @"\[\w+\]:\s*(Unhandled exception\s*)?", "").Trim();
+                    if (fs.Length > 32768) fs.Seek(fs.Length - 32768, SeekOrigin.Begin);
+                    using (var r = new StreamReader(fs))
+                    {
+                        string last = r.ReadToEnd().Split('\n').Select(l => l.Trim()).LastOrDefault(l => l.Contains("\"log_level\":\"error\""));
+                        Match m = last != null ? Regex.Match(last, "\"message\"\\s*:\\s*\"((?:[^\"\\\\]|\\\\.)*)\"") : Match.Empty;
+                        if (m.Success) message = Regex.Replace(m.Groups[1].Value, @"\[\w+\]:\s*(Unhandled exception\s*)?", "").Trim();
+                    }
                 }
             }
             catch { }
@@ -663,6 +828,130 @@ namespace VpnPanel
             return message.Length > 140 ? message.Substring(0, 140) + "..." : message;
         }
 
+        void UpdateUptimeText()
+        {
+            TimeSpan up = DateTime.Now - startedAt;
+            txtUptime.Text = string.Format("Conectado há {0:00}:{1:00}:{2:00}", (int)up.TotalHours, up.Minutes, up.Seconds) + totalText;
+        }
+
+        // ---------- traffic ----------
+
+        static readonly System.Globalization.CultureInfo PtBr = System.Globalization.CultureInfo.GetCultureInfo("pt-BR");
+
+        bool TrafficShowing { get { return shown == Conn.On && WindowShowing && pageHome.Visibility == Visibility.Visible; } }
+
+        // Only while Início is on screen: in the tray or on another tab the counters aren't even read
+        void UpdateTraffic()
+        {
+            if (!TrafficShowing || !Traffic.Sample()) return;
+            SetSpeed(txtDown, ref downKey, Traffic.InRate);
+            SetSpeed(txtUp, ref upKey, Traffic.OutRate);
+            ulong total = Traffic.SessionIn + Traffic.SessionOut;
+            int key = SizeKey(total);
+            if (key != totalKey)
+            {
+                totalKey = key;
+                totalText = total < 1048576 ? "" : "  ·  " + FormatSize(total);
+            }
+        }
+
+        void ResetTrafficLabels()
+        {
+            downKey = upKey = totalKey = -1;
+            totalText = "";
+            txtDown.Text = txtUp.Text = "—";
+        }
+
+        // The text is rebuilt only when the rounded number changes (an idle connection allocates nothing)
+        static void SetSpeed(TextBlock label, ref int shownKey, double bytesPerSec)
+        {
+            int key = SpeedKey(bytesPerSec);
+            if (key == shownKey) return;
+            shownKey = key;
+            label.Text = key < 0 ? "—" : FormatSpeed(bytesPerSec);
+        }
+
+        static int SpeedKey(double bytesPerSec)
+        {
+            if (bytesPerSec < 0) return -1;
+            double kb = bytesPerSec / 1024.0;
+            if (kb < 1000) return (int)Math.Round(kb);
+            double mb = kb / 1024.0;
+            if (mb < 10) return 100000 + (int)Math.Round(mb * 10);
+            if (mb < 1000) return 200000 + (int)Math.Round(mb);
+            return 300000 + (int)Math.Round(mb / 10);
+        }
+
+        static string FormatSpeed(double bytesPerSec)
+        {
+            double kb = bytesPerSec / 1024.0;
+            if (kb < 1000) return string.Format(PtBr, "{0:0} KB/s", kb);
+            double mb = kb / 1024.0;
+            if (mb < 10) return string.Format(PtBr, "{0:0.0} MB/s", mb);
+            if (mb < 1000) return string.Format(PtBr, "{0:0} MB/s", mb);
+            return string.Format(PtBr, "{0:0.00} GB/s", mb / 1024.0);
+        }
+
+        static string FormatBits(double bytesPerSec)
+        {
+            double kbps = bytesPerSec * 8 / 1000;
+            if (kbps < 1000) return string.Format(PtBr, "{0:0} kbps", kbps);
+            return string.Format(PtBr, "{0:0.0} Mbps", kbps / 1000);
+        }
+
+        static int SizeKey(ulong bytes)
+        {
+            double mb = bytes / 1048576.0;
+            if (mb < 1) return 0;
+            if (mb < 100) return 100000 + (int)Math.Round(mb * 10);
+            if (mb < 1024) return 200000 + (int)Math.Round(mb);
+            return 300000 + (int)Math.Round(mb / 1024 * 100);
+        }
+
+        static string FormatSize(ulong bytes)
+        {
+            double mb = bytes / 1048576.0;
+            if (mb < 1) return string.Format(PtBr, "{0:0} KB", bytes / 1024.0);
+            if (mb < 100) return string.Format(PtBr, "{0:0.0} MB", mb);
+            if (mb < 1024) return string.Format(PtBr, "{0:0} MB", mb);
+            return string.Format(PtBr, "{0:0.00} GB", mb / 1024);
+        }
+
+        // Built when hovered, not every second
+        string TrafficTip()
+        {
+            if (!Traffic.Running) return null;
+            string tip = "Nesta conexão: " + FormatSize(Traffic.SessionIn) + " recebidos, " + FormatSize(Traffic.SessionOut) + " enviados.";
+            if (Traffic.InRate >= 0 && Traffic.OutRate >= 0)
+                tip += "\nEm bits: ↓ " + FormatBits(Traffic.InRate) + "  ·  ↑ " + FormatBits(Traffic.OutRate);
+            if (active != null && active.Mode != AppMode.All)
+                tip += "\nMedido na placa de rede: inclui os apps que não passam pela VPN.";
+            return tip;
+        }
+
+        void UpdateSpinnerAnimation()
+        {
+            bool wantMain = (shown == Conn.Connecting || shown == Conn.Retrying || shown == Conn.NoResponse) && WindowShowing;
+            if (wantMain != spinnerRunning)
+            {
+                spinnerRunning = wantMain;
+                if (wantMain)
+                    spinnerRotate.BeginAnimation(RotateTransform.AngleProperty,
+                        new DoubleAnimation(0, 360, TimeSpan.FromSeconds(1.1)) { RepeatBehavior = RepeatBehavior.Forever });
+                else spinnerRotate.BeginAnimation(RotateTransform.AngleProperty, null);
+            }
+
+            bool wantStep1 = installingWireSock && WindowShowing;
+            if (wantStep1 != step1SpinnerRunning)
+            {
+                step1SpinnerRunning = wantStep1;
+                if (wantStep1)
+                    step1SpinnerRotate.BeginAnimation(RotateTransform.AngleProperty,
+                        new DoubleAnimation(0, 360, TimeSpan.FromSeconds(1.1)) { RepeatBehavior = RepeatBehavior.Forever });
+                else step1SpinnerRotate.BeginAnimation(RotateTransform.AngleProperty, null);
+            }
+        }
+
         void Poll()
         {
             if (wireSockInstalled != (Paths.WireSock != null))
@@ -672,22 +961,33 @@ namespace VpnPanel
                 UpdateSetup();
             }
 
-            Process[] procs = Tunnel.Find();
-            Process p = procs.FirstOrDefault();
-            bool running = p != null;
+            double scanInterval = WindowShowing ? 2.5 : 8.5;
+            bool allowScan = wasRunning == true || connecting || reconnectPending || wasRunning == null ||
+                             (DateTime.UtcNow - lastProcScan).TotalSeconds >= scanInterval;
+            if (allowScan && wasRunning != true) lastProcScan = DateTime.UtcNow;
+            bool running = Tunnel.Active(allowScan);
 
             if (running != wasRunning)
             {
                 if (running)
                 {
-                    string cmd = Tunnel.CommandLine(p.Id);
-                    runningConfig = Tunnel.ConfigOf(cmd);
-                    try { startedAt = p.StartTime; } catch { startedAt = DateTime.Now; }
+                    startedAt = Tunnel.StartTime;
                     connecting = false;
-                    // a tunnel this app started before it was reopened still logs to our file
-                    if (!monitoring && cmd != null && cmd.Contains("-log-level info") && File.Exists(Paths.Log) &&
-                        File.GetLastWriteTime(Paths.Log) >= startedAt.AddSeconds(-5))
-                        StartMonitoring(false);
+                    // Fast path: if this instance just launched the tunnel, skip WMI
+                    if (Tunnel.LastStartedConfig != null && (DateTime.UtcNow - Tunnel.LastStartedAt).TotalSeconds < 15)
+                    {
+                        runningConfig = Tunnel.LastStartedConfig;
+                    }
+                    else
+                    {
+                        string cmd = Tunnel.Pid != 0 ? Tunnel.CommandLine(Tunnel.Pid) : null;
+                        Tunnel.NoteCommandLine(cmd);
+                        runningConfig = Tunnel.ConfigOf(cmd);
+                        // a tunnel this app started before it was reopened still logs to our file
+                        if (!monitoring && cmd != null && cmd.Contains("-log-level info") && File.Exists(Paths.Log) &&
+                            File.GetLastWriteTime(Paths.Log) >= startedAt.AddSeconds(-5))
+                            StartMonitoring(false);
+                    }
                     // follow tunnels started elsewhere (e.g. a .bat file)
                     if (runningConfig != null && (active == null || active.Name != runningConfig) && File.Exists(Paths.Conf(runningConfig)))
                     {
@@ -699,7 +999,8 @@ namespace VpnPanel
                 else if (wasRunning == true)
                 {
                     bool quick = (DateTime.Now - startedAt).TotalSeconds < 10;
-                    monitoring = false;
+                    StopMonitoring();
+                    Traffic.Stop();
                     if (!userStopped && !reconnectPending)
                     {
                         if (quick) ShowError("Não foi possível conectar", LogTail());
@@ -714,6 +1015,14 @@ namespace VpnPanel
                     runningConfig = null;
                 }
                 wasRunning = running;
+                // the route to every server changed: old pings no longer apply
+                Latency.RouteChanged();
+                UpdateAllPingLabels();
+                // connected: measured once the handshake completes (Conn.On below), not through a half-open tunnel
+                if (!running) MeasureLatency(false);
+                // a tunnel not started by Connect (other instance, .bat) may run an older shared list
+                if (running && settings.SharedApps && active != null && IsLive(active.Name))
+                    appsNeedReconnect = !SameApps(active, settings.AppsMode, settings.Apps);
                 if (!running && reconnectPending)
                 {
                     reconnectPending = false;
@@ -726,9 +1035,10 @@ namespace VpnPanel
             {
                 ReadHandshakes();
                 // a WireSock version that logs handshakes differently: don't judge the connection by the log
-                if (!sawHandshake && (DateTime.Now - startedAt).TotalSeconds > 10)
+                // (wait longer when logPos == 0 because C runtime stdout redirection buffers up to 4 KB)
+                if (!sawHandshake && (DateTime.Now - startedAt).TotalSeconds > (logPos > 0 ? 10 : 25))
                 {
-                    monitoring = false;
+                    StopMonitoring();
                     pendingSince = null;
                 }
                 // no handshake response for too long: the server is down or blocked
@@ -760,7 +1070,15 @@ namespace VpnPanel
             Conn now = State;
             if (now != shown)
             {
-                if (now == Conn.On) { HideBanner(); CheckIp(); } // check the new route once traffic flows
+                if (now == Conn.On)
+                {
+                    HideBanner();
+                    if (!Traffic.Running) { Traffic.Start(active != null ? active.Endpoint : null); ResetTrafficLabels(); }
+                    CheckIp(); // check the new route once traffic flows
+                    Latency.RouteChanged();
+                    UpdateAllPingLabels();
+                    MeasureLatency(false);
+                }
                 if (now == Conn.NoResponse)
                     ShowBanner(true, "O servidor não está respondendo",
                         settings.NetworkLock ? "Continuo tentando. Enquanto isso, o kill switch mantém a internet bloqueada."
@@ -772,11 +1090,11 @@ namespace VpnPanel
 
             if (running)
             {
-                TimeSpan up = DateTime.Now - startedAt;
-                txtUptime.Text = string.Format("Conectado há {0:00}:{1:00}:{2:00}", (int)up.TotalHours, up.Minutes, up.Seconds);
-                if (up.TotalSeconds > 60 && now == Conn.On) reconnectAttempts = 0;
+                UpdateTraffic();
+                if (WindowShowing) UpdateUptimeText();
+                if ((DateTime.Now - startedAt).TotalSeconds > 60 && now == Conn.On) reconnectAttempts = 0;
             }
-            foreach (Process x in procs) x.Dispose();
+            UpdatePollInterval();
         }
 
         void UpdateState()
@@ -786,10 +1104,7 @@ namespace VpnPanel
             bool on = st == Conn.On;
             bool busy = st == Conn.Connecting || st == Conn.Retrying || st == Conn.NoResponse;
             spinner.Visibility = busy ? Visibility.Visible : Visibility.Collapsed;
-            if (busy)
-                spinnerRotate.BeginAnimation(RotateTransform.AngleProperty,
-                    new DoubleAnimation(0, 360, TimeSpan.FromSeconds(1.1)) { RepeatBehavior = RepeatBehavior.Forever });
-            else spinnerRotate.BeginAnimation(RotateTransform.AngleProperty, null);
+            UpdateSpinnerAnimation();
 
             string status, scope;
             if (on)
@@ -832,6 +1147,8 @@ namespace VpnPanel
             txtStatus.Text = status;
             txtScope.Text = scope;
             txtUptime.Visibility = on ? Visibility.Visible : Visibility.Collapsed;
+            trafficRow.Visibility = on ? Visibility.Visible : Visibility.Collapsed;
+            if (on && WindowShowing) UpdateUptimeText();
             bool stoppable = wasRunning == true || busy;
             btnPower.ToolTip = stoppable ? "Desconectar" : "Conectar";
 
@@ -841,7 +1158,28 @@ namespace VpnPanel
             miStatus.Text = on && active != null ? "Conectado · " + active.Name : status;
             miToggle.Text = stoppable ? "Desconectar" : "Conectar";
 
-            glow.BeginAnimation(UIElement.OpacityProperty, new DoubleAnimation(on ? 0.28 : 0, TimeSpan.FromMilliseconds(400)));
+            if (on)
+            {
+                if (WindowShowing)
+                {
+                    glow.Visibility = Visibility.Visible;
+                    glow.BeginAnimation(UIElement.OpacityProperty, new DoubleAnimation(0.28, TimeSpan.FromMilliseconds(400)));
+                }
+            }
+            else if (glow.Visibility == Visibility.Visible)
+            {
+                if (WindowShowing)
+                {
+                    var fadeOut = new DoubleAnimation(0, TimeSpan.FromMilliseconds(400));
+                    fadeOut.Completed += (s, e) => { if (State != Conn.On) glow.Visibility = Visibility.Collapsed; };
+                    glow.BeginAnimation(UIElement.OpacityProperty, fadeOut);
+                }
+                else
+                {
+                    glow.BeginAnimation(UIElement.OpacityProperty, null);
+                    glow.Visibility = Visibility.Collapsed;
+                }
+            }
             bool partial = on && active != null && active.Mode == AppMode.Only;
             txtIpNote.Text = partial ? "Este é o IP dos apps fora da VPN. " + JoinPt(active.Apps) + " usa o IP do servidor." : "";
             txtIpNote.Visibility = partial ? Visibility.Visible : Visibility.Collapsed;
@@ -850,14 +1188,22 @@ namespace VpnPanel
 
         void CheckIp()
         {
+            if (ipClient != null)
+            {
+                try { ipClient.CancelAsync(); ipClient.Dispose(); } catch { }
+                ipClient = null;
+            }
             txtIp.Text = "...";
             txtLoc.Text = "...";
             txtOrg.Text = "...";
             var wc = new WebClient { Encoding = Encoding.UTF8 };
+            ipClient = wc;
             wc.Headers["User-Agent"] = "vpn-panel";
             wc.DownloadStringCompleted += (s, e) =>
             {
                 wc.Dispose();
+                if (ipClient == wc) ipClient = null;
+                if (e.Cancelled) return;
                 try
                 {
                     if (e.Error != null) throw e.Error;
@@ -892,15 +1238,11 @@ namespace VpnPanel
                 settings.Save();
             }
             active = settings.Config != null ? ConfigInfo.Read(names.First(n => n.Equals(settings.Config, StringComparison.OrdinalIgnoreCase))) : null;
+            if (active != null && active.Endpoint != null && active.Place == null) Geo.Lookup(active.Endpoint, ScheduleGeoRefresh);
 
-            serverList.Children.Clear();
-            foreach (string n in names)
-            {
-                ConfigInfo c = n == active.Name ? active : ConfigInfo.Read(n);
-                if (c.Endpoint != null && c.Place == null) Geo.Lookup(c.Endpoint, RefreshConfigs);
-                serverList.Children.Add(ServerCard(c));
-            }
-            emptyServers.Visibility = names.Length == 0 ? Visibility.Visible : Visibility.Collapsed;
+            // the cards are only built while someone can see them; hidden, they wait for OnVisibilityChanged
+            if (WindowShowing) RenderServerList();
+            else serversDirty = true;
 
             Geo.Place place = active != null ? active.Place : null;
             txtFlag.Text = place != null ? place.Country : "";
@@ -908,7 +1250,31 @@ namespace VpnPanel
             txtSrvName.Text = active != null ? active.Name : "—";
             txtSrvDetail.Text = active == null ? "" : ServerDetail(active);
             txtSrvDetail.ToolTip = active == null ? null : active.Detail;
+            UpdateHomePing();
             if (txtStatus != null && wasRunning != null) UpdateState();
+        }
+
+        void ScheduleGeoRefresh()
+        {
+            geoDebounce.Stop();
+            geoDebounce.Start();
+        }
+
+        void RenderServerList()
+        {
+            serversDirty = false;
+            string[] names = Paths.ConfigNames();
+            serverList.Children.Clear();
+            pingLabels.Clear();
+            foreach (string n in names)
+            {
+                ConfigInfo c = active != null && n == active.Name ? active : ConfigInfo.Read(n);
+                if (c.Endpoint != null && c.Place == null) Geo.Lookup(c.Endpoint, ScheduleGeoRefresh);
+                serverList.Children.Add(ServerCard(c));
+            }
+            emptyServers.Visibility = names.Length == 0 ? Visibility.Visible : Visibility.Collapsed;
+            // a server just added gets measured too (the others are still fresh in the cache)
+            MeasureLatency(false);
         }
 
         // "Houston, Estados Unidos" once the location is known; server label and IP until then
@@ -956,12 +1322,21 @@ namespace VpnPanel
             }
             text.Children.Add(titleRow);
             text.Children.Add(new TextBlock { Text = ServerDetail(c), ToolTip = c.Detail, Style = Dialogs.S("Caption"), TextWrapping = TextWrapping.NoWrap, TextTrimming = TextTrimming.CharacterEllipsis, Margin = new Thickness(0, 3, 0, 0) });
-            if (c.Readable && c.Mode != AppMode.All)
+            if (!settings.SharedApps && c.Readable && c.Mode != AppMode.All)
                 text.Children.Add(new TextBlock { Text = (c.Mode == AppMode.Only ? "Só " : "Exceto ") + JoinPt(c.Apps), Style = Dialogs.S("Caption"), TextWrapping = TextWrapping.NoWrap, TextTrimming = TextTrimming.CharacterEllipsis, Margin = new Thickness(0, 1, 0, 0) });
             Grid.SetColumn(text, 1);
             g.Children.Add(text);
 
             var actions = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
+            if (c.Endpoint != null)
+            {
+                var ping = new PingLabel(c.Endpoint);
+                List<PingLabel> same;
+                if (!pingLabels.TryGetValue(c.Endpoint, out same)) pingLabels[c.Endpoint] = same = new List<PingLabel>();
+                same.Add(ping);
+                UpdatePingLabel(ping);
+                actions.Children.Add(ping.Root);
+            }
             var rename = new Button { Style = Dialogs.S("IconButton"), Content = "", ToolTip = "Renomear" };
             var delete = new Button { Style = Dialogs.S("IconDangerButton"), Content = "", ToolTip = "Excluir" };
             AutomationProperties.SetName(rename, "Renomear " + c.Name);
@@ -976,6 +1351,98 @@ namespace VpnPanel
             card.Content = g;
             card.Click += (s, e) => SelectConfig(c.Name);
             return card;
+        }
+
+        // ---------- latency ----------
+
+        // The ping shown on one server card: a colored dot and "42 ms"
+        class PingLabel
+        {
+            public readonly string Host;
+            public readonly StackPanel Root = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center, MinWidth = 50, Margin = new Thickness(0, 0, 4, 0), Background = Brushes.Transparent };
+            public readonly Ellipse Dot = new Ellipse { Width = 6, Height = 6, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 1, 5, 0) };
+            public readonly TextBlock Text = new TextBlock { FontSize = 11, FontWeight = FontWeights.SemiBold, VerticalAlignment = VerticalAlignment.Center };
+
+            public PingLabel(string host)
+            {
+                Host = host;
+                Root.Children.Add(Dot);
+                Root.Children.Add(Text);
+                ToolTipService.SetInitialShowDelay(Root, 250);
+            }
+        }
+
+        readonly Dictionary<string, List<PingLabel>> pingLabels = new Dictionary<string, List<PingLabel>>(StringComparer.OrdinalIgnoreCase);
+
+        bool ServersShowing { get { return WindowShowing && pageServers.Visibility == Visibility.Visible; } }
+
+        // Only while someone is looking at Servidores: never in the tray, never on a timer
+        void MeasureLatency(bool force)
+        {
+            if (!ServersShowing) return;
+            var hosts = Paths.ConfigNames().Select(n => ConfigInfo.Read(n).Endpoint).Where(h => h != null).ToList();
+            Latency.Measure(hosts, force, wasRunning == true);
+            UpdateAllPingLabels(); // "···" on what was just queued
+        }
+
+        void OnLatencyMeasured(string host)
+        {
+            List<PingLabel> labels;
+            if (pingLabels.TryGetValue(host, out labels))
+                foreach (PingLabel l in labels) UpdatePingLabel(l);
+            if (active != null && host.Equals(active.Endpoint, StringComparison.OrdinalIgnoreCase)) UpdateHomePing();
+        }
+
+        void UpdateAllPingLabels()
+        {
+            foreach (List<PingLabel> labels in pingLabels.Values)
+                foreach (PingLabel l in labels) UpdatePingLabel(l);
+            UpdateHomePing();
+        }
+
+        static Brush PingBrush(int ms) { return B(ms < 80 ? "Accent" : ms <= 180 ? "Warn" : "Danger"); }
+
+        // Through a full tunnel, pings to the other servers take the detour via the connected one
+        string PingTip(string host, Latency.Result r)
+        {
+            if (!r.Ok)
+                return "Sem resposta ao ping (ICMP).\nMuitos servidores WireGuard bloqueiam ping, então isso não quer dizer que o servidor esteja fora do ar.";
+            string tip = "Latência (ping): " + r.Ms + " ms";
+            bool liveHost = active != null && IsLive(active.Name) && host.Equals(active.Endpoint, StringComparison.OrdinalIgnoreCase);
+            if (r.ViaTunnel && !liveHost) tip += "\nMedido com a VPN ligada: inclui o caminho pelo servidor conectado.";
+            return tip;
+        }
+
+        void UpdatePingLabel(PingLabel l)
+        {
+            Latency.Result r = Latency.Cached(l.Host);
+            if (r == null)
+            {
+                bool measuring = Latency.IsPending(l.Host);
+                l.Dot.Visibility = Visibility.Collapsed;
+                l.Text.Text = measuring ? "···" : "";
+                l.Text.Foreground = B("Muted");
+                l.Root.ToolTip = measuring ? "Medindo a latência..." : null;
+                AutomationProperties.SetName(l.Root, measuring ? "Medindo latência" : "");
+                return;
+            }
+            l.Dot.Visibility = r.Ok ? Visibility.Visible : Visibility.Collapsed;
+            if (r.Ok) l.Dot.Fill = PingBrush(r.Ms);
+            l.Text.Text = r.Ok ? r.Ms + " ms" : "sem ping";
+            l.Text.Foreground = r.Ok ? PingBrush(r.Ms) : B("Muted");
+            l.Root.ToolTip = PingTip(l.Host, r);
+            AutomationProperties.SetName(l.Root, r.Ok ? "Latência " + r.Ms + " milissegundos" : "Servidor não responde a ping");
+        }
+
+        // Início only shows what Servidores already measured; it never pings by itself
+        void UpdateHomePing()
+        {
+            Latency.Result r = active != null ? Latency.Cached(active.Endpoint) : null;
+            if (r == null) { txtSrvPing.Visibility = Visibility.Collapsed; return; }
+            txtSrvPing.Visibility = Visibility.Visible;
+            txtSrvPing.Text = r.Ok ? "● " + r.Ms + " ms" : "sem ping";
+            txtSrvPing.Foreground = r.Ok ? PingBrush(r.Ms) : B("Muted");
+            txtSrvPing.ToolTip = PingTip(active.Endpoint, r);
         }
 
         bool IsLive(string name)
@@ -995,6 +1462,37 @@ namespace VpnPanel
             tabHome.IsChecked = true;
         }
 
+        // From the tray: always ends up connected to that server (connects, or switches and reconnects)
+        void SwitchServer(string name)
+        {
+            if (!File.Exists(Paths.Conf(name))) return;
+            bool same = active != null && active.Name.Equals(name, StringComparison.OrdinalIgnoreCase);
+            if (!same)
+            {
+                settings.Config = name;
+                settings.Save();
+                RefreshConfigs();
+                LoadAppsEditor();
+            }
+            if (reconnectTimer.IsEnabled) reconnectTimer.Stop();
+            if (wasRunning == true && userStopped)
+            {
+                // the old client is still exiting: Poll connects once it's gone
+                reconnectPending = true;
+                UpdateState();
+            }
+            else if (wasRunning == true) { if (!same) Reconnect(); }
+            else if (connecting)
+            {
+                // started but not seen running yet: replace it instead of running two clients
+                if (same) return;
+                Tunnel.Stop(settings.NetworkLock);
+                connecting = false;
+                Connect();
+            }
+            else Connect();
+        }
+
         void RenameConfig(string name)
         {
             if (IsLive(name)) { Dialogs.Info(w, "Servidor em uso", "Desconecte a VPN antes de renomear este servidor."); return; }
@@ -1003,7 +1501,9 @@ namespace VpnPanel
             try
             {
                 ConfFile.Rename(name, newName);
-                if (settings.Config == name) { settings.Config = newName; settings.Save(); }
+                settings.RenameRecent(name, newName);
+                if (settings.Config == name) settings.Config = newName;
+                settings.Save();
             }
             catch (Exception ex) { Dialogs.Info(w, "Não foi possível renomear", ex.Message); }
             RefreshConfigs();
@@ -1017,6 +1517,7 @@ namespace VpnPanel
             try { ConfFile.Delete(name); }
             catch (Exception ex) { Dialogs.Info(w, "Não foi possível excluir", ex.Message); }
             RefreshConfigs();
+            MigrateSharedApps();
             LoadAppsEditor();
             UpdateSetup();
             UpdateState();
@@ -1056,6 +1557,7 @@ namespace VpnPanel
             bool wasReady = Ready;
             if (added.Count > 0 && active == null) settings.Config = added[0];
             RefreshConfigs();
+            MigrateSharedApps();
             LoadAppsEditor();
             UpdateSetup();
             UpdateState();
@@ -1197,12 +1699,84 @@ namespace VpnPanel
 
         // ---------- apps (split tunneling) ----------
 
+        static bool SameApps(ConfigInfo c, AppMode mode, List<string> apps)
+        {
+            if (c == null || !c.Readable) return false;
+            AppMode effMode = mode != AppMode.All && apps.Count == 0 ? AppMode.All : mode;
+            if (c.Mode != effMode) return false;
+            if (effMode == AppMode.All) return true;
+            if (c.Apps.Count != apps.Count) return false;
+            for (int i = 0; i < apps.Count; i++)
+                if (!c.Apps[i].Equals(apps[i], StringComparison.OrdinalIgnoreCase)) return false;
+            return true;
+        }
+
+        // First run with this setting: if existing servers already have different app lists, keep per-server mode so nothing is lost
+        void MigrateSharedApps()
+        {
+            if (settings.HasSharedAppsKey) return;
+            string[] names = Paths.ConfigNames();
+            if (names.Length == 0) return;
+            settings.HasSharedAppsKey = true;
+            ConfigInfo first = null;
+            bool same = true;
+            foreach (string n in names)
+            {
+                ConfigInfo c = active != null && n == active.Name ? active : ConfigInfo.Read(n);
+                if (!c.Readable) continue;
+                if (first == null) first = c;
+                else if (!SameApps(c, first.Mode, first.Apps)) { same = false; break; }
+            }
+            settings.SharedApps = same;
+            if (same && active != null && active.Readable)
+            {
+                settings.AppsMode = active.Mode;
+                settings.Apps = new List<string>(active.Apps);
+            }
+            settings.Save();
+        }
+
+        void ToggleSharedApps()
+        {
+            settings.SharedApps = chkSharedApps.IsChecked == true;
+            if (settings.SharedApps)
+            {
+                settings.AppsMode = editMode;
+                settings.Apps = editMode == AppMode.All ? new List<string>() : new List<string>(editApps);
+                settings.Save();
+                if (active != null && IsLive(active.Name))
+                    appsNeedReconnect = !SameApps(active, settings.AppsMode, settings.Apps);
+            }
+            else
+            {
+                settings.Save();
+                if (active != null && (editMode == AppMode.All || editApps.Count > 0))
+                {
+                    try { ConfFile.WriteApps(Paths.Conf(active.Name), editMode, editMode == AppMode.All ? new List<string>() : editApps); }
+                    catch { }
+                    if (IsLive(active.Name)) appsNeedReconnect = !SameApps(active, editMode, editApps);
+                }
+            }
+            RefreshConfigs();
+            LoadAppsEditor();
+        }
+
         void LoadAppsEditor()
         {
-            editApps = active != null ? new List<string>(active.Apps) : new List<string>();
-            editMode = active != null ? active.Mode : AppMode.All;
-            txtAppsCfg.Text = active != null ? "Servidor: " + active.Name : "Adicione um servidor primeiro";
+            if (settings.SharedApps)
+            {
+                editApps = new List<string>(settings.Apps);
+                editMode = settings.AppsMode;
+                txtAppsCfg.Text = active != null ? "Vale para todos os servidores" : "Adicione um servidor primeiro";
+            }
+            else
+            {
+                editApps = active != null ? new List<string>(active.Apps) : new List<string>();
+                editMode = active != null ? active.Mode : AppMode.All;
+                txtAppsCfg.Text = active != null ? "Só para o servidor: " + active.Name : "Adicione um servidor primeiro";
+            }
             loading = true;
+            chkSharedApps.IsChecked = settings.SharedApps;
             (editMode == AppMode.Only ? segOnly : editMode == AppMode.Except ? segExcept : segAll).IsChecked = true;
             loading = false;
             pageApps.IsEnabled = active != null;
@@ -1226,6 +1800,9 @@ namespace VpnPanel
             appsAdd.Visibility = list ? Visibility.Visible : Visibility.Collapsed;
             appListCard.Visibility = list ? Visibility.Visible : Visibility.Collapsed;
 
+            // the list (icons look up running processes) is only built while someone can see it
+            appsDirty = !WindowShowing;
+            if (appsDirty) { UpdateAppsSaved(); return; }
             appList.Children.Clear();
             if (editApps.Count == 0)
                 appList.Children.Add(new TextBlock
@@ -1254,11 +1831,20 @@ namespace VpnPanel
             UpdateAppsSaved();
         }
 
-        // Saves the editor to the config right away (unless the chosen mode still has an empty list)
+        // Saves the editor right away (unless the chosen mode still has an empty list)
         void PersistApps()
         {
             if (active == null) return;
             if (editMode != AppMode.All && editApps.Count == 0) { UpdateAppsSaved(); return; }
+            if (settings.SharedApps)
+            {
+                settings.AppsMode = editMode;
+                settings.Apps = editMode == AppMode.All ? new List<string>() : new List<string>(editApps);
+                settings.Save();
+                if (IsLive(active.Name)) appsNeedReconnect = !SameApps(active, settings.AppsMode, settings.Apps);
+                UpdateAppsSaved();
+                return;
+            }
             try { ConfFile.WriteApps(Paths.Conf(active.Name), editMode, editMode == AppMode.All ? new List<string>() : editApps); }
             catch (Exception ex) { Dialogs.Info(w, "Não foi possível salvar", ex.Message); return; }
             if (IsLive(active.Name)) appsNeedReconnect = true;
@@ -1304,6 +1890,11 @@ namespace VpnPanel
         {
             ImageSource cached;
             if (iconCache.TryGetValue(name, out cached) && cached != null) return cached;
+            if (path == null)
+            {
+                DateTime miss;
+                if (iconMisses.TryGetValue(name, out miss) && (DateTime.UtcNow - miss).TotalSeconds < 60) return null;
+            }
             ImageSource img = null;
             try
             {
@@ -1311,7 +1902,7 @@ namespace VpnPanel
                 {
                     foreach (Process p in Process.GetProcessesByName(name))
                     {
-                        try { if (path == null) path = p.MainModule.FileName; } catch { }
+                        try { if (path == null) path = ProcUtil.ExePath(p.Id); } catch { }
                         p.Dispose();
                     }
                 }
@@ -1319,13 +1910,21 @@ namespace VpnPanel
                 {
                     using (SD.Icon icon = SD.Icon.ExtractAssociatedIcon(path))
                     {
-                        img = Imaging.CreateBitmapSourceFromHIcon(icon.Handle, Int32Rect.Empty, BitmapSizeOptions.FromEmptyOptions());
-                        img.Freeze();
+                        if (icon != null)
+                        {
+                            img = Imaging.CreateBitmapSourceFromHIcon(icon.Handle, Int32Rect.Empty, BitmapSizeOptions.FromEmptyOptions());
+                            img.Freeze();
+                        }
                     }
                 }
             }
             catch { }
-            iconCache[name] = img;
+            if (img != null)
+            {
+                iconCache[name] = img;
+                iconMisses.Remove(name);
+            }
+            else iconMisses[name] = DateTime.UtcNow;
             return img;
         }
 
@@ -1348,27 +1947,95 @@ namespace VpnPanel
 
         // ---------- tray ----------
 
+        static readonly WF.Padding TrayPadding = new WF.Padding(6, 4, 6, 4);
+        const int TrayRecentCount = 3;
+
+        // Recent servers and the "Todos os servidores" submenu, rebuilt only when something they show changed
+        void UpdateTrayServers()
+        {
+            string[] names;
+            try { names = Paths.ConfigNames(); } catch { names = new string[0]; }
+            string current = active != null ? active.Name : "";
+            string live = wasRunning == true && runningConfig != null ? runningConfig : "";
+            string key = Paths.ConfigsVersion + "|" + current + "|" + live + "|" + string.Join("|", settings.Recent);
+            if (key == trayMenuKey) return;
+            trayMenuKey = key;
+
+            foreach (WF.ToolStripItem item in miRecent)
+            {
+                trayMenu.Items.Remove(item);
+                item.Dispose();
+            }
+            miRecent.Clear();
+            var exists = new HashSet<string>(names, StringComparer.OrdinalIgnoreCase);
+            var recent = settings.Recent.Where(exists.Contains).Take(TrayRecentCount).ToList();
+            // never connected yet: the selected server still gets a one-click entry
+            if (recent.Count == 0 && active != null) recent.Add(active.Name);
+            int at = trayMenu.Items.IndexOf(miAllServers);
+            if (recent.Count > 0)
+            {
+                var header = new WF.ToolStripMenuItem("Recentes") { Enabled = false, Padding = TrayPadding };
+                trayMenu.Items.Insert(at++, header);
+                miRecent.Add(header);
+                foreach (string n in recent)
+                {
+                    WF.ToolStripMenuItem item = TrayServerItem(n, current, live);
+                    trayMenu.Items.Insert(at++, item);
+                    miRecent.Add(item);
+                }
+            }
+
+            WF.ToolStripItemCollection all = miAllServers.DropDownItems;
+            while (all.Count > 0)
+            {
+                WF.ToolStripItem old = all[0];
+                all.RemoveAt(0);
+                old.Dispose();
+            }
+            foreach (string n in names) all.Add(TrayServerItem(n, current, live));
+            miAllServers.Text = "Todos os servidores (" + names.Length + ")";
+            miAllServers.Visible = names.Length > 0;
+            miServersEnd.Visible = names.Length > 0;
+        }
+
+        WF.ToolStripMenuItem TrayServerItem(string name, string current, string live)
+        {
+            bool isLive = live.Equals(name, StringComparison.OrdinalIgnoreCase);
+            bool isCurrent = current.Equals(name, StringComparison.OrdinalIgnoreCase);
+            ConfigInfo c = ConfigInfo.Read(name);
+            Geo.Place place = c.Readable ? c.Place : null;
+            // "&" would turn into a mnemonic underline
+            string text = name.Replace("&", "&&") + (place != null ? "   " + place.Country : "");
+            var item = new WF.ToolStripMenuItem(text) { Checked = isCurrent, Padding = TrayPadding };
+            item.ToolTipText = isLive ? "Conectado" : isCurrent ? "Selecionado. Clique para conectar" : "Conectar a este servidor";
+            string target = name;
+            item.Click += (s, e) => SwitchServer(target);
+            return item;
+        }
+
         // App mark (white shield on a colored disc) at the tray's icon size
         static SD.Icon TrayIcon(SD.Color disc)
         {
             SD.Size size = WF.SystemInformation.SmallIconSize;
-            var bmp = new SD.Bitmap(size.Width, size.Height);
-            using (SD.Graphics g = SD.Graphics.FromImage(bmp))
-            using (var brush = new SD.SolidBrush(disc))
-            using (var path = new SD.Drawing2D.GraphicsPath())
+            using (var bmp = new SD.Bitmap(size.Width, size.Height))
             {
-                g.SmoothingMode = SD.Drawing2D.SmoothingMode.AntiAlias;
-                g.ScaleTransform(size.Width / 32F, size.Height / 32F);
-                g.FillEllipse(brush, 0.5F, 0.5F, 31, 31);
-                path.AddLine(16, 6, 24, 9);
-                path.AddLine(24, 9, 24, 15);
-                path.AddBezier(24, 15, 24, 20, 20, 23.5F, 16, 26);
-                path.AddBezier(16, 26, 12, 23.5F, 8, 20, 8, 15);
-                path.AddLine(8, 15, 8, 9);
-                path.CloseFigure();
-                g.FillPath(SD.Brushes.White, path);
+                using (SD.Graphics g = SD.Graphics.FromImage(bmp))
+                using (var brush = new SD.SolidBrush(disc))
+                using (var path = new SD.Drawing2D.GraphicsPath())
+                {
+                    g.SmoothingMode = SD.Drawing2D.SmoothingMode.AntiAlias;
+                    g.ScaleTransform(size.Width / 32F, size.Height / 32F);
+                    g.FillEllipse(brush, 0.5F, 0.5F, 31, 31);
+                    path.AddLine(16, 6, 24, 9);
+                    path.AddLine(24, 9, 24, 15);
+                    path.AddBezier(24, 15, 24, 20, 20, 23.5F, 16, 26);
+                    path.AddBezier(16, 26, 12, 23.5F, 8, 20, 8, 15);
+                    path.AddLine(8, 15, 8, 9);
+                    path.CloseFigure();
+                    g.FillPath(SD.Brushes.White, path);
+                }
+                return SD.Icon.FromHandle(bmp.GetHicon());
             }
-            return SD.Icon.FromHandle(bmp.GetHicon());
         }
 
         class DarkMenuRenderer : WF.ToolStripProfessionalRenderer
@@ -1379,6 +2046,26 @@ namespace VpnPanel
             {
                 e.TextColor = e.Item.Enabled ? SD.Color.FromArgb(233, 236, 241) : SD.Color.FromArgb(138, 147, 163);
                 base.OnRenderItemText(e);
+            }
+
+            protected override void OnRenderArrow(WF.ToolStripArrowRenderEventArgs e)
+            {
+                e.ArrowColor = SD.Color.FromArgb(138, 147, 163);
+                base.OnRenderArrow(e);
+            }
+
+            // the stock check mark is a black bitmap, invisible on the dark menu: draw an accent one
+            protected override void OnRenderItemCheck(WF.ToolStripItemImageRenderEventArgs e)
+            {
+                SD.Rectangle r = e.ImageRectangle;
+                if (r.Width <= 0 || r.Height <= 0) return;
+                SD.Graphics g = e.Graphics;
+                var smoothing = g.SmoothingMode;
+                g.SmoothingMode = SD.Drawing2D.SmoothingMode.AntiAlias;
+                float x = r.Left + r.Width / 2F, y = r.Top + r.Height / 2F, u = Math.Min(r.Width, r.Height) / 16F;
+                using (var pen = new SD.Pen(SD.Color.FromArgb(47, 191, 113), 2F * u))
+                    g.DrawLines(pen, new[] { new SD.PointF(x - 5 * u, y), new SD.PointF(x - 1.5F * u, y + 3.5F * u), new SD.PointF(x + 5 * u, y - 4 * u) });
+                g.SmoothingMode = smoothing;
             }
         }
 

@@ -16,7 +16,7 @@ Você vai precisar de:
 
 ### 1. Instale o VPN Panel
 
-1. Abra a [página de downloads](https://github.com/JMqz/VPN-Panel/releases/latest) e baixe o arquivo **`VPN-Panel-Setup-2.3.exe`**.
+1. Abra a [página de downloads](https://github.com/JMqz/VPN-Panel/releases/latest) e baixe o arquivo **`VPN-Panel-Setup-2.4.exe`**.
 2. Abra o arquivo baixado.
 3. Se aparecer a tela azul **"O Windows protegeu o computador"**, clique em **Mais informações** e depois em **Executar assim mesmo**. O aviso aparece porque o aplicativo não tem assinatura digital paga.
 4. O Windows pede permissão de administrador: clique em **Sim**.
@@ -65,6 +65,8 @@ O VPN Panel aceita `.conf` e também `.zip` com vários `.conf` dentro (como o d
 
 O servidor aparece na lista com a sigla do país e a cidade.
 
+Para saber qual servidor responde mais rápido, clique no botão de medir latência no topo da aba **Servidores**: cada servidor ganha o ping em milissegundos (ex.: `42 ms`), em verde, âmbar ou vermelho. Alguns servidores não respondem a ping e aparecem como "sem ping", o que não impede a conexão.
+
 ### 5. Conecte
 
 Na aba **Início**, clique no botão grande:
@@ -76,7 +78,7 @@ Na aba **Início**, clique no botão grande:
 | **Verde** | Conectado e protegido. O servidor confirmou a conexão. |
 | Âmbar, "Sem resposta" | O servidor parou de responder. O aplicativo tenta de novo sozinho. |
 
-Abaixo do botão aparece o que está protegido ("Todo o tráfego do PC está protegido") e há quanto tempo você está conectado. O quadro "Seu IP" mostra o endereço que os sites veem.
+Abaixo do botão aparece o que está protegido ("Todo o tráfego do PC está protegido") e há quanto tempo você está conectado. Enquanto conectado, a aba **Início** também mostra a velocidade em tempo real (download e upload) e o total transferido na sessão, além do ping do servidor atual. O quadro "Seu IP" mostra o endereço que os sites veem.
 
 Pronto, já dá para usar. Os ajustes abaixo são opcionais.
 
@@ -89,6 +91,8 @@ Pronto, já dá para usar. Os ajustes abaixo são opcionais.
 
 Adicione programas por **Apps abertos**, por **Procurar programa** ou digitando o nome (ex.: `chrome`). As mudanças são salvas sozinhas. Se a VPN estiver ligada, clique em **Reconectar** para aplicá-las.
 
+Com **Usar em todos os servidores** ligado, a mesma lista de programas vale para qualquer servidor, e você não precisa montá-la de novo ao trocar. Desligado, cada servidor guarda a sua própria lista.
+
 **Opções** (aba **Opções**):
 
 | Opção | Para que serve |
@@ -99,7 +103,7 @@ Adicione programas por **Apps abertos**, por **Procurar programa** ou digitando 
 | Conectar ao abrir | Liga a VPN assim que o aplicativo abre. Junto com a opção anterior, você fica protegido desde que liga o computador. |
 | Abrir sem pedir permissão | O Windows só pergunta na primeira vez. Vem ligada. |
 
-**Perto do relógio:** fechar a janela não fecha o aplicativo, ele continua no canto da barra de tarefas, perto do relógio. O ícone fica verde quando conectado, âmbar quando o servidor não responde e cinza quando desconectado. Clique com o botão direito no ícone para conectar, desconectar ou sair.
+**Perto do relógio:** fechar a janela não fecha o aplicativo, ele continua no canto da barra de tarefas, perto do relógio. O ícone fica verde quando conectado, âmbar quando o servidor não responde e cinza quando desconectado. Clique com o botão direito no ícone para conectar, desconectar ou sair. No mesmo menu dá para trocar de servidor sem abrir a janela: os usados por último aparecem em **Recentes**, logo no menu, e a lista completa fica em **Todos os servidores**.
 
 ---
 
@@ -124,7 +128,7 @@ A VPN é desconectada e o aplicativo é removido. Os seus servidores e configura
 
 ## Sem instalar (versão portátil)
 
-Na [página de downloads](https://github.com/JMqz/VPN-Panel/releases/latest) também tem o **`VpnPanel-2.3-portatil.exe`**. É o mesmo aplicativo, sem instalador e sem atalho no menu Iniciar. Basta abrir.
+Na [página de downloads](https://github.com/JMqz/VPN-Panel/releases/latest) também tem o **`VpnPanel-2.4-portatil.exe`**. É o mesmo aplicativo, sem instalador e sem atalho no menu Iniciar. Basta abrir.
 
 ---
 
@@ -162,7 +166,10 @@ Gera `dist\VpnPanel.exe` e `dist\VPN Panel Setup.exe` usando o compilador `csc.e
   - A cópia com privilégio cria ou atualiza essa tarefa. Desligar "Abrir sem pedir permissão" remove a tarefa.
 - **Iniciar com o Windows:** tarefa **VPN Panel**, que roda 10 s depois de você entrar no Windows (`VpnPanel.exe --tray`).
 - **Instalar o WireSock:** `winget install --id NTKERNEL.WireSockVPNClientCLI --exact --source winget --silent`. Sem winget, baixa o instalador mais recente de wiresock.net, confere a assinatura digital (válida e da The Anti-Cloud Corporation / NT Kernel) e roda com `/S`.
-- **Conectar:** `cmd.exe /c wiresock-client.exe run -config <arquivo> -log-level info [-network-lock enabled] > wiresock.log`. Assim o túnel continua ativo mesmo se o aplicativo fechar. Desconectar encerra o processo.
+- **Conectar:** inicia `wiresock-client.exe run -config <arquivo> -log-level info [-network-lock enabled]` direto com `CreateProcessW`, sem `cmd.exe`. A saída vai para o `wiresock.log`, cujo handle é o único herdado pelo processo (`STARTUPINFOEX` + `PROC_THREAD_ATTRIBUTE_HANDLE_LIST`). Assim o túnel continua ativo mesmo se o aplicativo fechar, e uma nova cópia do aplicativo reconhece o túnel que já está rodando.
+- **Desconectar:** envia Ctrl+C ao `wiresock-client` para ele encerrar sozinho e liberar a rede. Se ele não fechar em 3 s, o processo é encerrado e, se o bloqueio de internet estava ligado, o aplicativo roda `wiresock-client reset-network-lock` para nunca deixar a internet bloqueada.
+- **Latência:** ping (ICMP) até o endereço de cada servidor, medido só sob demanda na aba **Servidores**, no máximo 4 ao mesmo tempo, e guardado apenas na memória.
+- **Velocidade:** lê os contadores de bytes da placa de rede física (`GetIfEntry2` / `MIB_IF_ROW2`) uma vez por segundo, só com a janela visível. O total da sessão vem da diferença em relação ao valor no momento da conexão.
 - **Status:** "Conectado" exige a confirmação do servidor (o *handshake* do WireGuard). O aplicativo acompanha o `wiresock.log` procurando as linhas `Handshake initiation sent` (pedido enviado) e `Handshake response received` (servidor respondeu).
   - **15 s** sem resposta: mostra "Sem resposta".
   - **60 s** sem resposta: se a conexão já tinha funcionado, reconecta; se nunca funcionou, derruba o túnel e avisa. Assim o bloqueio de internet nunca fica ativo sem a pessoa saber.
