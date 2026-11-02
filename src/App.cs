@@ -32,8 +32,8 @@ using System.Windows.Shell;
 [assembly: AssemblyTrademark("VPN Panel")]
 [assembly: ComVisible(false)]
 [assembly: Guid("b7c93e48-8120-4a87-8d2b-65c71d798a21")]
-[assembly: AssemblyVersion("2.5.0.0")]
-[assembly: AssemblyFileVersion("2.5.0.0")]
+[assembly: AssemblyVersion("2.6.0.0")]
+[assembly: AssemblyFileVersion("2.6.0.0")]
 
 namespace VpnPanel
 {
@@ -42,17 +42,22 @@ namespace VpnPanel
         // Same mutex as the old vpn-panel.ps1, so they never run together
         const string MutexName = @"Global\VpnPanelWireSock";
         public const string ShowEventName = @"Global\VpnPanelWireSockShow";
-        public const string Version = "2.5";
+        public const string Version = "2.6";
 
         [STAThread]
         static void Main(string[] args)
         {
+            AppDomain.CurrentDomain.UnhandledException += (s, e) =>
+            {
+                LogCrash("AppDomain", e.ExceptionObject as Exception);
+            };
+
             // The exe starts without admin rights (asInvoker) and hands off to an elevated copy:
             // through the "open" scheduled task when it exists (no UAC prompt), otherwise through UAC.
             // The task can't pass arguments, so --uninstall always goes through UAC.
             if (!new WindowsPrincipal(WindowsIdentity.GetCurrent()).IsInRole(WindowsBuiltInRole.Administrator))
             {
-                if (args.Length == 0 && Tasks.PointsHere(Tasks.Open) && Tasks.Run(Tasks.Open)) return;
+                if (args.Length == 0 && Paths.IsInstalled && Tasks.PointsHere(Tasks.Open) && Tasks.Run(Tasks.Open)) return;
                 try { Process.Start(new ProcessStartInfo(Paths.Exe, string.Join(" ", args)) { UseShellExecute = true, Verb = "runas" }); }
                 catch (Win32Exception) { } // the user declined the UAC prompt
                 return;
@@ -78,10 +83,37 @@ namespace VpnPanel
                 Paths.Init();
 
                 var app = new Application { ShutdownMode = ShutdownMode.OnExplicitShutdown };
+                app.DispatcherUnhandledException += (s, e) =>
+                {
+                    LogCrash("Dispatcher", e.Exception);
+                    e.Handled = true;
+                };
                 app.Resources = (ResourceDictionary)XamlReader.Parse(Res.Text("Theme.xaml"));
                 new MainWindow(args.Any(a => a.Equals("--tray", StringComparison.OrdinalIgnoreCase)));
                 app.Run();
             }
+        }
+
+        public static void LogCrash(string source, Exception ex)
+        {
+            if (ex == null) return;
+            try
+            {
+                Directory.CreateDirectory(Paths.Data);
+                string crashFile = Path.Combine(Paths.Data, "crash.log");
+                var sb = new StringBuilder();
+                sb.AppendFormat("[{0:yyyy-MM-dd HH:mm:ss}] [{1}] {2}: {3}\r\n{4}\r\n",
+                    DateTime.Now, source, ex.GetType().FullName, ex.Message, ex.StackTrace);
+                Exception inner = ex.InnerException;
+                while (inner != null)
+                {
+                    sb.AppendFormat("Caused by: {0}: {1}\r\n{2}\r\n", inner.GetType().FullName, inner.Message, inner.StackTrace);
+                    inner = inner.InnerException;
+                }
+                sb.AppendLine();
+                File.AppendAllText(crashFile, sb.ToString(), Encoding.UTF8);
+            }
+            catch { }
         }
     }
 
@@ -114,6 +146,16 @@ namespace VpnPanel
         public static readonly string Log = Path.Combine(Data, "wiresock.log");
         public static readonly string GeoCache = Path.Combine(Data, "locations.json");
         public static bool FirstRun;
+
+        public static bool IsInstalled
+        {
+            get
+            {
+                string programFiles = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
+                string expectedDir = Path.Combine(programFiles, "VPN Panel");
+                return ExeDir.Equals(expectedDir, StringComparison.OrdinalIgnoreCase);
+            }
+        }
 
         public static void Init()
         {
@@ -766,6 +808,7 @@ namespace VpnPanel
 
         public static void Create(string name)
         {
+            if (!Paths.IsInstalled) return;
             bool logon = name == Logon;
             string user = SecurityElement.Escape(WindowsIdentity.GetCurrent().Name);
             string xml =
@@ -800,6 +843,7 @@ namespace VpnPanel
         {
             try
             {
+                if (!Paths.IsInstalled) return;
                 if (Exists(Logon) && !PointsHere(Logon)) Create(Logon);
                 if (skipUac && !PointsHere(Open)) Create(Open);
                 if (!skipUac) Delete(Open);
@@ -1330,26 +1374,31 @@ namespace VpnPanel
             lockHint = networkLock;
         }
 
+        static readonly object stopLock = new object();
+
         // resetLock: the kill switch may be on. A killed client leaves the driver blocking all traffic,
         // so the lock is reset once every client is gone (harmless when no lock is active).
         public static void Stop(bool resetLock)
         {
-            LastStartedConfig = null;
-            resetLock |= lockHint;
-            lockHint = false;
-            bool stoppedCleanly = false;
-            // Ctrl+C first: WireSock then drops the tunnel and releases the lock by itself
-            if (currentPid != 0) stoppedCleanly = ProcUtil.Shutdown(currentPid, 3000);
-            ReleaseCurrent();
-            foreach (Process p in Find())
+            lock (stopLock)
             {
-                stoppedCleanly = ProcUtil.Shutdown(p.Id, 3000) && stoppedCleanly;
-                p.Dispose();
+                LastStartedConfig = null;
+                resetLock |= lockHint;
+                lockHint = false;
+                bool stoppedCleanly = false;
+                // Ctrl+C first: WireSock then drops the tunnel and releases the lock by itself
+                if (currentPid != 0) stoppedCleanly = ProcUtil.Shutdown(currentPid, 3000);
+                ReleaseCurrent();
+                foreach (Process p in Find())
+                {
+                    stoppedCleanly = ProcUtil.Shutdown(p.Id, 3000) && stoppedCleanly;
+                    p.Dispose();
+                }
+                if (resetLock && !stoppedCleanly) ResetNetworkLock();
             }
-            if (resetLock && !stoppedCleanly) ResetNetworkLock();
         }
 
-        static void ResetNetworkLock()
+        public static void ResetNetworkLock()
         {
             string exe = Paths.WireSock;
             if (exe == null) return;

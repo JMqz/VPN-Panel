@@ -55,6 +55,13 @@ namespace VpnPanel
         readonly RotateTransform spinnerRotate;
         // Servidores
         readonly StackPanel serverList, emptyServers;
+        readonly TextBox txtServerSearch;
+        readonly Button btnClearServerSearch;
+        readonly FrameworkElement serverSearchBox;
+        readonly Button btnFastest;
+        bool connectingFastestPending;
+        DateTime fastestStarted;
+        readonly DispatcherTimer fastestTimer;
         // Apps
         readonly TextBlock txtAppsCfg, txtModeHint, txtAppsSaved;
         readonly CheckBox chkSharedApps;
@@ -66,7 +73,7 @@ namespace VpnPanel
         // Opções
         readonly CheckBox chkReconnect, chkLock, chkHotkey, chkStartup, chkAuto, chkSkipUac, chkUpdates;
         readonly Border cardUpdate;
-        readonly Button btnApplyUpdate, btnCheckUpdate;
+        readonly Button btnApplyUpdate, btnCheckUpdate, btnResetLock;
         readonly TextBlock txtUpdateFoundTitle, txtUpdateFoundDetail, txtUpdateBadge;
         Updater.ReleaseInfo availableUpdate;
         readonly DispatcherTimer updateCheckTimer;
@@ -84,6 +91,9 @@ namespace VpnPanel
         readonly DispatcherTimer pollTimer, ipTimer, reconnectTimer, geoDebounce;
         readonly Dictionary<string, ImageSource> iconCache = new Dictionary<string, ImageSource>(StringComparer.OrdinalIgnoreCase);
         readonly Dictionary<string, DateTime> iconMisses = new Dictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
+
+        Microsoft.Win32.PowerModeChangedEventHandler powerModeHandler;
+        System.Net.NetworkInformation.NetworkAddressChangedEventHandler networkAddressHandler;
 
         bool exiting, hintShown, loading, serversDirty, appsDirty, ipDirty;
         bool? wasRunning;
@@ -196,6 +206,10 @@ namespace VpnPanel
             spinnerRotate = (RotateTransform)spinner.RenderTransform;
             serverList = E<StackPanel>("ServerList");
             emptyServers = E<StackPanel>("EmptyServers");
+            txtServerSearch = E<TextBox>("TxtServerSearch");
+            btnClearServerSearch = E<Button>("BtnClearServerSearch");
+            serverSearchBox = E<FrameworkElement>("ServerSearchBox");
+            btnFastest = E<Button>("BtnFastest");
             txtAppsCfg = E<TextBlock>("TxtAppsCfg");
             txtModeHint = E<TextBlock>("TxtModeHint");
             txtAppsSaved = E<TextBlock>("TxtAppsSaved");
@@ -218,6 +232,7 @@ namespace VpnPanel
             cardUpdate = E<Border>("CardUpdate");
             btnApplyUpdate = E<Button>("BtnApplyUpdate");
             btnCheckUpdate = E<Button>("BtnCheckUpdate");
+            btnResetLock = E<Button>("BtnResetLock");
             txtUpdateFoundTitle = E<TextBlock>("TxtUpdateFoundTitle");
             txtUpdateFoundDetail = E<TextBlock>("TxtUpdateFoundDetail");
             txtUpdateBadge = E<TextBlock>("TxtUpdateBadge");
@@ -287,7 +302,13 @@ namespace VpnPanel
             E<Button>("BtnEmptyHelp").Click += (s, e) => OpenGuide(false);
             E<Button>("BtnServersHelp").Click += (s, e) => OpenGuide(false);
             E<Button>("BtnPing").Click += (s, e) => MeasureLatency(true);
-            E<Button>("BtnFastest").Click += (s, e) => ConnectFastest();
+            btnFastest.Click += (s, e) => ConnectFastest();
+            txtServerSearch.TextChanged += (s, e) =>
+            {
+                btnClearServerSearch.Visibility = string.IsNullOrEmpty(txtServerSearch.Text) ? Visibility.Collapsed : Visibility.Visible;
+                RenderServerList();
+            };
+            btnClearServerSearch.Click += (s, e) => { txtServerSearch.Text = ""; txtServerSearch.Focus(); };
             Latency.Measured += OnLatencyMeasured;
             w.DragOver += (s, e) =>
             {
@@ -339,6 +360,7 @@ namespace VpnPanel
             onToggle(chkSharedApps, ToggleSharedApps);
             btnCheckUpdate.Click += (s, e) => CheckForUpdates(true);
             btnApplyUpdate.Click += (s, e) => InstallUpdate();
+            btnResetLock.Click += (s, e) => ResetNetworkLockAction();
             E<Button>("BtnBackup").Click += (s, e) => ExportBackup();
             E<Button>("BtnLog").Click += (s, e) => OpenLog();
             E<Button>("BtnDataDir").Click += (s, e) => Process.Start("explorer.exe", "\"" + Paths.Data + "\"");
@@ -364,6 +386,7 @@ namespace VpnPanel
             allDrop.ShowCheckMargin = true;
             miServersEnd = new WF.ToolStripSeparator();
             menu.Items.Add(miServersEnd);
+            menu.Items.Add("Liberar internet (reset do bloqueio)", null, (s, e) => ResetNetworkLockAction());
             menu.Items.Add("Abrir VPN Panel", null, (s, e) => ShowWindow());
             menu.Items.Add(new WF.ToolStripSeparator());
             menu.Items.Add("Sair (a VPN continua como está)", null, (s, e) => Quit());
@@ -403,6 +426,43 @@ namespace VpnPanel
                 if (settings.CheckUpdates) CheckForUpdates(false);
             };
             updateCheckTimer.Start();
+
+            fastestTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(3.5) };
+            fastestTimer.Tick += (s, e) => { fastestTimer.Stop(); FinishConnectFastest(); };
+
+            powerModeHandler = (s, e) =>
+            {
+                if (e.Mode == Microsoft.Win32.PowerModes.Resume)
+                {
+                    var ui = Application.Current != null ? Application.Current.Dispatcher : null;
+                    if (ui != null)
+                    {
+                        ui.BeginInvoke(new Action(() =>
+                        {
+                            Latency.RouteChanged();
+                            ipTimer.Stop();
+                            ipTimer.Start();
+                            Poll();
+                        }));
+                    }
+                }
+            };
+            try { Microsoft.Win32.SystemEvents.PowerModeChanged += powerModeHandler; } catch { }
+
+            networkAddressHandler = (s, e) =>
+            {
+                var ui = Application.Current != null ? Application.Current.Dispatcher : null;
+                if (ui != null)
+                {
+                    ui.BeginInvoke(new Action(() =>
+                    {
+                        Latency.RouteChanged();
+                        ipTimer.Stop();
+                        ipTimer.Start();
+                    }));
+                }
+            };
+            try { System.Net.NetworkInformation.NetworkChange.NetworkAddressChanged += networkAddressHandler; } catch { }
 
             ListenForShowRequests();
             WatchConfigs();
@@ -444,7 +504,7 @@ namespace VpnPanel
         {
             if (pollTimer == null) return;
             bool fast = connecting || reconnectPending || WindowShowing || (wasRunning == true && monitoring && (!handshakeOk || pendingSince != null));
-            TimeSpan wanted = TimeSpan.FromSeconds(fast ? 1 : 3);
+            TimeSpan wanted = TimeSpan.FromSeconds(fast ? 1 : (wasRunning == true ? 3 : 12));
             if (pollTimer.Interval != wanted) pollTimer.Interval = wanted;
         }
 
@@ -584,6 +644,8 @@ namespace VpnPanel
         void Quit()
         {
             exiting = true;
+            if (powerModeHandler != null) { try { Microsoft.Win32.SystemEvents.PowerModeChanged -= powerModeHandler; } catch { } }
+            if (networkAddressHandler != null) { try { System.Net.NetworkInformation.NetworkChange.NetworkAddressChanged -= networkAddressHandler; } catch { } }
             if (hotkeyRegistered && windowHandle != IntPtr.Zero)
             {
                 UnregisterHotKey(windowHandle, HotkeyId);
@@ -655,7 +717,8 @@ namespace VpnPanel
         void InstallUpdate()
         {
             if (availableUpdate == null) return;
-            if (string.IsNullOrEmpty(availableUpdate.DownloadUrl))
+            if (string.IsNullOrEmpty(availableUpdate.DownloadUrl) ||
+                !availableUpdate.DownloadUrl.StartsWith("https://github.com/JMqz/VPN-Panel/releases/download/", StringComparison.OrdinalIgnoreCase))
             {
                 if (!string.IsNullOrEmpty(availableUpdate.HtmlUrl))
                     Process.Start(availableUpdate.HtmlUrl);
@@ -666,7 +729,9 @@ namespace VpnPanel
             btnApplyUpdate.Content = "Baixando...";
             txtUpdateFoundDetail.Text = "Baixando a versão " + availableUpdate.Version + "...";
 
-            string tempFile = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "VPN-Panel-Setup-" + availableUpdate.Version + ".exe");
+            string updateDir = System.IO.Path.Combine(Paths.Data, "updates");
+            try { Directory.CreateDirectory(updateDir); } catch { }
+            string tempFile = System.IO.Path.Combine(updateDir, "VPN-Panel-Setup-" + Guid.NewGuid().ToString("N").Substring(0, 8) + ".exe");
             var wc = new WebClient();
             wc.Headers["User-Agent"] = "vpn-panel";
             wc.DownloadProgressChanged += (s, e) =>
@@ -678,6 +743,7 @@ namespace VpnPanel
                 wc.Dispose();
                 if (e.Error != null)
                 {
+                    try { if (File.Exists(tempFile)) File.Delete(tempFile); } catch { }
                     btnApplyUpdate.IsEnabled = true;
                     btnApplyUpdate.Content = "Atualizar agora";
                     txtUpdateFoundDetail.Text = "Erro ao baixar: " + e.Error.Message;
@@ -687,6 +753,17 @@ namespace VpnPanel
 
                 try
                 {
+                    var fi = new FileInfo(tempFile);
+                    if (!fi.Exists || fi.Length < 100 * 1024)
+                    {
+                        try { if (File.Exists(tempFile)) File.Delete(tempFile); } catch { }
+                        throw new InvalidOperationException("O instalador baixado é inválido ou está incompleto.");
+                    }
+                    using (var fs = new FileStream(tempFile, FileMode.Open, FileAccess.Read, FileShare.Read))
+                    {
+                        // File can be read cleanly
+                    }
+
                     txtUpdateFoundDetail.Text = "Instalando atualização...";
                     btnApplyUpdate.Content = "Instalando...";
 
@@ -858,9 +935,23 @@ namespace VpnPanel
             connecting = false;
             StopMonitoring();
             if (byUser) reconnectAttempts = 0;
-            Tunnel.Stop(settings.NetworkLock);
-            ipTimer.Stop();
-            ipTimer.Start();
+            bool netLock = settings.NetworkLock;
+            UpdateState();
+            ThreadPool.QueueUserWorkItem(_ =>
+            {
+                Tunnel.Stop(netLock);
+                var ui = Application.Current != null ? Application.Current.Dispatcher : null;
+                if (ui != null)
+                {
+                    ui.BeginInvoke(new Action(() =>
+                    {
+                        ipTimer.Stop();
+                        ipTimer.Start();
+                        UpdatePollInterval();
+                        Poll();
+                    }));
+                }
+            });
             UpdatePollInterval();
         }
 
@@ -1473,12 +1564,48 @@ namespace VpnPanel
             string[] names = Paths.ConfigNames();
             serverList.Children.Clear();
             pingLabels.Clear();
+
+            if (serverSearchBox != null)
+                serverSearchBox.Visibility = names.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
+
+            string query = txtServerSearch != null ? txtServerSearch.Text.Trim() : null;
+            int matches = 0;
+
             foreach (string n in names)
             {
                 ConfigInfo c = active != null && n == active.Name ? active : ConfigInfo.Read(n);
                 if (c.Endpoint != null && c.Place == null) Geo.Lookup(c.Endpoint, ScheduleGeoRefresh);
+
+                if (!string.IsNullOrEmpty(query))
+                {
+                    bool match = n.IndexOf(query, StringComparison.OrdinalIgnoreCase) >= 0;
+                    if (!match && c.Place != null)
+                    {
+                        if (c.Place.Country != null && c.Place.Country.IndexOf(query, StringComparison.OrdinalIgnoreCase) >= 0) match = true;
+                        if (!match && c.Place.CountryName != null && c.Place.CountryName.IndexOf(query, StringComparison.OrdinalIgnoreCase) >= 0) match = true;
+                        if (!match && c.Place.City != null && c.Place.City.IndexOf(query, StringComparison.OrdinalIgnoreCase) >= 0) match = true;
+                    }
+                    if (!match && c.Endpoint != null && c.Endpoint.IndexOf(query, StringComparison.OrdinalIgnoreCase) >= 0) match = true;
+                    if (!match) continue;
+                }
+
                 serverList.Children.Add(ServerCard(c));
+                matches++;
             }
+
+            if (names.Length > 0 && matches == 0)
+            {
+                var noMatch = new TextBlock
+                {
+                    Text = "Nenhum servidor corresponde à pesquisa.",
+                    Foreground = B("Muted"),
+                    FontSize = 13,
+                    HorizontalAlignment = HorizontalAlignment.Center,
+                    Margin = new Thickness(0, 24, 0, 0)
+                };
+                serverList.Children.Add(noMatch);
+            }
+
             emptyServers.Visibility = names.Length == 0 ? Visibility.Visible : Visibility.Collapsed;
             // a server just added gets measured too (the others are still fresh in the cache)
             MeasureLatency(false);
@@ -1598,6 +1725,7 @@ namespace VpnPanel
             if (pingLabels.TryGetValue(host, out labels))
                 foreach (PingLabel l in labels) UpdatePingLabel(l);
             if (active != null && host.Equals(active.Endpoint, StringComparison.OrdinalIgnoreCase)) UpdateHomePing();
+            TryConnectFastestPending();
         }
 
         void UpdateAllPingLabels()
@@ -1693,9 +1821,8 @@ namespace VpnPanel
             {
                 // started but not seen running yet: replace it instead of running two clients
                 if (same) return;
-                Tunnel.Stop(settings.NetworkLock);
-                connecting = false;
-                Connect();
+                reconnectPending = true;
+                Disconnect(false);
             }
             else Connect();
         }
@@ -1750,17 +1877,70 @@ namespace VpnPanel
                 return;
             }
 
+            // Pings not yet cached: measure asynchronously and connect automatically
+            connectingFastestPending = true;
+            fastestStarted = DateTime.UtcNow;
+            if (fastestTimer.IsEnabled) fastestTimer.Stop();
+            fastestTimer.Start();
+
             var hosts = list.Select(s => s.Info.Endpoint).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
             Latency.Measure(hosts, true, wasRunning == true);
             if (WindowShowing)
             {
                 tabServers.IsChecked = true;
                 UpdateAllPingLabels();
-                Dialogs.Info(w, "Medindo latência", "Medindo a resposta dos servidores agora. Clique novamente em alguns segundos para conectar ao mais rápido.");
             }
             else
             {
-                tray.ShowBalloonTip(2500, "VPN Panel", "Medindo a resposta dos servidores. Tente novamente em instantes.", WF.ToolTipIcon.Info);
+                tray.ShowBalloonTip(2500, "VPN Panel", "Medindo latência dos servidores... Conectando ao mais rápido em instantes.", WF.ToolTipIcon.Info);
+            }
+        }
+
+        void FinishConnectFastest()
+        {
+            if (!connectingFastestPending) return;
+            connectingFastestPending = false;
+            if (fastestTimer.IsEnabled) fastestTimer.Stop();
+
+            string[] names = Paths.ConfigNames();
+            var list = names.Select(n => new { Name = n, Info = ConfigInfo.Read(n) })
+                            .Where(s => !string.IsNullOrEmpty(s.Info.Endpoint))
+                            .ToList();
+            if (list.Count == 0) return;
+
+            var withPing = list.Select(s => new { s.Name, Result = Latency.Cached(s.Info.Endpoint) })
+                               .Where(s => s.Result != null && s.Result.Ok)
+                               .OrderBy(s => s.Result.Ms)
+                               .ToList();
+
+            string target = withPing.Count > 0 ? withPing[0].Name : list[0].Name;
+            SwitchServer(target);
+            if (WindowShowing) tabHome.IsChecked = true;
+        }
+
+        void TryConnectFastestPending()
+        {
+            if (!connectingFastestPending) return;
+            string[] names = Paths.ConfigNames();
+            var list = names.Select(n => new { Name = n, Info = ConfigInfo.Read(n) })
+                            .Where(s => !string.IsNullOrEmpty(s.Info.Endpoint))
+                            .ToList();
+            if (list.Count == 0)
+            {
+                connectingFastestPending = false;
+                if (fastestTimer.IsEnabled) fastestTimer.Stop();
+                return;
+            }
+
+            bool allDone = list.All(s => Latency.Cached(s.Info.Endpoint) != null);
+            var withPing = list.Select(s => new { s.Name, Result = Latency.Cached(s.Info.Endpoint) })
+                               .Where(s => s.Result != null && s.Result.Ok)
+                               .OrderBy(s => s.Result.Ms)
+                               .ToList();
+
+            if (allDone || (withPing.Count > 0 && (DateTime.UtcNow - fastestStarted).TotalSeconds >= 1.5))
+            {
+                FinishConnectFastest();
             }
         }
 
@@ -2242,6 +2422,14 @@ namespace VpnPanel
 
         void ToggleStartup()
         {
+            if (!Paths.IsInstalled && chkStartup.IsChecked == true)
+            {
+                Dialogs.Info(w, "Instalação necessária", "Para iniciar automaticamente com o Windows de forma segura, instale o VPN Panel pelo instalador oficial.");
+                loading = true;
+                chkStartup.IsChecked = false;
+                loading = false;
+                return;
+            }
             try
             {
                 if (chkStartup.IsChecked == true) Tasks.Create(Tasks.Logon); else Tasks.Delete(Tasks.Logon);
@@ -2253,6 +2441,27 @@ namespace VpnPanel
                 chkStartup.IsChecked = !(chkStartup.IsChecked == true);
                 loading = false;
             }
+        }
+
+        void ResetNetworkLockAction()
+        {
+            ThreadPool.QueueUserWorkItem(_ =>
+            {
+                Tunnel.ResetNetworkLock();
+                var ui = Application.Current != null ? Application.Current.Dispatcher : null;
+                if (ui != null)
+                {
+                    ui.BeginInvoke(new Action(() =>
+                    {
+                        ipTimer.Stop();
+                        ipTimer.Start();
+                        if (WindowShowing)
+                            Dialogs.Info(w, "Internet liberada", "O bloqueio de rede do WireSock foi desativado com sucesso.\nO tráfego de internet foi normalizado.");
+                        else if (tray != null)
+                            tray.ShowBalloonTip(3000, "Internet liberada", "O bloqueio de rede do WireSock foi desativado.", WF.ToolTipIcon.Info);
+                    }));
+                }
+            });
         }
 
         // ---------- tray ----------

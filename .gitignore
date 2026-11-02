@@ -8,6 +8,7 @@ wiresock.log
 
 # Build output (published as GitHub Releases) and generated icon
 dist/
+out/
 src/vpn.ico
 CLAUDE.md
 

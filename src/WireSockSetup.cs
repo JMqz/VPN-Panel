@@ -37,13 +37,15 @@ namespace VpnPanel
             try
             {
                 status("Baixando o WireSock...");
-                string dir = Path.Combine(Path.GetTempPath(), "VpnPanel-WireSock");
+                string dir = Path.Combine(Paths.Data, "temp");
                 Directory.CreateDirectory(dir);
-                string file = Path.Combine(dir, "wiresock-setup.exe");
+                string file = Path.Combine(dir, "wiresock-setup-" + Guid.NewGuid().ToString("N").Substring(0, 8) + ".exe");
                 using (var web = new WebClient())
                     web.DownloadFile(string.Format(DownloadUrl, Platform()), file);
                 try
                 {
+                    var fi = new FileInfo(file);
+                    if (!fi.Exists || fi.Length < 100 * 1024) return "O arquivo do WireSock baixado é inválido ou está incompleto.";
                     if (!SignedByWireSock(file)) return "O arquivo baixado não tem a assinatura do WireSock, então não foi instalado.";
                     status("Instalando o WireSock...");
                     Run(file, "/S /NCRC", 5);

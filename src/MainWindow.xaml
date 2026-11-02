@@ -243,6 +243,7 @@
       <Grid x:Name="PageServers" Margin="20,0,20,12" Visibility="Collapsed">
         <Grid.RowDefinitions>
           <RowDefinition Height="Auto"/>
+          <RowDefinition Height="Auto"/>
           <RowDefinition Height="*"/>
           <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
@@ -268,11 +269,18 @@
           </StackPanel>
         </DockPanel>
 
-        <ScrollViewer Grid.Row="1" Margin="0,16,-8,0" Padding="0,0,8,0" VerticalScrollBarVisibility="Auto">
+        <!-- Search filter -->
+        <Grid x:Name="ServerSearchBox" Grid.Row="1" Margin="0,10,0,0">
+          <TextBox x:Name="TxtServerSearch" Style="{StaticResource Input}" Tag="Pesquisar servidor ou país..." Padding="10,6,28,6"/>
+          <Button x:Name="BtnClearServerSearch" Style="{StaticResource IconButton}" Content="&#xE711;" FontSize="10" Padding="4"
+                  HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,6,0" ToolTip="Limpar busca" Visibility="Collapsed"/>
+        </Grid>
+
+        <ScrollViewer Grid.Row="2" Margin="0,12,-8,0" Padding="0,0,8,0" VerticalScrollBarVisibility="Auto">
           <StackPanel x:Name="ServerList"/>
         </ScrollViewer>
 
-        <StackPanel x:Name="EmptyServers" Grid.Row="1" VerticalAlignment="Center" Margin="12,0" Visibility="Collapsed">
+        <StackPanel x:Name="EmptyServers" Grid.Row="2" VerticalAlignment="Center" Margin="12,0" Visibility="Collapsed">
           <Border Width="64" Height="64" CornerRadius="32" Background="{StaticResource Surface2}" HorizontalAlignment="Center">
             <TextBlock Text="&#xE774;" FontFamily="{StaticResource Icons}" FontSize="26" Foreground="{StaticResource Muted}"
                        HorizontalAlignment="Center" VerticalAlignment="Center"/>
@@ -283,7 +291,7 @@
           <Button x:Name="BtnEmptyHelp" Style="{StaticResource GhostButton}" Content="Como conseguir o arquivo?" HorizontalAlignment="Center" Margin="0,14,0,0"/>
         </StackPanel>
 
-        <Button x:Name="BtnServersHelp" Grid.Row="2" AutomationProperties.Name="Onde consigo mais servidores" Style="{StaticResource GhostButton}" Background="Transparent" HorizontalAlignment="Center"
+        <Button x:Name="BtnServersHelp" Grid.Row="3" AutomationProperties.Name="Onde consigo mais servidores" Style="{StaticResource GhostButton}" Background="Transparent" HorizontalAlignment="Center"
                 Padding="10,6" Margin="0,6,0,0">
           <StackPanel Orientation="Horizontal">
             <TextBlock Text="&#xE897;" FontFamily="{StaticResource Icons}" FontSize="12" Foreground="{StaticResource Muted}" VerticalAlignment="Center" Margin="0,0,7,0"/>
@@ -470,6 +478,13 @@
                   <TextBlock DockPanel.Dock="Right" Text="&#xE76C;" FontFamily="{StaticResource Icons}" FontSize="11" Foreground="{StaticResource Muted}" VerticalAlignment="Center"/>
                   <TextBlock Text="&#xE8B7;" FontFamily="{StaticResource Icons}" FontSize="14" Foreground="{StaticResource Muted}" VerticalAlignment="Center" Margin="0,0,12,0"/>
                   <TextBlock Text="Abrir pasta de dados" VerticalAlignment="Center"/>
+                </DockPanel>
+              </Button>
+              <Button x:Name="BtnResetLock" AutomationProperties.Name="Liberar internet (reset do bloqueio)" Style="{StaticResource GhostButton}" Background="Transparent" HorizontalContentAlignment="Stretch" Padding="10,9" ToolTip="Desativa o bloqueio de rede do WireSock e restaura o acesso à internet">
+                <DockPanel>
+                  <TextBlock DockPanel.Dock="Right" Text="&#xE76C;" FontFamily="{StaticResource Icons}" FontSize="11" Foreground="{StaticResource Muted}" VerticalAlignment="Center"/>
+                  <TextBlock Text="&#xE72C;" FontFamily="{StaticResource Icons}" FontSize="14" Foreground="{StaticResource Muted}" VerticalAlignment="Center" Margin="0,0,12,0"/>
+                  <TextBlock Text="Liberar internet (reset do bloqueio)" VerticalAlignment="Center"/>
                 </DockPanel>
               </Button>
               <Button x:Name="BtnQuit" AutomationProperties.Name="Sair do VPN Panel" Style="{StaticResource GhostButton}" Background="Transparent" HorizontalContentAlignment="Stretch" Padding="10,9">

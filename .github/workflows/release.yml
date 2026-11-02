@@ -19,7 +19,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Tag da release (ex.: v2.5). Vazio = so compila, sem publicar.'
+        description: 'Tag da release (ex.: v2.6). Vazio = so compila, sem publicar.'
         required: false
 
 permissions:
