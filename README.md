@@ -65,7 +65,7 @@ O VPN Panel aceita `.conf` e também `.zip` com vários `.conf` dentro (como o d
 
 O servidor aparece na lista com a sigla do país e a cidade.
 
-Para saber qual servidor responde mais rápido, clique no botão de medir latência no topo da aba **Servidores**: cada servidor ganha o ping em milissegundos (ex.: `42 ms`), em verde, âmbar ou vermelho. Alguns servidores não respondem a ping e aparecem como "sem ping", o que não impede a conexão.
+Para saber qual servidor responde mais rápido, clique no botão de medir latência no topo da aba **Servidores**: cada servidor ganha o ping em milissegundos (ex.: `42 ms`), em verde, âmbar ou vermelho. Você também pode clicar no botão **Mais rápido** (ou escolher no menu da bandeja perto do relógio) para conectar diretamente ao servidor com menor ping. Alguns servidores não respondem a ping e aparecem como "sem ping", o que não impede a conexão.
 
 ### 5. Conecte
 
@@ -99,9 +99,11 @@ Com **Usar em todos os servidores** ligado, a mesma lista de programas vale para
 |---|---|
 | Reconectar se a conexão cair | Tenta voltar sozinho até 3 vezes. Vem ligada. |
 | Bloquear a internet se a VPN cair | Enquanto a VPN estiver ligada, nada sai do computador sem proteção. |
+| Atalho global (Ctrl + Alt + V) | Liga ou desliga a VPN em qualquer momento, mesmo com outro app ou jogo em tela cheia. |
 | Iniciar com o Windows | O aplicativo abre escondido perto do relógio. |
 | Conectar ao abrir | Liga a VPN assim que o aplicativo abre. Junto com a opção anterior, você fica protegido desde que liga o computador. |
 | Abrir sem pedir permissão | O Windows só pergunta na primeira vez. Vem ligada. |
+| Fazer backup dos servidores (.zip) | Exporta todos os seus servidores `.conf` em um único arquivo `.zip` para guardar ou migrar de PC. |
 
 **Perto do relógio:** fechar a janela não fecha o aplicativo, ele continua no canto da barra de tarefas, perto do relógio. O ícone fica verde quando conectado, âmbar quando o servidor não responde e cinza quando desconectado. Clique com o botão direito no ícone para conectar, desconectar ou sair. No mesmo menu dá para trocar de servidor sem abrir a janela: os usados por último aparecem em **Recentes**, logo no menu, e a lista completa fica em **Todos os servidores**.
 

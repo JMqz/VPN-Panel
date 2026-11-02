@@ -6,6 +6,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Net;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
@@ -63,7 +64,7 @@ namespace VpnPanel
         readonly Border appListCard, applyBanner;
         readonly StackPanel appList;
         // Opções
-        readonly CheckBox chkReconnect, chkLock, chkStartup, chkAuto, chkSkipUac;
+        readonly CheckBox chkReconnect, chkLock, chkHotkey, chkStartup, chkAuto, chkSkipUac;
         // Tabs
         readonly RadioButton tabHome, tabServers, tabApps, tabOptions;
         readonly FrameworkElement pageHome, pageServers, pageApps, pageOptions;
@@ -79,10 +80,28 @@ namespace VpnPanel
         readonly Dictionary<string, ImageSource> iconCache = new Dictionary<string, ImageSource>(StringComparer.OrdinalIgnoreCase);
         readonly Dictionary<string, DateTime> iconMisses = new Dictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
 
-        bool exiting, hintShown, loading, serversDirty, appsDirty;
+        bool exiting, hintShown, loading, serversDirty, appsDirty, ipDirty;
         bool? wasRunning;
         bool userStopped, connecting, reconnectPending;
         int reconnectAttempts;
+        uint msgTaskbarCreated;
+        IntPtr windowHandle;
+        bool hotkeyRegistered;
+
+        const int HotkeyId = 9001;
+        const uint ModAlt = 0x0001;
+        const uint ModControl = 0x0002;
+        const uint VkV = 0x56;
+        const int WmHotkey = 0x0312;
+
+        [DllImport("user32.dll", SetLastError = true)]
+        static extern bool RegisterHotKey(IntPtr hWnd, int id, uint fsModifiers, uint vk);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        static extern bool UnregisterHotKey(IntPtr hWnd, int id);
+
+        [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+        static extern uint RegisterWindowMessage(string lpString);
         DateTime connectRequested, startedAt, lastProcScan;
         Conn shown = Conn.Off;
         Action bannerPrimary, bannerSecondary;
@@ -186,6 +205,7 @@ namespace VpnPanel
             appList = E<StackPanel>("AppList");
             chkReconnect = E<CheckBox>("ChkReconnect");
             chkLock = E<CheckBox>("ChkLock");
+            chkHotkey = E<CheckBox>("ChkHotkey");
             chkStartup = E<CheckBox>("ChkStartup");
             chkAuto = E<CheckBox>("ChkAuto");
             chkSkipUac = E<CheckBox>("ChkSkipUac");
@@ -215,6 +235,14 @@ namespace VpnPanel
                     tray.ShowBalloonTip(2000, "VPN Panel", "Continuo aqui na bandeja. Clique com o botão direito no ícone para sair.", WF.ToolTipIcon.Info);
                     hintShown = true;
                 }
+            };
+            w.SourceInitialized += (s, e) =>
+            {
+                windowHandle = new WindowInteropHelper(w).Handle;
+                msgTaskbarCreated = RegisterWindowMessage("TaskbarCreated");
+                var src = HwndSource.FromHwnd(windowHandle);
+                if (src != null) src.AddHook(WndProc);
+                SyncHotkey();
             };
             w.IsVisibleChanged += (s, e) => OnVisibilityChanged();
             w.StateChanged += (s, e) => OnVisibilityChanged();
@@ -247,6 +275,7 @@ namespace VpnPanel
             E<Button>("BtnEmptyHelp").Click += (s, e) => OpenGuide(false);
             E<Button>("BtnServersHelp").Click += (s, e) => OpenGuide(false);
             E<Button>("BtnPing").Click += (s, e) => MeasureLatency(true);
+            E<Button>("BtnFastest").Click += (s, e) => ConnectFastest();
             Latency.Measured += OnLatencyMeasured;
             w.DragOver += (s, e) =>
             {
@@ -277,6 +306,7 @@ namespace VpnPanel
             chkLock.IsChecked = settings.NetworkLock;
             chkAuto.IsChecked = settings.AutoConnect;
             chkSkipUac.IsChecked = settings.SkipUac;
+            chkHotkey.IsChecked = settings.Hotkey;
             try { chkStartup.IsChecked = Tasks.Exists(Tasks.Logon); } catch { }
             loading = false;
             // Checked/Unchecked rather than Click, so screen readers' toggle works too
@@ -290,8 +320,10 @@ namespace VpnPanel
             onToggle(chkLock, SaveSettings);
             onToggle(chkAuto, SaveSettings);
             onToggle(chkSkipUac, () => { SaveSettings(); SyncTasks(); });
+            onToggle(chkHotkey, () => { SaveSettings(); SyncHotkey(); });
             onToggle(chkStartup, ToggleStartup);
             onToggle(chkSharedApps, ToggleSharedApps);
+            E<Button>("BtnBackup").Click += (s, e) => ExportBackup();
             E<Button>("BtnLog").Click += (s, e) => OpenLog();
             E<Button>("BtnDataDir").Click += (s, e) => Process.Start("explorer.exe", "\"" + Paths.Data + "\"");
             E<Button>("BtnQuit").Click += (s, e) => Quit();
@@ -306,6 +338,7 @@ namespace VpnPanel
             miStatus.Enabled = false;
             menu.Items.Add(new WF.ToolStripSeparator());
             miToggle = (WF.ToolStripMenuItem)menu.Items.Add("Conectar", null, (s, e) => Toggle());
+            menu.Items.Add("Conectar ao mais rápido", null, (s, e) => ConnectFastest());
             menu.Items.Add(new WF.ToolStripSeparator());
             // recent servers go here (UpdateTrayServers), then every server in a submenu
             miAllServers = (WF.ToolStripMenuItem)menu.Items.Add("Todos os servidores");
@@ -364,6 +397,7 @@ namespace VpnPanel
                 if (appsDirty) RenderApps();
                 UpdateTraffic();
                 if (wasRunning == true) UpdateUptimeText();
+                if (ipDirty) CheckIp();
                 MeasureLatency(false);
                 if (shown == Conn.On)
                 {
@@ -444,6 +478,42 @@ namespace VpnPanel
             ThreadPool.QueueUserWorkItem(_ => Tasks.Sync(skip));
         }
 
+        IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
+        {
+            if (msg == WmHotkey && wParam.ToInt32() == HotkeyId)
+            {
+                Toggle();
+                handled = true;
+            }
+            else if (msgTaskbarCreated != 0 && msg == msgTaskbarCreated)
+            {
+                tray.Visible = false;
+                tray.Visible = true;
+            }
+            return IntPtr.Zero;
+        }
+
+        void SyncHotkey()
+        {
+            if (windowHandle == IntPtr.Zero) return;
+            if (settings.Hotkey && !hotkeyRegistered)
+            {
+                hotkeyRegistered = RegisterHotKey(windowHandle, HotkeyId, ModControl | ModAlt, VkV);
+                if (!hotkeyRegistered)
+                {
+                    Dialogs.Info(w, "Atalho não registrado", "O atalho Ctrl + Alt + V já está sendo usado por outro aplicativo.");
+                    chkHotkey.IsChecked = false;
+                    settings.Hotkey = false;
+                    settings.Save();
+                }
+            }
+            else if (!settings.Hotkey && hotkeyRegistered)
+            {
+                UnregisterHotKey(windowHandle, HotkeyId);
+                hotkeyRegistered = false;
+            }
+        }
+
         void ShowWindow()
         {
             w.Show();
@@ -487,6 +557,11 @@ namespace VpnPanel
         void Quit()
         {
             exiting = true;
+            if (hotkeyRegistered && windowHandle != IntPtr.Zero)
+            {
+                UnregisterHotKey(windowHandle, HotkeyId);
+                hotkeyRegistered = false;
+            }
             pollTimer.Stop();
             CloseLogStream();
             if (showWaitReg != null) { try { showWaitReg.Unregister(null); } catch { } }
@@ -551,6 +626,7 @@ namespace VpnPanel
             settings.NetworkLock = chkLock.IsChecked == true;
             settings.AutoConnect = chkAuto.IsChecked == true;
             settings.SkipUac = chkSkipUac.IsChecked == true;
+            settings.Hotkey = chkHotkey.IsChecked == true;
             settings.Save();
         }
 
@@ -1188,6 +1264,12 @@ namespace VpnPanel
 
         void CheckIp()
         {
+            if (!WindowShowing)
+            {
+                ipDirty = true;
+                return;
+            }
+            ipDirty = false;
             if (ipClient != null)
             {
                 try { ipClient.CancelAsync(); ipClient.Dispose(); } catch { }
@@ -1493,6 +1575,70 @@ namespace VpnPanel
             else Connect();
         }
 
+        void ConnectFastest()
+        {
+            string[] names = Paths.ConfigNames();
+            if (names.Length == 0)
+            {
+                if (WindowShowing) Dialogs.Info(w, "Nenhum servidor", "Adicione um servidor antes de conectar.");
+                return;
+            }
+            if (names.Length == 1)
+            {
+                SwitchServer(names[0]);
+                if (WindowShowing) tabHome.IsChecked = true;
+                return;
+            }
+
+            var list = names.Select(n => new { Name = n, Info = ConfigInfo.Read(n) })
+                            .Where(s => !string.IsNullOrEmpty(s.Info.Endpoint))
+                            .ToList();
+
+            if (list.Count == 0)
+            {
+                SwitchServer(names[0]);
+                if (WindowShowing) tabHome.IsChecked = true;
+                return;
+            }
+
+            var withPing = list.Select(s => new { s.Name, Result = Latency.Cached(s.Info.Endpoint) })
+                               .Where(s => s.Result != null && s.Result.Ok)
+                               .OrderBy(s => s.Result.Ms)
+                               .ToList();
+
+            if (withPing.Count > 0)
+            {
+                SwitchServer(withPing[0].Name);
+                if (WindowShowing) tabHome.IsChecked = true;
+                return;
+            }
+
+            bool allTested = list.All(s => Latency.Cached(s.Info.Endpoint) != null);
+            if (allTested)
+            {
+                SwitchServer(list[0].Name);
+                if (WindowShowing)
+                {
+                    tabHome.IsChecked = true;
+                    Dialogs.Info(w, "Latência indisponível", "Os servidores não respondem a ping ICMP. Conectando ao primeiro servidor.");
+                }
+                return;
+            }
+
+            var hosts = list.Select(s => s.Info.Endpoint).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+            Latency.Measure(hosts, true, wasRunning == true);
+            if (WindowShowing)
+            {
+                tabServers.IsChecked = true;
+                UpdateAllPingLabels();
+                Dialogs.Info(w, "Medindo latência", "Medindo a resposta dos servidores agora. Clique novamente em alguns segundos para conectar ao mais rápido.");
+            }
+            else
+            {
+                tray.ShowBalloonTip(2500, "VPN Panel", "Medindo a resposta dos servidores. Tente novamente em instantes.", WF.ToolTipIcon.Info);
+            }
+        }
+
         void RenameConfig(string name)
         {
             if (IsLive(name)) { Dialogs.Info(w, "Servidor em uso", "Desconecte a VPN antes de renomear este servidor."); return; }
@@ -1516,6 +1662,8 @@ namespace VpnPanel
             if (!Dialogs.Confirm(w, "Excluir " + name + "?", "O arquivo vai para a Lixeira do Windows, então dá para recuperar depois.", "Excluir", true)) return;
             try { ConfFile.Delete(name); }
             catch (Exception ex) { Dialogs.Info(w, "Não foi possível excluir", ex.Message); }
+            settings.Recent.RemoveAll(n => n.Equals(name, StringComparison.OrdinalIgnoreCase));
+            settings.Save();
             RefreshConfigs();
             MigrateSharedApps();
             LoadAppsEditor();
@@ -1538,6 +1686,43 @@ namespace VpnPanel
                 Multiselect = true,
             };
             if (ofd.ShowDialog(w) == true) Import(ofd.FileNames);
+        }
+
+        void ExportBackup()
+        {
+            try
+            {
+                if (!Directory.Exists(Paths.Configs) || !Directory.GetFiles(Paths.Configs, "*.conf").Any())
+                {
+                    Dialogs.Info(w, "Nenhum servidor", "Você ainda não tem nenhum servidor configurado para exportar.");
+                    return;
+                }
+                var sfd = new Microsoft.Win32.SaveFileDialog
+                {
+                    Title = "Exportar backup dos servidores",
+                    Filter = "Arquivo Zip (*.zip)|*.zip",
+                    FileName = "VPN-Panel-Servidores-" + DateTime.Now.ToString("yyyy-MM-dd") + ".zip"
+                };
+                if (sfd.ShowDialog(w) == true)
+                {
+                    string tmpZip = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "vpn_backup_" + Guid.NewGuid().ToString("N") + ".zip");
+                    try
+                    {
+                        System.IO.Compression.ZipFile.CreateFromDirectory(Paths.Configs, tmpZip);
+                        if (File.Exists(sfd.FileName)) File.Delete(sfd.FileName);
+                        File.Move(tmpZip, sfd.FileName);
+                        Dialogs.Info(w, "Backup concluído", "Seus servidores foram salvos em:\n" + sfd.FileName);
+                    }
+                    finally
+                    {
+                        if (File.Exists(tmpZip)) { try { File.Delete(tmpZip); } catch { } }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Dialogs.Info(w, "Erro no backup", "Não foi possível salvar o backup: " + ex.Message);
+            }
         }
 
         void Import(IEnumerable<string> files)

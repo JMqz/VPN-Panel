@@ -253,6 +253,13 @@
               <TextBlock Text="Adicionar" VerticalAlignment="Center"/>
             </StackPanel>
           </Button>
+          <Button x:Name="BtnFastest" AutomationProperties.Name="Conectar ao mais rápido" DockPanel.Dock="Right" Style="{StaticResource GhostButton}"
+                  Padding="10,6" Margin="0,0,6,0" VerticalAlignment="Center" ToolTip="Conectar ao servidor com menor ping">
+            <StackPanel Orientation="Horizontal">
+              <TextBlock Text="&#xE945;" FontFamily="{StaticResource Icons}" FontSize="12" Foreground="{StaticResource Accent}" VerticalAlignment="Center" Margin="0,0,6,0"/>
+              <TextBlock Text="Mais rápido" VerticalAlignment="Center"/>
+            </StackPanel>
+          </Button>
           <Button x:Name="BtnPing" AutomationProperties.Name="Medir latência dos servidores" DockPanel.Dock="Right" Style="{StaticResource IconButton}"
                   Content="&#xE72C;" FontSize="12" Padding="8" Margin="0,0,6,0" VerticalAlignment="Center" ToolTip="Medir a latência (ping) de novo"/>
           <StackPanel>
@@ -381,6 +388,13 @@
                   <TextBlock Style="{StaticResource Caption}" Margin="0,2,0,0" Text="Nada sai sem proteção (kill switch). Vale na próxima conexão."/>
                 </StackPanel>
               </CheckBox>
+              <Border Height="1" Background="{StaticResource Line}" Margin="0,14"/>
+              <CheckBox x:Name="ChkHotkey" AutomationProperties.Name="Atalho global Ctrl+Alt+V para conectar e desconectar" Style="{StaticResource Switch}">
+                <StackPanel>
+                  <TextBlock Text="Atalho global (Ctrl + Alt + V)" FontWeight="SemiBold"/>
+                  <TextBlock Style="{StaticResource Caption}" Margin="0,2,0,0" Text="Liga ou desliga a VPN de qualquer janela ou jogo."/>
+                </StackPanel>
+              </CheckBox>
             </StackPanel>
           </Border>
 
@@ -412,6 +426,13 @@
 
           <Border Style="{StaticResource Card}" Margin="0,18,0,0" Padding="6">
             <StackPanel>
+              <Button x:Name="BtnBackup" AutomationProperties.Name="Fazer backup dos servidores" Style="{StaticResource GhostButton}" Background="Transparent" HorizontalContentAlignment="Stretch" Padding="10,9">
+                <DockPanel>
+                  <TextBlock DockPanel.Dock="Right" Text="&#xE76C;" FontFamily="{StaticResource Icons}" FontSize="11" Foreground="{StaticResource Muted}" VerticalAlignment="Center"/>
+                  <TextBlock Text="&#xE72D;" FontFamily="{StaticResource Icons}" FontSize="14" Foreground="{StaticResource Muted}" VerticalAlignment="Center" Margin="0,0,12,0"/>
+                  <TextBlock Text="Fazer backup dos servidores (.zip)" VerticalAlignment="Center"/>
+                </DockPanel>
+              </Button>
               <Button x:Name="BtnLog" AutomationProperties.Name="Ver log da conexão" Style="{StaticResource GhostButton}" Background="Transparent" HorizontalContentAlignment="Stretch" Padding="10,9">
                 <DockPanel>
                   <TextBlock DockPanel.Dock="Right" Text="&#xE76C;" FontFamily="{StaticResource Icons}" FontSize="11" Foreground="{StaticResource Muted}" VerticalAlignment="Center"/>

@@ -305,6 +305,7 @@ namespace VpnPanel
         public AppMode AppsMode = AppMode.All;
         public List<string> Apps = new List<string>();
         public bool HasSharedAppsKey;
+        public bool Hotkey = false;
         public List<string> Recent = new List<string>(); // servers connected to, newest first
 
         const int MaxRecent = 5;
@@ -337,6 +338,7 @@ namespace VpnPanel
                 if (d.TryGetValue("autoConnect", out v) && v is bool) s.AutoConnect = (bool)v;
                 if (d.TryGetValue("autoReconnect", out v) && v is bool) s.AutoReconnect = (bool)v;
                 if (d.TryGetValue("skipUac", out v) && v is bool) s.SkipUac = (bool)v;
+                if (d.TryGetValue("hotkey", out v) && v is bool) s.Hotkey = (bool)v;
                 if (d.TryGetValue("sharedApps", out v) && v is bool) { s.SharedApps = (bool)v; s.HasSharedAppsKey = true; }
                 if (d.TryGetValue("appsMode", out v) && v is string)
                 {
@@ -376,6 +378,7 @@ namespace VpnPanel
                     { "config", Config }, { "networkLock", NetworkLock }, { "autoConnect", AutoConnect },
                     { "autoReconnect", AutoReconnect }, { "skipUac", SkipUac }, { "recent", Recent },
                     { "sharedApps", SharedApps }, { "appsMode", AppsMode.ToString() }, { "apps", Apps },
+                    { "hotkey", Hotkey },
                 };
                 File.WriteAllText(Paths.Settings, new JavaScriptSerializer().Serialize(d));
             }
@@ -1013,7 +1016,14 @@ namespace VpnPanel
             try
             {
                 IPAddress ip;
-                if (!IPAddress.TryParse(host, out ip)) ip = Dns.GetHostAddresses(host).First();
+                if (!IPAddress.TryParse(host, out ip))
+                {
+                    IAsyncResult ar = Dns.BeginGetHostAddresses(host, null, null);
+                    if (!ar.AsyncWaitHandle.WaitOne(1500)) return -1;
+                    IPAddress[] addrs = Dns.EndGetHostAddresses(ar);
+                    if (addrs == null || addrs.Length == 0) return -1;
+                    ip = addrs[0];
+                }
                 using (var ping = new System.Net.NetworkInformation.Ping())
                 {
                     var first = ping.Send(ip, FirstTimeoutMs);
