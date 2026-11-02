@@ -113,6 +113,8 @@ jobs:
           New-Item -ItemType Directory -Force out | Out-Null
           Copy-Item "dist/VPN Panel Setup.exe" "out/VPN-Panel-Setup-$v.exe"
           Copy-Item "dist/VpnPanel.exe" "out/VpnPanel-$v-portatil.exe"
+          Compress-Archive -Path "dist/VPN Panel Setup.exe" -DestinationPath "out/VPN-Panel-Setup-$v.zip"
+          Compress-Archive -Path "dist/VpnPanel.exe" -DestinationPath "out/VpnPanel-$v-portatil.zip"
 
       - name: Keep build
         uses: actions/upload-artifact@v4
