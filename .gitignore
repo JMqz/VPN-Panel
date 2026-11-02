@@ -9,6 +9,7 @@ wiresock.log
 # Build output (published as GitHub Releases) and generated icon
 dist/
 src/vpn.ico
+CLAUDE.md
 
 # Old PowerShell version (personal paths)
 vpn-panel.ps1

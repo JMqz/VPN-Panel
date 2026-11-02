@@ -16,8 +16,8 @@ Você vai precisar de:
 
 ### 1. Instale o VPN Panel
 
-1. Abra a [página de downloads](https://github.com/JMqz/VPN-Panel/releases/latest) e baixe o arquivo **`VPN-Panel-Setup-2.4.exe`**.
-2. Abra o arquivo baixado.
+1. Abra a [página de downloads](https://github.com/JMqz/VPN-Panel/releases/latest) e baixe o arquivo **`VPN-Panel-Setup-2.4.exe`** (ou o arquivo **`VPN-Panel-Setup-2.4.zip`** caso o navegador bloqueie o download do `.exe`).
+2. Abra o arquivo baixado (se baixou o `.zip`, extraia o instalador antes).
 3. Se aparecer a tela azul **"O Windows protegeu o computador"**, clique em **Mais informações** e depois em **Executar assim mesmo**. O aviso aparece porque o aplicativo não tem assinatura digital paga.
 4. O Windows pede permissão de administrador: clique em **Sim**.
 5. Escolha se quer o atalho na área de trabalho e clique em **Instalar**.
@@ -119,7 +119,8 @@ Com **Usar em todos os servidores** ligado, a mesma lista de programas vale para
 | **"O WireSock não conseguiu preparar a rede"** | Reinstale o WireSock e reinicie o computador. |
 | O **IP mostrado continua o meu**, mesmo conectado | É normal no modo **Só estes**: o aplicativo mostra o IP dos programas fora da VPN. No modo **Todos**, deve aparecer o IP do servidor. Clique em ↻ ao lado de "Seu IP" para verificar de novo. |
 | **Fiquei sem internet** | Se "Bloquear a internet se a VPN cair" estiver ligada e o servidor parar de responder, a internet fica bloqueada. Clique em **Desconectar** ou troque de servidor. |
-| O **antivírus** reclamou do instalador | Acontece com aplicativos sem assinatura digital paga. Baixe sempre pela [página de downloads](https://github.com/JMqz/VPN-Panel/releases) deste repositório. |
+| O **navegador bloqueou o download** | Navegadores como Edge e Chrome bloqueiam downloads diretos de `.exe` sem assinatura. Baixe a versão em **`.zip`** (`VPN-Panel-Setup-2.4.zip`), extraia e execute o instalador. |
+| O **antivírus** reclamou do instalador ou do Controle Inteligente | Acontece com aplicativos sem assinatura digital paga. Se o Windows bloquear, clique com o botão direito no arquivo baixado → **Propriedades** → marque a caixinha **Desbloquear** no rodapé e clique em **OK**. |
 | Quero ver o que aconteceu | **Opções → Ver log da conexão**. |
 
 ## Desinstalar
