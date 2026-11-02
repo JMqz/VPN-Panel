@@ -6,6 +6,8 @@ using System;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Runtime.InteropServices;
+using System.Text;
 using System.Threading;
 using System.Windows;
 using System.Windows.Controls;
@@ -17,6 +19,43 @@ using Microsoft.Win32;
 
 namespace VpnPanel
 {
+    [ComImport, Guid("00021401-0000-0000-C000-000000000046")]
+    class ShellLink { }
+
+    [ComImport, InterfaceType(ComInterfaceType.InterfaceIsIUnknown), Guid("000214F9-0000-0000-C000-000000000046")]
+    interface IShellLinkW
+    {
+        void GetPath([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder pszFile, int cchMaxPath, out IntPtr pfd, uint fFlags);
+        void GetIDList(out IntPtr ppidl);
+        void SetIDList(IntPtr pidl);
+        void GetDescription([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder pszName, int cchMaxName);
+        void SetDescription([MarshalAs(UnmanagedType.LPWStr)] string pszName);
+        void GetWorkingDirectory([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder pszDir, int cchMaxPath);
+        void SetWorkingDirectory([MarshalAs(UnmanagedType.LPWStr)] string pszDir);
+        void GetArguments([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder pszArgs, int cchMaxPath);
+        void SetArguments([MarshalAs(UnmanagedType.LPWStr)] string pszArgs);
+        void GetHotkey(out short pwHotkey);
+        void SetHotkey(short wHotkey);
+        void GetShowCmd(out int piShowCmd);
+        void SetShowCmd(int iShowCmd);
+        void GetIconLocation([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder pszIconPath, int cchIconPath, out int piIcon);
+        void SetIconLocation([MarshalAs(UnmanagedType.LPWStr)] string pszIconPath, int iIcon);
+        void SetRelativePath([MarshalAs(UnmanagedType.LPWStr)] string pszPathRel, uint dwReserved);
+        void Resolve(IntPtr hwnd, uint fFlags);
+        void SetPath([MarshalAs(UnmanagedType.LPWStr)] string pszFile);
+    }
+
+    [ComImport, InterfaceType(ComInterfaceType.InterfaceIsIUnknown), Guid("0000010b-0000-0000-C000-000000000046")]
+    interface IPersistFile
+    {
+        void GetClassID(out Guid pClassID);
+        void IsDirty();
+        void Load([MarshalAs(UnmanagedType.LPWStr)] string pszFileName, uint dwMode);
+        void Save([MarshalAs(UnmanagedType.LPWStr)] string pszFileName, [MarshalAs(UnmanagedType.Bool)] bool fRemember);
+        void SaveCompleted([MarshalAs(UnmanagedType.LPWStr)] string pszFileName);
+        void GetCurFile([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder ppszFileName);
+    }
+
     static class Installer
     {
         public const string AppName = "VPN Panel";
@@ -33,6 +72,24 @@ namespace VpnPanel
                 using (RegistryKey k = Registry.LocalMachine.OpenSubKey(UninstallKey))
                     return k != null && File.Exists(Exe) ? k.GetValue("DisplayVersion") as string : null;
             }
+        }
+
+        public static byte[] GetAppBytes()
+        {
+            Stream s = Res.Open("app.payload");
+            if (s != null)
+            {
+                using (s)
+                using (var gz = new System.IO.Compression.GZipStream(s, System.IO.Compression.CompressionMode.Decompress))
+                using (var ms = new MemoryStream())
+                {
+                    byte[] buf = new byte[8192];
+                    int r;
+                    while ((r = gz.Read(buf, 0, buf.Length)) > 0) ms.Write(buf, 0, r);
+                    return ms.ToArray();
+                }
+            }
+            return Res.Bytes("VpnPanel.exe");
         }
 
         // Closes other running copies of the app (the VPN tunnel itself keeps running)
@@ -52,13 +109,16 @@ namespace VpnPanel
 
         static void Shortcut(string link)
         {
-            dynamic shell = Activator.CreateInstance(Type.GetTypeFromProgID("WScript.Shell"));
-            dynamic s = shell.CreateShortcut(link);
-            s.TargetPath = Exe;
-            s.WorkingDirectory = Dir;
-            s.IconLocation = Exe + ",0";
-            s.Description = "Conecte sua VPN WireGuard com um clique";
-            s.Save();
+            try
+            {
+                var linkObj = (IShellLinkW)new ShellLink();
+                linkObj.SetPath(Exe);
+                linkObj.SetWorkingDirectory(Dir);
+                linkObj.SetIconLocation(Exe, 0);
+                linkObj.SetDescription("Conecte sua VPN WireGuard com um clique");
+                ((IPersistFile)linkObj).Save(link, true);
+            }
+            catch { }
         }
 
         // Keeps the user's choice when updating without the window
@@ -190,7 +250,7 @@ namespace VpnPanel
             // --silent: update in place without the window (the running tunnel is left alone), then reopen the panel
             if (args.Any(a => a.Equals("--silent", StringComparison.OrdinalIgnoreCase)))
             {
-                Installer.Install(Res.Bytes("VpnPanel.exe"), Installer.HasDesktopShortcut);
+                Installer.Install(Installer.GetAppBytes(), Installer.HasDesktopShortcut);
                 if (Paths.WireSock == null) WireSockSetup.Install(text => { });
                 try { Process.Start(new ProcessStartInfo(Installer.Exe) { WorkingDirectory = Installer.Dir }).Dispose(); } catch { }
                 return;
@@ -303,7 +363,7 @@ namespace VpnPanel
                 install.IsEnabled = false;
                 install.Content = "Instalando...";
                 bool wantDesktop = desktop.IsChecked == true;
-                byte[] exe = Res.Bytes("VpnPanel.exe");
+                byte[] exe = Installer.GetAppBytes();
                 var worker = new Thread(() =>
                 {
                     Exception error = null;

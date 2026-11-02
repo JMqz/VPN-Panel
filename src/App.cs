@@ -25,7 +25,13 @@ using System.Windows.Markup;
 using System.Windows.Shell;
 
 [assembly: AssemblyTitle("VPN Panel")]
+[assembly: AssemblyDescription("Painel para WireSock WireGuard no Windows")]
+[assembly: AssemblyCompany("VPN Panel")]
 [assembly: AssemblyProduct("VPN Panel")]
+[assembly: AssemblyCopyright("Copyright © 2026 VPN Panel")]
+[assembly: AssemblyTrademark("VPN Panel")]
+[assembly: ComVisible(false)]
+[assembly: Guid("b7c93e48-8120-4a87-8d2b-65c71d798a21")]
 [assembly: AssemblyVersion("2.4.0.0")]
 [assembly: AssemblyFileVersion("2.4.0.0")]
 

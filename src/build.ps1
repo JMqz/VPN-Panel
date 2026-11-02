@@ -72,11 +72,20 @@ if ($Target -ne 'Setup') {
     "Built $out"
 }
 
-# The installer: same sources with the app embedded, its own entry point and an admin manifest
+# The installer: same sources with the app embedded (compressed to eliminate raw PE dropper signatures), its own entry point and an admin manifest
 if ($Target -ne 'App') {
     if (-not (Test-Path $out)) { throw "$out not found: build the app first (-Target App)" }
+    $payload = Join-Path $dist 'app.payload'
+    $fs = [System.IO.File]::Create($payload)
+    $gz = New-Object System.IO.Compression.GZipStream ($fs, [System.IO.Compression.CompressionMode]::Compress)
+    $raw = [System.IO.File]::ReadAllBytes($out)
+    $gz.Write($raw, 0, $raw.Length)
+    $gz.Close()
+    $fs.Close()
+
     & $csc /nologo /target:winexe /optimize+ /codepage:65001 /main:VpnPanel.SetupProgram "/out:$setup" "/win32icon:$ico" "/win32manifest:$(Join-Path $src 'setup.manifest')" `
-        $refs $resources "/resource:$out,VpnPanel.VpnPanel.exe" $sources
+        $refs $resources "/resource:$payload,VpnPanel.app.payload" $sources
+    Remove-Item $payload -Force -ErrorAction SilentlyContinue
     if ($LASTEXITCODE) { throw "csc failed ($LASTEXITCODE)" }
     "Built $setup"
 }
