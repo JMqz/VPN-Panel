@@ -312,6 +312,7 @@ namespace VpnPanel
         public List<string> Apps = new List<string>();
         public bool HasSharedAppsKey;
         public bool Hotkey = false;
+        public bool CheckUpdates = true;
         public List<string> Recent = new List<string>(); // servers connected to, newest first
 
         const int MaxRecent = 5;
@@ -345,6 +346,7 @@ namespace VpnPanel
                 if (d.TryGetValue("autoReconnect", out v) && v is bool) s.AutoReconnect = (bool)v;
                 if (d.TryGetValue("skipUac", out v) && v is bool) s.SkipUac = (bool)v;
                 if (d.TryGetValue("hotkey", out v) && v is bool) s.Hotkey = (bool)v;
+                if (d.TryGetValue("checkUpdates", out v) && v is bool) s.CheckUpdates = (bool)v;
                 if (d.TryGetValue("sharedApps", out v) && v is bool) { s.SharedApps = (bool)v; s.HasSharedAppsKey = true; }
                 if (d.TryGetValue("appsMode", out v) && v is string)
                 {
@@ -384,7 +386,7 @@ namespace VpnPanel
                     { "config", Config }, { "networkLock", NetworkLock }, { "autoConnect", AutoConnect },
                     { "autoReconnect", AutoReconnect }, { "skipUac", SkipUac }, { "recent", Recent },
                     { "sharedApps", SharedApps }, { "appsMode", AppsMode.ToString() }, { "apps", Apps },
-                    { "hotkey", Hotkey },
+                    { "hotkey", Hotkey }, { "checkUpdates", CheckUpdates },
                 };
                 File.WriteAllText(Paths.Settings, new JavaScriptSerializer().Serialize(d));
             }
@@ -803,6 +805,109 @@ namespace VpnPanel
                 if (!skipUac) Delete(Open);
             }
             catch { }
+        }
+    }
+
+    static class Updater
+    {
+        public class ReleaseInfo
+        {
+            public string Tag;
+            public string Version;
+            public string HtmlUrl;
+            public string DownloadUrl;
+            public string Notes;
+            public bool IsNewer;
+        }
+
+        const string ApiUrl = "https://api.github.com/repos/JMqz/VPN-Panel/releases/latest";
+
+        public static bool IsNewer(string remoteTag, string currentVer)
+        {
+            if (string.IsNullOrEmpty(remoteTag)) return false;
+            string cleanRemote = Regex.Replace(remoteTag.Trim(), @"^[^\d]*", "");
+            string cleanCurrent = Regex.Replace(currentVer.Trim(), @"^[^\d]*", "");
+            try
+            {
+                Version r = new Version(cleanRemote.Contains(".") ? cleanRemote : cleanRemote + ".0");
+                Version c = new Version(cleanCurrent.Contains(".") ? cleanCurrent : cleanCurrent + ".0");
+                return r > c;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        public static void Check(Action<ReleaseInfo, Exception> callback)
+        {
+            ThreadPool.QueueUserWorkItem(_ =>
+            {
+                try
+                {
+                    ServicePointManager.SecurityProtocol = (SecurityProtocolType)3072; // Tls12
+                    var req = (HttpWebRequest)WebRequest.Create(ApiUrl);
+                    req.UserAgent = "vpn-panel";
+                    req.Timeout = 10000;
+                    using (var resp = req.GetResponse())
+                    using (var reader = new StreamReader(resp.GetResponseStream(), Encoding.UTF8))
+                    {
+                        string json = reader.ReadToEnd();
+                        var d = new JavaScriptSerializer().Deserialize<Dictionary<string, object>>(json);
+                        string tag = d.ContainsKey("tag_name") ? Convert.ToString(d["tag_name"]) : "";
+                        string html = d.ContainsKey("html_url") ? Convert.ToString(d["html_url"]) : "";
+                        string body = d.ContainsKey("body") ? Convert.ToString(d["body"]) : "";
+                        string downloadUrl = null;
+
+                        object assetsObj;
+                        if (d.TryGetValue("assets", out assetsObj) && assetsObj is System.Collections.IEnumerable)
+                        {
+                            foreach (object item in (System.Collections.IEnumerable)assetsObj)
+                            {
+                                var asset = item as Dictionary<string, object>;
+                                if (asset != null && asset.ContainsKey("name") && asset.ContainsKey("browser_download_url"))
+                                {
+                                    string name = Convert.ToString(asset["name"]);
+                                    string url = Convert.ToString(asset["browser_download_url"]);
+                                    if (name.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) && name.IndexOf("Setup", StringComparison.OrdinalIgnoreCase) >= 0)
+                                    {
+                                        downloadUrl = url;
+                                        break;
+                                    }
+                                    if (name.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) && downloadUrl == null)
+                                        downloadUrl = url;
+                                }
+                            }
+                        }
+
+                        var info = new ReleaseInfo
+                        {
+                            Tag = tag,
+                            Version = Regex.Replace(tag, @"^[^\d]*", ""),
+                            HtmlUrl = html,
+                            DownloadUrl = downloadUrl,
+                            Notes = body,
+                            IsNewer = IsNewer(tag, Program.Version)
+                        };
+
+                        var ui = Application.Current != null ? Application.Current.Dispatcher : null;
+                        if (callback != null)
+                        {
+                            if (ui != null && !ui.CheckAccess()) ui.BeginInvoke(new Action(() => callback(info, null)));
+                            else callback(info, null);
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    var ui = Application.Current != null ? Application.Current.Dispatcher : null;
+                    if (callback != null)
+                    {
+                        if (ui != null && !ui.CheckAccess()) ui.BeginInvoke(new Action(() => callback(null, ex)));
+                        else callback(null, ex);
+                    }
+                }
+            });
         }
     }
 

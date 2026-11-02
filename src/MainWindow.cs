@@ -64,7 +64,12 @@ namespace VpnPanel
         readonly Border appListCard, applyBanner;
         readonly StackPanel appList;
         // Opções
-        readonly CheckBox chkReconnect, chkLock, chkHotkey, chkStartup, chkAuto, chkSkipUac;
+        readonly CheckBox chkReconnect, chkLock, chkHotkey, chkStartup, chkAuto, chkSkipUac, chkUpdates;
+        readonly Border cardUpdate;
+        readonly Button btnApplyUpdate, btnCheckUpdate;
+        readonly TextBlock txtUpdateFoundTitle, txtUpdateFoundDetail, txtUpdateBadge;
+        Updater.ReleaseInfo availableUpdate;
+        readonly DispatcherTimer updateCheckTimer;
         // Tabs
         readonly RadioButton tabHome, tabServers, tabApps, tabOptions;
         readonly FrameworkElement pageHome, pageServers, pageApps, pageOptions;
@@ -209,6 +214,13 @@ namespace VpnPanel
             chkStartup = E<CheckBox>("ChkStartup");
             chkAuto = E<CheckBox>("ChkAuto");
             chkSkipUac = E<CheckBox>("ChkSkipUac");
+            chkUpdates = E<CheckBox>("ChkUpdates");
+            cardUpdate = E<Border>("CardUpdate");
+            btnApplyUpdate = E<Button>("BtnApplyUpdate");
+            btnCheckUpdate = E<Button>("BtnCheckUpdate");
+            txtUpdateFoundTitle = E<TextBlock>("TxtUpdateFoundTitle");
+            txtUpdateFoundDetail = E<TextBlock>("TxtUpdateFoundDetail");
+            txtUpdateBadge = E<TextBlock>("TxtUpdateBadge");
             tabHome = E<RadioButton>("TabHome");
             tabServers = E<RadioButton>("TabServers");
             tabApps = E<RadioButton>("TabApps");
@@ -307,6 +319,7 @@ namespace VpnPanel
             chkAuto.IsChecked = settings.AutoConnect;
             chkSkipUac.IsChecked = settings.SkipUac;
             chkHotkey.IsChecked = settings.Hotkey;
+            chkUpdates.IsChecked = settings.CheckUpdates;
             try { chkStartup.IsChecked = Tasks.Exists(Tasks.Logon); } catch { }
             loading = false;
             // Checked/Unchecked rather than Click, so screen readers' toggle works too
@@ -321,8 +334,11 @@ namespace VpnPanel
             onToggle(chkAuto, SaveSettings);
             onToggle(chkSkipUac, () => { SaveSettings(); SyncTasks(); });
             onToggle(chkHotkey, () => { SaveSettings(); SyncHotkey(); });
+            onToggle(chkUpdates, SaveSettings);
             onToggle(chkStartup, ToggleStartup);
             onToggle(chkSharedApps, ToggleSharedApps);
+            btnCheckUpdate.Click += (s, e) => CheckForUpdates(true);
+            btnApplyUpdate.Click += (s, e) => InstallUpdate();
             E<Button>("BtnBackup").Click += (s, e) => ExportBackup();
             E<Button>("BtnLog").Click += (s, e) => OpenLog();
             E<Button>("BtnDataDir").Click += (s, e) => Process.Start("explorer.exe", "\"" + Paths.Data + "\"");
@@ -356,7 +372,11 @@ namespace VpnPanel
             menu.Opening += (s, e) => UpdateTrayServers();
             tray = new WF.NotifyIcon { Icon = trayOff, Text = "VPN Panel", ContextMenuStrip = menu, Visible = true };
             tray.MouseClick += (s, e) => { if (e.Button == WF.MouseButtons.Left) ShowWindow(); };
-            tray.BalloonTipClicked += (s, e) => ShowWindow();
+            tray.BalloonTipClicked += (s, e) =>
+            {
+                ShowWindow();
+                if (availableUpdate != null && availableUpdate.IsNewer) tabOptions.IsChecked = true;
+            };
 
             wireSockInstalled = Paths.WireSock != null;
             UpdateAbout();
@@ -376,6 +396,13 @@ namespace VpnPanel
             ipTimer.Tick += (s, e) => { ipTimer.Stop(); CheckIp(); };
             reconnectTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(3) };
             reconnectTimer.Tick += (s, e) => { reconnectTimer.Stop(); Connect(); };
+            updateCheckTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(6) };
+            updateCheckTimer.Tick += (s, e) =>
+            {
+                updateCheckTimer.Stop();
+                if (settings.CheckUpdates) CheckForUpdates(false);
+            };
+            updateCheckTimer.Start();
 
             ListenForShowRequests();
             WatchConfigs();
@@ -582,6 +609,103 @@ namespace VpnPanel
             else Dialogs.Info(w, "Ainda não há log", "O log é criado na primeira conexão.");
         }
 
+        void CheckForUpdates(bool manual)
+        {
+            if (manual)
+            {
+                txtUpdateBadge.Text = "...";
+                btnCheckUpdate.IsEnabled = false;
+            }
+            Updater.Check((info, err) =>
+            {
+                if (manual) btnCheckUpdate.IsEnabled = true;
+                if (err != null)
+                {
+                    if (manual)
+                    {
+                        txtUpdateBadge.Text = "Erro";
+                        Dialogs.Info(w, "Atualizações", "Não foi possível verificar no momento: " + err.Message);
+                    }
+                    return;
+                }
+                if (info != null && info.IsNewer)
+                {
+                    availableUpdate = info;
+                    txtUpdateBadge.Text = "v" + info.Version;
+                    txtUpdateFoundTitle.Text = "Nova versão " + info.Version + " disponível";
+                    txtUpdateFoundDetail.Text = "Clique em Atualizar agora para instalar.";
+                    cardUpdate.Visibility = Visibility.Visible;
+                    if (!w.IsVisible)
+                    {
+                        tray.ShowBalloonTip(3000, "VPN Panel", "Nova versão " + info.Version + " disponível! Clique para ver.", WF.ToolTipIcon.Info);
+                    }
+                }
+                else
+                {
+                    txtUpdateBadge.Text = "Atualizado";
+                    cardUpdate.Visibility = Visibility.Collapsed;
+                    if (manual)
+                    {
+                        Dialogs.Info(w, "VPN Panel atualizado", "Você já está usando a versão mais recente (v" + Program.Version + ").");
+                    }
+                }
+            });
+        }
+
+        void InstallUpdate()
+        {
+            if (availableUpdate == null) return;
+            if (string.IsNullOrEmpty(availableUpdate.DownloadUrl))
+            {
+                if (!string.IsNullOrEmpty(availableUpdate.HtmlUrl))
+                    Process.Start(availableUpdate.HtmlUrl);
+                return;
+            }
+
+            btnApplyUpdate.IsEnabled = false;
+            btnApplyUpdate.Content = "Baixando...";
+            txtUpdateFoundDetail.Text = "Baixando a versão " + availableUpdate.Version + "...";
+
+            string tempFile = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "VPN-Panel-Setup-" + availableUpdate.Version + ".exe");
+            var wc = new WebClient();
+            wc.Headers["User-Agent"] = "vpn-panel";
+            wc.DownloadProgressChanged += (s, e) =>
+            {
+                btnApplyUpdate.Content = "Baixando (" + e.ProgressPercentage + "%)...";
+            };
+            wc.DownloadFileCompleted += (s, e) =>
+            {
+                wc.Dispose();
+                if (e.Error != null)
+                {
+                    btnApplyUpdate.IsEnabled = true;
+                    btnApplyUpdate.Content = "Atualizar agora";
+                    txtUpdateFoundDetail.Text = "Erro ao baixar: " + e.Error.Message;
+                    Dialogs.Info(w, "Erro na atualização", "Não foi possível baixar o arquivo: " + e.Error.Message);
+                    return;
+                }
+
+                try
+                {
+                    txtUpdateFoundDetail.Text = "Instalando atualização...";
+                    btnApplyUpdate.Content = "Instalando...";
+
+                    bool installed = Paths.ExeDir.Equals(Installer.Dir, StringComparison.OrdinalIgnoreCase);
+                    var psi = new ProcessStartInfo(tempFile, installed ? "--silent" : "") { UseShellExecute = true };
+                    Process.Start(psi);
+                }
+                catch (Exception ex)
+                {
+                    btnApplyUpdate.IsEnabled = true;
+                    btnApplyUpdate.Content = "Atualizar agora";
+                    txtUpdateFoundDetail.Text = "Erro ao instalar: " + ex.Message;
+                    Dialogs.Info(w, "Erro ao instalar", ex.Message);
+                }
+            };
+
+            wc.DownloadFileAsync(new Uri(availableUpdate.DownloadUrl), tempFile);
+        }
+
         // Ready = WireSock installed and at least one server; until then Início shows the setup steps
         bool Ready { get { return wireSockInstalled && active != null; } }
 
@@ -627,6 +751,7 @@ namespace VpnPanel
             settings.AutoConnect = chkAuto.IsChecked == true;
             settings.SkipUac = chkSkipUac.IsChecked == true;
             settings.Hotkey = chkHotkey.IsChecked == true;
+            settings.CheckUpdates = chkUpdates.IsChecked == true;
             settings.Save();
         }
 

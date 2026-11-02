@@ -103,6 +103,7 @@ Com **Usar em todos os servidores** ligado, a mesma lista de programas vale para
 | Iniciar com o Windows | O aplicativo abre escondido perto do relógio. |
 | Conectar ao abrir | Liga a VPN assim que o aplicativo abre. Junto com a opção anterior, você fica protegido desde que liga o computador. |
 | Abrir sem pedir permissão | O Windows só pergunta na primeira vez. Vem ligada. |
+| Verificar atualizações automaticamente | Avisa quando houver uma nova versão disponível e permite atualizar com 1 clique sem derrubar o túnel da VPN. |
 | Fazer backup dos servidores (.zip) | Exporta todos os seus servidores `.conf` em um único arquivo `.zip` para guardar ou migrar de PC. |
 
 **Perto do relógio:** fechar a janela não fecha o aplicativo, ele continua no canto da barra de tarefas, perto do relógio. O ícone fica verde quando conectado, âmbar quando o servidor não responde e cinza quando desconectado. Clique com o botão direito no ícone para conectar, desconectar ou sair. No mesmo menu dá para trocar de servidor sem abrir a janela: os usados por último aparecem em **Recentes**, logo no menu, e a lista completa fica em **Todos os servidores**.

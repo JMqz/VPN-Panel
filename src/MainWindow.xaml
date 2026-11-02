@@ -372,6 +372,17 @@
         <StackPanel Margin="20,8,20,16">
           <TextBlock Text="Opções" Style="{StaticResource Title}"/>
 
+          <!-- Card de atualização disponível -->
+          <Border x:Name="CardUpdate" Style="{StaticResource Card}" Background="{StaticResource AccentSoft}" BorderBrush="{StaticResource Accent}" Margin="0,14,0,0" Padding="14,12" Visibility="Collapsed">
+            <DockPanel>
+              <Button x:Name="BtnApplyUpdate" DockPanel.Dock="Right" Style="{StaticResource AccentButton}" Content="Atualizar agora" Padding="12,6" Margin="10,0,0,0" VerticalAlignment="Center"/>
+              <StackPanel VerticalAlignment="Center">
+                <TextBlock x:Name="TxtUpdateFoundTitle" Text="Nova versão disponível" FontWeight="SemiBold" Foreground="{StaticResource Text}"/>
+                <TextBlock x:Name="TxtUpdateFoundDetail" Style="{StaticResource Caption}" Text="Versão pronta para instalar." Margin="0,2,0,0"/>
+              </StackPanel>
+            </DockPanel>
+          </Border>
+
           <TextBlock Text="CONEXÃO" FontSize="10.5" FontWeight="SemiBold" Foreground="{StaticResource Muted}" Margin="4,18,0,8"/>
           <Border Style="{StaticResource Card}" Padding="16,14">
             <StackPanel>
@@ -421,11 +432,25 @@
                   <TextBlock Style="{StaticResource Caption}" Margin="0,2,0,0" Text="O Windows só pergunta na primeira vez que você abre o app."/>
                 </StackPanel>
               </CheckBox>
+              <Border Height="1" Background="{StaticResource Line}" Margin="0,14"/>
+              <CheckBox x:Name="ChkUpdates" AutomationProperties.Name="Verificar atualizações automaticamente" Style="{StaticResource Switch}">
+                <StackPanel>
+                  <TextBlock Text="Verificar atualizações automaticamente" FontWeight="SemiBold"/>
+                  <TextBlock Style="{StaticResource Caption}" Margin="0,2,0,0" Text="Avisa quando houver uma nova versão disponível."/>
+                </StackPanel>
+              </CheckBox>
             </StackPanel>
           </Border>
 
           <Border Style="{StaticResource Card}" Margin="0,18,0,0" Padding="6">
             <StackPanel>
+              <Button x:Name="BtnCheckUpdate" AutomationProperties.Name="Verificar atualizações" Style="{StaticResource GhostButton}" Background="Transparent" HorizontalContentAlignment="Stretch" Padding="10,9">
+                <DockPanel>
+                  <TextBlock x:Name="TxtUpdateBadge" DockPanel.Dock="Right" Text="" Foreground="{StaticResource Accent}" FontWeight="SemiBold" FontSize="11" VerticalAlignment="Center"/>
+                  <TextBlock Text="&#xE895;" FontFamily="{StaticResource Icons}" FontSize="14" Foreground="{StaticResource Muted}" VerticalAlignment="Center" Margin="0,0,12,0"/>
+                  <TextBlock Text="Verificar se há atualizações" VerticalAlignment="Center"/>
+                </DockPanel>
+              </Button>
               <Button x:Name="BtnBackup" AutomationProperties.Name="Fazer backup dos servidores" Style="{StaticResource GhostButton}" Background="Transparent" HorizontalContentAlignment="Stretch" Padding="10,9">
                 <DockPanel>
                   <TextBlock DockPanel.Dock="Right" Text="&#xE76C;" FontFamily="{StaticResource Icons}" FontSize="11" Foreground="{StaticResource Muted}" VerticalAlignment="Center"/>
