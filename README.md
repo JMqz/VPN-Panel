@@ -177,9 +177,38 @@ Gera `dist\VpnPanel.exe` e `dist\VPN Panel Setup.exe` usando o compilador `csc.e
   - Túneis iniciados fora do aplicativo não têm registro para conferir e aparecem como conectados.
 - **Programas na VPN:** grava `AllowedApps` (só estes) ou `DisallowedApps` (todos, exceto) na seção `[Peer]` do `.conf` e mantém todas as outras linhas idênticas, byte a byte. Segundo relatos no fórum do WireSock, `DisallowedApps` falhou em algumas versões.
 - **Uma janela só:** o mutex `Global\VpnPanelWireSock` impede uma segunda cópia. Abrir o aplicativo de novo sinaliza `Global\VpnPanelWireSockShow`, e a janela que já está aberta aparece.
-- **Desinstalar:** `VpnPanel.exe --uninstall` remove as tarefas, os atalhos, a chave `HKLM\...\Uninstall\VPN Panel` e a pasta em Arquivos de Programas.
+- **Desinstalar:** `VpnPanel.exe --uninstall` remove as tarefas, os atalhos, a chave `HKLM\...\Uninstall\VPN Panel` e os arquivos em Arquivos de Programas. O próprio `VpnPanel.exe` em uso e a pasta vazia são removidos pelo Windows na próxima reinicialização (`MoveFileEx` com `MOVEFILE_DELAY_UNTIL_REBOOT`).
+
+### Releases e assinatura
+
+As releases são compiladas pelo GitHub Actions (`.github/workflows/release.yml`) a partir de uma tag `v*`. O aplicativo é assinado primeiro, depois o instalador é montado com o aplicativo já assinado dentro, e por fim o instalador é assinado.
 
 ### Próximos passos
 
-- Assinatura digital (acaba com o aviso azul do Windows)
 - Rodar como serviço do Windows, para conectar antes de entrar na conta
+
+---
+
+## Política de assinatura de código
+
+Assinatura de código gratuita fornecida por [SignPath.io](https://about.signpath.io), certificado da [SignPath Foundation](https://signpath.org).
+
+- **Autores e revisores (committers e reviewers):** [JMqz](https://github.com/JMqz)
+- **Aprovadores (approvers):** [JMqz](https://github.com/JMqz)
+
+Só são assinados executáveis compilados pelo GitHub Actions a partir do código público deste repositório.
+
+## Privacidade
+
+O VPN Panel não coleta nem envia dados pessoais para o autor. Ele só se comunica com terceiros nestes casos:
+
+- **ipinfo.io:** para mostrar o seu IP e a localização (aba Início) e o país de cada servidor.
+- **winget / wiresock.net:** para baixar e instalar o WireSock, quando ele ainda não está instalado.
+- **Endereço dos servidores VPN:** ping (ICMP) para medir a latência, só quando a aba Servidores está aberta.
+- **O provedor de VPN escolhido por você**, através do WireSock, quando você conecta.
+
+Servidores, chaves e configurações ficam apenas no seu computador, em `%APPDATA%\VPN Panel`.
+
+## Licença
+
+[MIT](LICENSE)

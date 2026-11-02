@@ -1,6 +1,12 @@
 # Builds ..\dist\VpnPanel.exe and the installer ..\dist\VPN Panel Setup.exe from the .cs/.xaml files here,
 # with the C# compiler that ships with Windows (.NET Framework 4.8).
-# Usage: powershell -NoProfile -ExecutionPolicy Bypass -File C:\VPN\src\build.ps1
+# Usage: powershell -NoProfile -ExecutionPolicy Bypass -File C:\VPN\src\build.ps1 [-Target All|App|Setup]
+#   All   (default) builds both.
+#   App   builds only dist\VpnPanel.exe.
+#   Setup builds only the installer, embedding whatever dist\VpnPanel.exe is there. The release workflow
+#         uses App -> sign -> Setup -> sign, so the installer carries the already-signed app.
+
+param([ValidateSet('All', 'App', 'Setup')][string]$Target = 'All')
 
 $ErrorActionPreference = 'Stop'
 $src = $PSScriptRoot
@@ -59,13 +65,18 @@ $resources = 'Theme.xaml', 'MainWindow.xaml', 'vpn.ico' | ForEach-Object { "/res
 $sources = Get-ChildItem $src -Filter *.cs | ForEach-Object { $_.FullName }
 
 # The app
-& $csc /nologo /target:winexe /optimize+ /codepage:65001 /main:VpnPanel.Program "/out:$out" "/win32icon:$ico" "/win32manifest:$(Join-Path $src 'app.manifest')" `
-    $refs $resources $sources
-if ($LASTEXITCODE) { throw "csc failed ($LASTEXITCODE)" }
-"Built $out"
+if ($Target -ne 'Setup') {
+    & $csc /nologo /target:winexe /optimize+ /codepage:65001 /main:VpnPanel.Program "/out:$out" "/win32icon:$ico" "/win32manifest:$(Join-Path $src 'app.manifest')" `
+        $refs $resources $sources
+    if ($LASTEXITCODE) { throw "csc failed ($LASTEXITCODE)" }
+    "Built $out"
+}
 
 # The installer: same sources with the app embedded, its own entry point and an admin manifest
-& $csc /nologo /target:winexe /optimize+ /codepage:65001 /main:VpnPanel.SetupProgram "/out:$setup" "/win32icon:$ico" "/win32manifest:$(Join-Path $src 'setup.manifest')" `
-    $refs $resources "/resource:$out,VpnPanel.VpnPanel.exe" $sources
-if ($LASTEXITCODE) { throw "csc failed ($LASTEXITCODE)" }
-"Built $setup"
+if ($Target -ne 'App') {
+    if (-not (Test-Path $out)) { throw "$out not found: build the app first (-Target App)" }
+    & $csc /nologo /target:winexe /optimize+ /codepage:65001 /main:VpnPanel.SetupProgram "/out:$setup" "/win32icon:$ico" "/win32manifest:$(Join-Path $src 'setup.manifest')" `
+        $refs $resources "/resource:$out,VpnPanel.VpnPanel.exe" $sources
+    if ($LASTEXITCODE) { throw "csc failed ($LASTEXITCODE)" }
+    "Built $setup"
+}

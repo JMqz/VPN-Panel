@@ -1,0 +1,135 @@
+# Builds the release on GitHub's own Windows runner and, once the SignPath secrets are configured,
+# signs both executables through SignPath Foundation's free open-source program.
+# The app is signed BEFORE the installer is built, so the installer embeds (and installs) the signed app.
+#
+# Run it by pushing a tag (git tag v2.5 && git push origin v2.5) or from the Actions tab.
+#
+# Needed in Settings -> Secrets and variables -> Actions (only after SignPath approves the project):
+#   secret   SIGNPATH_API_TOKEN
+#   variable SIGNPATH_ORGANIZATION_ID
+#   variable SIGNPATH_PROJECT_SLUG        (default: VPN-Panel)
+#   variable SIGNPATH_SIGNING_POLICY_SLUG (default: release-signing)
+# Without them the workflow still builds and publishes, just unsigned.
+
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag da release (ex.: v2.5). Vazio = so compila, sem publicar.'
+        required: false
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    env:
+      SIGN: ${{ secrets.SIGNPATH_API_TOKEN != '' }}
+      TAG: ${{ github.event_name == 'push' && github.ref_name || inputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # ---------- the app ----------
+      - name: Build VpnPanel.exe
+        shell: powershell   # Windows PowerShell 5.1, the same one build.ps1 is written for
+        run: ./src/build.ps1 -Target App
+
+      - name: Upload unsigned app
+        id: app-unsigned
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-unsigned
+          path: dist/VpnPanel.exe
+          if-no-files-found: error
+
+      - name: Sign app (SignPath)
+        if: env.SIGN == 'true'
+        uses: signpath/github-action-submit-signing-request@v1
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG || 'VPN-Panel' }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG || 'release-signing' }}
+          github-artifact-id: ${{ steps.app-unsigned.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: signed-app
+
+      - name: Use signed app
+        if: env.SIGN == 'true'
+        shell: pwsh
+        run: Copy-Item signed-app/VpnPanel.exe dist/VpnPanel.exe -Force
+
+      # ---------- the installer (embeds the app above) ----------
+      - name: Build installer
+        shell: powershell   # Windows PowerShell 5.1, the same one build.ps1 is written for
+        run: ./src/build.ps1 -Target Setup
+
+      - name: Upload unsigned installer
+        id: setup-unsigned
+        uses: actions/upload-artifact@v4
+        with:
+          name: setup-unsigned
+          path: dist/VPN Panel Setup.exe
+          if-no-files-found: error
+
+      - name: Sign installer (SignPath)
+        if: env.SIGN == 'true'
+        uses: signpath/github-action-submit-signing-request@v1
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG || 'VPN-Panel' }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG || 'release-signing' }}
+          github-artifact-id: ${{ steps.setup-unsigned.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: signed-setup
+
+      - name: Use signed installer
+        if: env.SIGN == 'true'
+        shell: pwsh
+        run: Copy-Item "signed-setup/VPN Panel Setup.exe" "dist/VPN Panel Setup.exe" -Force
+
+      - name: Check signatures
+        if: env.SIGN == 'true'
+        shell: pwsh
+        run: |
+          foreach ($f in 'dist/VpnPanel.exe', 'dist/VPN Panel Setup.exe') {
+            $s = Get-AuthenticodeSignature $f
+            "$f -> $($s.Status) ($($s.SignerCertificate.Subject))"
+            if ($s.Status -ne 'Valid') { throw "$f is not validly signed" }
+          }
+
+      # ---------- publish ----------
+      - name: Name release files
+        shell: pwsh
+        run: |
+          $v = if ($env:TAG) { $env:TAG.TrimStart('v') } else { 'dev' }
+          New-Item -ItemType Directory -Force out | Out-Null
+          Copy-Item "dist/VPN Panel Setup.exe" "out/VPN-Panel-Setup-$v.exe"
+          Copy-Item "dist/VpnPanel.exe" "out/VpnPanel-$v-portatil.exe"
+
+      - name: Keep build
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-files
+          path: out/*
+
+      - name: Publish GitHub release
+        if: env.TAG != ''
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $files = Get-ChildItem out/* | ForEach-Object { $_.FullName }
+          gh release view $env:TAG *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $env:TAG @files --clobber
+          } else {
+            gh release create $env:TAG @files --title "VPN Panel $($env:TAG.TrimStart('v'))" --generate-notes
+          }

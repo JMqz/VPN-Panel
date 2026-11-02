@@ -123,18 +123,26 @@ namespace VpnPanel
             if (removeData && Directory.Exists(Paths.Data)) try { Directory.Delete(Paths.Data, true); } catch { }
         }
 
-        // The running exe can't delete its own folder: a hidden cmd keeps trying for ~30 s after we exit
+        [System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true, CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+        static extern bool MoveFileEx(string existing, string newName, int flags);
+        const int MOVEFILE_DELAY_UNTIL_REBOOT = 0x4;
+
+        // The running exe can't delete itself: everything else goes now, and Windows removes the exe and
+        // the folder on the next restart (the documented way, instead of a hidden cmd loop retrying rmdir)
         static void DeleteFolderAfterExit()
         {
             if (!Paths.ExeDir.Equals(Dir, StringComparison.OrdinalIgnoreCase)) return;
-            string q = "\"" + Dir + "\"";
-            Process.Start(new ProcessStartInfo("cmd.exe",
-                "/c for /l %i in (1,1,15) do (ping -n 3 127.0.0.1 >nul & rmdir /s /q " + q + " 2>nul & if not exist " + q + " exit)")
+            string self = Paths.Exe;
+            try
             {
-                UseShellExecute = false,
-                CreateNoWindow = true,
-                WorkingDirectory = Path.GetTempPath(),
-            }).Dispose();
+                foreach (string f in Directory.GetFiles(Dir, "*", SearchOption.AllDirectories))
+                    if (!f.Equals(self, StringComparison.OrdinalIgnoreCase)) try { File.Delete(f); } catch { MoveFileEx(f, null, MOVEFILE_DELAY_UNTIL_REBOOT); }
+                foreach (string d in Directory.GetDirectories(Dir, "*", SearchOption.AllDirectories).OrderByDescending(d => d.Length))
+                    try { Directory.Delete(d); } catch { MoveFileEx(d, null, MOVEFILE_DELAY_UNTIL_REBOOT); }
+            }
+            catch { }
+            MoveFileEx(self, null, MOVEFILE_DELAY_UNTIL_REBOOT);
+            MoveFileEx(Dir, null, MOVEFILE_DELAY_UNTIL_REBOOT); // queued after the exe, so the folder is empty by then
         }
 
         public static Application ThemedApp()
