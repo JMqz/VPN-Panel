@@ -155,6 +155,7 @@ namespace VpnPanel
         public static readonly string Exe = Assembly.GetExecutingAssembly().Location;
         public static readonly string Data = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "VPN Panel");
         public static readonly string Configs = Path.Combine(Data, "configs");
+        public static readonly string Runtime = Path.Combine(Data, "runtime");
         public static readonly string Settings = Path.Combine(Data, "settings.json");
         public static readonly string Log = Path.Combine(Data, "wiresock.log");
         public static readonly string GeoCache = Path.Combine(Data, "locations.json");
@@ -634,6 +635,71 @@ namespace VpnPanel
         static readonly Regex AddressLine = new Regex(@"^\s*Address\s*=", RegexOptions.IgnoreCase | RegexOptions.Compiled);
         static readonly Regex AppsLine = new Regex(@"^\s*(AllowedApps|DisallowedApps)\s*=\s*([^#]*)", RegexOptions.IgnoreCase | RegexOptions.Compiled);
         static readonly Regex AllowedIpsLine = new Regex(@"^\s*AllowedIPs\s*=", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+        static readonly Regex V6KeyLine = new Regex(@"^(\s*(?:Address|DNS|AllowedIPs)\s*=\s*)([^#]*)(#.*)?$", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+        static string StripV6List(Match m, out bool changed)
+        {
+            changed = false;
+            string prefix = m.Groups[1].Value;
+            string raw = m.Groups[2].Value;
+            string comment = m.Groups[3].Success ? " " + m.Groups[3].Value.Trim() : "";
+            var v4 = new List<string>();
+            bool hadV6 = false;
+            foreach (string part in raw.Split(','))
+            {
+                string item = part.Trim();
+                if (item.Length == 0) continue;
+                if (item.Contains(':')) hadV6 = true;
+                else v4.Add(item);
+            }
+            if (!hadV6 || v4.Count == 0) return m.Value;
+            changed = true;
+            return prefix + string.Join(", ", v4) + comment;
+        }
+
+        // In split-tunneling modes (Only / Except), WireSock's NDIS filter still binds [Interface] IPv6
+        // addresses and a default ::/0 route onto the physical NIC, which causes non-tunneled apps
+        // (games, Windows DNS cache) to pick the VPN's IPv6 source address and stall or misroute.
+        // We generate a temporary IPv4-only copy in Paths.Runtime with the same filename so the user's
+        // original .conf stays untouched while non-tunneled apps stay 100% on the local route.
+        public static string EffectivePath(string name, out bool ipv6Stripped)
+        {
+            ipv6Stripped = false;
+            string src = Paths.Conf(name);
+            ConfigInfo info = ConfigInfo.Read(name);
+            if (!info.Readable || info.Mode == AppMode.All) return src;
+            try
+            {
+                string[] lines = File.ReadAllLines(src);
+                bool anyChanged = false;
+                for (int i = 0; i < lines.Length; i++)
+                {
+                    Match m = V6KeyLine.Match(lines[i]);
+                    if (!m.Success) continue;
+                    bool lineChanged;
+                    lines[i] = StripV6List(m, out lineChanged);
+                    if (lineChanged) anyChanged = true;
+                }
+                if (!anyChanged) return src;
+                Directory.CreateDirectory(Paths.Runtime);
+                string dst = Path.Combine(Paths.Runtime, name + ".conf");
+                File.WriteAllLines(dst, lines, new UTF8Encoding(false));
+                ipv6Stripped = true;
+                return dst;
+            }
+            catch { return src; }
+        }
+
+        public static void DeleteRuntimeCopies()
+        {
+            try
+            {
+                if (Directory.Exists(Paths.Runtime))
+                    foreach (string f in Directory.GetFiles(Paths.Runtime, "*.conf"))
+                        try { File.Delete(f); } catch { }
+            }
+            catch { }
+        }
 
         static bool IsPeer(Match section)
         {
@@ -1468,6 +1534,7 @@ namespace VpnPanel
         static bool lockHint; // the tracked tunnel runs with -network-lock
         public static string LastStartedConfig { get; private set; }
         public static DateTime LastStartedAt { get; private set; }
+        public static bool Ipv6Isolated { get; private set; }
         public static int Pid { get { lock (stateLock) return currentPid; } }
         public static DateTime StartTime { get; private set; }
 
@@ -1529,6 +1596,7 @@ namespace VpnPanel
         public static void NoteCommandLine(string commandLine)
         {
             lockHint = commandLine != null && Regex.IsMatch(commandLine, "-network-lock\\s+(enabled|on)\\b", RegexOptions.IgnoreCase);
+            Ipv6Isolated = commandLine != null && commandLine.IndexOf(Paths.Runtime, StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
         public static string CommandLine(int pid)
@@ -1556,8 +1624,11 @@ namespace VpnPanel
         {
             LastStartedConfig = config;
             LastStartedAt = DateTime.UtcNow;
+            bool v6Stripped;
+            string confPath = ConfFile.EffectivePath(config, out v6Stripped);
+            Ipv6Isolated = v6Stripped;
             // "info" logs handshakes, which is how the app knows the server really answered
-            string cmdLine = "\"" + exe + "\" run -config \"" + Paths.Conf(config) + "\" -log-level info";
+            string cmdLine = "\"" + exe + "\" run -config \"" + confPath + "\" -log-level info";
             if (networkLock) cmdLine += " -network-lock enabled";
             // The client writes straight to the log file it inherits, so it keeps running (and logging)
             // after the panel exits, and any later instance can follow the same file
@@ -1574,6 +1645,7 @@ namespace VpnPanel
             lock (stopLock)
             {
                 LastStartedConfig = null;
+                Ipv6Isolated = false;
                 resetLock |= lockHint;
                 lockHint = false;
                 bool stoppedCleanly = false;
@@ -1587,6 +1659,7 @@ namespace VpnPanel
                     stoppedCleanly = ProcUtil.Shutdown(p.Id, 3000) && stoppedCleanly;
                     p.Dispose();
                 }
+                ConfFile.DeleteRuntimeCopies();
                 if (resetLock && !stoppedCleanly) ResetNetworkLock();
             }
         }

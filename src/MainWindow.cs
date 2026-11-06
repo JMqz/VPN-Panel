@@ -295,6 +295,11 @@ namespace VpnPanel
 
             // Início
             btnPower.Click += (s, e) => Toggle();
+            txtScope.MouseLeftButtonUp += (s, e) =>
+            {
+                if (shown == Conn.On && active != null)
+                    Dialogs.VerifyRouting(w, active, Tunnel.Ipv6Isolated, AppIcon);
+            };
             E<Button>("BtnServerCard").Click += (s, e) => tabServers.IsChecked = true;
             E<Button>("BtnRefreshIp").Click += (s, e) => CheckIp();
             E<Button>("BtnRetry").Click += (s, e) => { Action a = bannerPrimary; HideBanner(); if (a != null) a(); };
@@ -335,6 +340,14 @@ namespace VpnPanel
             txtAppName.KeyDown += (s, e) => { if (e.Key == Key.Enter) { AddApps(new[] { txtAppName.Text }); txtAppName.Clear(); } };
             E<Button>("BtnRunningApps").Click += (s, e) => AddApps(Dialogs.PickProcesses(w, AppIcon));
             E<Button>("BtnBrowseExe").Click += (s, e) => BrowseExe();
+            E<Button>("BtnVerifyApps").Click += (s, e) =>
+            {
+                if (active != null)
+                {
+                    var preview = new ConfigInfo { Name = active.Name, Mode = editMode, Apps = new List<string>(editApps), Readable = true };
+                    Dialogs.VerifyRouting(w, preview, Tunnel.Ipv6Isolated || editMode != AppMode.All, AppIcon);
+                }
+            };
             E<Button>("BtnApplyNow").Click += (s, e) => Reconnect();
 
             // Opções
@@ -1489,6 +1502,9 @@ namespace VpnPanel
             }
             txtStatus.Text = status;
             txtScope.Text = scope;
+            txtScope.Cursor = on && active != null ? Cursors.Hand : Cursors.Arrow;
+            txtScope.ToolTip = on && active != null ? "Clique para conferir quais programas abertos estão passando pela VPN" : null;
+            txtScope.TextDecorations = on && active != null && active.Mode != AppMode.All ? TextDecorations.Underline : null;
             txtUptime.Visibility = on ? Visibility.Visible : Visibility.Collapsed;
             trafficRow.Visibility = on ? Visibility.Visible : Visibility.Collapsed;
             if (on && WindowShowing) UpdateUptimeText();

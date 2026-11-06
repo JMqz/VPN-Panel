@@ -228,7 +228,209 @@ namespace VpnPanel
             "WidgetService", "Widgets", "winlogon", "wiresock-client",
         };
 
-        class ProcessEntry { public string Name, Path; public bool Windowed; }
+        class ProcessEntry { public string Name, Path; public int Count; public bool Windowed; }
+
+        static bool MatchesRule(string procName, string path, IList<string> rules)
+        {
+            if (rules == null || rules.Count == 0) return false;
+            foreach (string raw in rules)
+            {
+                string r = raw != null ? raw.Trim() : "";
+                if (r.Length == 0) continue;
+                string rNoExe = r.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) ? r.Substring(0, r.Length - 4) : r;
+                if (procName.Equals(rNoExe, StringComparison.OrdinalIgnoreCase)) return true;
+                if (path != null && path.IndexOf(r, StringComparison.OrdinalIgnoreCase) >= 0) return true;
+            }
+            return false;
+        }
+
+        // Shows with 100% certainty which open apps are routed through the VPN and which are on the direct local connection
+        public static void VerifyRouting(Window owner, ConfigInfo cfg, bool ipv6Isolated, Func<string, string, ImageSource> icon)
+        {
+            if (cfg == null) return;
+            Window d = Frame(owner, "Auditoria de tráfego em tempo real", 380);
+            var body = new StackPanel();
+            string modeDesc = cfg.Mode == AppMode.Only ? "Modo ativo: Só os apps escolhidos passam pela VPN."
+                            : cfg.Mode == AppMode.Except ? "Modo ativo: Todos os apps passam, exceto os escolhidos."
+                            : "Modo ativo: Todos os apps do PC passam pela VPN.";
+            body.Children.Add(Message(modeDesc));
+
+            if (ipv6Isolated)
+            {
+                var isoBadge = new Border
+                {
+                    Background = B("AccentSoft"),
+                    CornerRadius = new CornerRadius(8),
+                    Padding = new Thickness(10, 8, 10, 8),
+                    Margin = new Thickness(0, 10, 0, 0),
+                };
+                var isoText = new TextBlock
+                {
+                    Text = "Proteção anti-vazamento ativa: IPv6 da VPN isolado para não alterar o ping nem o DNS dos jogos fora da VPN.",
+                    FontSize = 11.5,
+                    Foreground = B("Accent"),
+                    TextWrapping = TextWrapping.Wrap,
+                };
+                isoBadge.Child = isoText;
+                body.Children.Add(isoBadge);
+            }
+
+            var listHost = new StackPanel();
+            var scroll = new ScrollViewer
+            {
+                MaxHeight = 320,
+                Margin = new Thickness(0, 12, -8, 0),
+                Padding = new Thickness(0, 0, 8, 0),
+                Content = listHost,
+                VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+            };
+            body.Children.Add(scroll);
+
+            Action refresh = () =>
+            {
+                listHost.Children.Clear();
+                int session = Process.GetCurrentProcess().SessionId;
+                HashSet<int> windowed = ProcUtil.WindowedPids();
+                var entries = new Dictionary<string, ProcessEntry>(StringComparer.OrdinalIgnoreCase);
+                foreach (Process p in Process.GetProcesses())
+                {
+                    try
+                    {
+                        string procName = p.ProcessName;
+                        if (HiddenProcesses.Contains(procName) || p.SessionId != session) continue;
+                        int pid = p.Id;
+                        ProcessEntry e;
+                        if (!entries.TryGetValue(procName, out e))
+                        {
+                            e = new ProcessEntry { Name = procName, Path = ProcUtil.ExePath(pid), Count = 1 };
+                            entries[procName] = e;
+                        }
+                        else
+                        {
+                            e.Count++;
+                            if (e.Path == null) e.Path = ProcUtil.ExePath(pid);
+                        }
+                        if (windowed.Contains(pid)) e.Windowed = true;
+                    }
+                    catch { }
+                    finally { p.Dispose(); }
+                }
+
+                var inVpn = new List<ProcessEntry>();
+                var outVpn = new List<ProcessEntry>();
+                foreach (ProcessEntry e in entries.Values.OrderBy(x => !x.Windowed).ThenBy(x => x.Name, StringComparer.OrdinalIgnoreCase))
+                {
+                    bool matched = MatchesRule(e.Name, e.Path, cfg.Apps);
+                    bool goesToVpn = cfg.Mode == AppMode.All || (cfg.Mode == AppMode.Only ? matched : !matched);
+                    if (goesToVpn) inVpn.Add(e);
+                    else if (e.Windowed || matched || e.Name.IndexOf("League", StringComparison.OrdinalIgnoreCase) >= 0 || e.Name.IndexOf("Riot", StringComparison.OrdinalIgnoreCase) >= 0 || e.Name.IndexOf("Valorant", StringComparison.OrdinalIgnoreCase) >= 0 || e.Name.IndexOf("Steam", StringComparison.OrdinalIgnoreCase) >= 0 || e.Name.IndexOf("cs2", StringComparison.OrdinalIgnoreCase) >= 0)
+                        outVpn.Add(e);
+                }
+
+                listHost.Children.Add(new TextBlock
+                {
+                    Text = "PASSANDO PELA VPN (" + cfg.Name.ToUpperInvariant() + ")",
+                    FontSize = 10.5, FontWeight = FontWeights.SemiBold, Foreground = B("Accent"),
+                    Margin = new Thickness(4, 2, 0, 6),
+                });
+                if (inVpn.Count == 0)
+                {
+                    listHost.Children.Add(new TextBlock
+                    {
+                        Text = cfg.Mode == AppMode.Only
+                            ? "Nenhum dos apps escolhidos (" + string.Join(", ", cfg.Apps) + ") está aberto agora."
+                            : "Nenhum app aberto passando pela VPN.",
+                        Style = S("Caption"), Margin = new Thickness(4, 0, 4, 8), TextWrapping = TextWrapping.Wrap,
+                    });
+                }
+                else
+                {
+                    foreach (ProcessEntry e in inVpn)
+                        listHost.Children.Add(VerifyRow(e, icon, true));
+                }
+
+                listHost.Children.Add(new TextBlock
+                {
+                    Text = "FORA DA VPN (SUA INTERNET DIRETA / PING LOCAL)",
+                    FontSize = 10.5, FontWeight = FontWeights.SemiBold, Foreground = B("Muted"),
+                    Margin = new Thickness(4, 14, 0, 6),
+                });
+                if (outVpn.Count == 0)
+                {
+                    listHost.Children.Add(new TextBlock
+                    {
+                        Text = cfg.Mode == AppMode.All ? "Nenhum (modo Todos ativo)." : "Todos os demais programas e jogos usam sua conexão direta.",
+                        Style = S("Caption"), Margin = new Thickness(4, 0, 4, 4), TextWrapping = TextWrapping.Wrap,
+                    });
+                }
+                else
+                {
+                    foreach (ProcessEntry e in outVpn)
+                        listHost.Children.Add(VerifyRow(e, icon, false));
+                }
+            };
+
+            refresh();
+            Button btnRefresh = Btn("Atualizar", "GhostButton");
+            btnRefresh.Click += (s, e) => refresh();
+            Button ok = Btn("Fechar", "PrimaryButton");
+            ok.IsDefault = true;
+            ok.IsCancel = true;
+            ok.Click += (s, e) => d.Close();
+            Layout(d, "O que está passando pela VPN", body, btnRefresh, ok);
+            d.ShowDialog();
+        }
+
+        static UIElement VerifyRow(ProcessEntry entry, Func<string, string, ImageSource> icon, bool inVpn)
+        {
+            var row = new Border
+            {
+                CornerRadius = new CornerRadius(8),
+                Padding = new Thickness(8, 6, 8, 6),
+                Margin = new Thickness(0, 0, 0, 3),
+                Background = inVpn ? B("AccentSoft") : B("Surface2"),
+            };
+            var g = new Grid();
+            g.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            g.ColumnDefinitions.Add(new ColumnDefinition());
+            g.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            UIElement img = AppAvatar(entry.Name, entry.Path != null ? icon(entry.Name, entry.Path) : null);
+            g.Children.Add(img);
+
+            var sp = new StackPanel { VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(10, 0, 8, 0) };
+            sp.Children.Add(new TextBlock
+            {
+                Text = entry.Name + (entry.Count > 1 ? " (" + entry.Count + " processos)" : ""),
+                FontWeight = FontWeights.SemiBold,
+                FontSize = 12.5,
+                TextTrimming = TextTrimming.CharacterEllipsis,
+            });
+            if (!string.IsNullOrEmpty(entry.Path))
+            {
+                sp.Children.Add(new TextBlock
+                {
+                    Text = entry.Path,
+                    Style = S("Caption"),
+                    FontSize = 10.5,
+                    TextTrimming = TextTrimming.CharacterEllipsis,
+                });
+            }
+            Grid.SetColumn(sp, 1);
+            g.Children.Add(sp);
+
+            var pill = new TextBlock
+            {
+                Text = inVpn ? "VPN" : "Direto",
+                FontSize = 11,
+                FontWeight = FontWeights.SemiBold,
+                Foreground = inVpn ? B("Accent") : B("Muted"),
+                VerticalAlignment = VerticalAlignment.Center,
+            };
+            Grid.SetColumn(pill, 2);
+            g.Children.Add(pill);
+            row.Child = g;
+            return row;
+        }
 
         // Lets the user tick apps that are running now; returns their process names
         public static List<string> PickProcesses(Window owner, Func<string, string, ImageSource> icon)
