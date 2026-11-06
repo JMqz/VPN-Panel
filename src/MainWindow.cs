@@ -71,7 +71,7 @@ namespace VpnPanel
         readonly Border appListCard, applyBanner;
         readonly StackPanel appList;
         // Opções
-        readonly CheckBox chkReconnect, chkLock, chkHotkey, chkStartup, chkAuto, chkSkipUac, chkUpdates;
+        readonly CheckBox chkReconnect, chkLock, chkMtu, chkHotkey, chkStartup, chkAuto, chkSkipUac, chkUpdates;
         readonly Border cardUpdate;
         readonly Button btnApplyUpdate, btnCheckUpdate, btnResetLock;
         readonly TextBlock txtUpdateFoundTitle, txtUpdateFoundDetail, txtUpdateBadge;
@@ -114,6 +114,9 @@ namespace VpnPanel
 
         [DllImport("user32.dll", SetLastError = true)]
         static extern bool UnregisterHotKey(IntPtr hWnd, int id);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        static extern bool DestroyIcon(IntPtr hIcon);
 
         [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
         static extern uint RegisterWindowMessage(string lpString);
@@ -224,6 +227,7 @@ namespace VpnPanel
             appList = E<StackPanel>("AppList");
             chkReconnect = E<CheckBox>("ChkReconnect");
             chkLock = E<CheckBox>("ChkLock");
+            chkMtu = E<CheckBox>("ChkMtu");
             chkHotkey = E<CheckBox>("ChkHotkey");
             chkStartup = E<CheckBox>("ChkStartup");
             chkAuto = E<CheckBox>("ChkAuto");
@@ -306,7 +310,7 @@ namespace VpnPanel
             txtServerSearch.TextChanged += (s, e) =>
             {
                 btnClearServerSearch.Visibility = string.IsNullOrEmpty(txtServerSearch.Text) ? Visibility.Collapsed : Visibility.Visible;
-                RenderServerList();
+                FilterServerList();
             };
             btnClearServerSearch.Click += (s, e) => { txtServerSearch.Text = ""; txtServerSearch.Focus(); };
             Latency.Measured += OnLatencyMeasured;
@@ -337,11 +341,11 @@ namespace VpnPanel
             loading = true;
             chkReconnect.IsChecked = settings.AutoReconnect;
             chkLock.IsChecked = settings.NetworkLock;
+            chkMtu.IsChecked = settings.OptimizeMtu;
             chkAuto.IsChecked = settings.AutoConnect;
             chkSkipUac.IsChecked = settings.SkipUac;
             chkHotkey.IsChecked = settings.Hotkey;
             chkUpdates.IsChecked = settings.CheckUpdates;
-            try { chkStartup.IsChecked = Tasks.Exists(Tasks.Logon); } catch { }
             loading = false;
             // Checked/Unchecked rather than Click, so screen readers' toggle works too
             Action<CheckBox, Action> onToggle = (c, a) =>
@@ -352,6 +356,23 @@ namespace VpnPanel
             };
             onToggle(chkReconnect, SaveSettings);
             onToggle(chkLock, SaveSettings);
+            onToggle(chkMtu, () =>
+            {
+                SaveSettings();
+                if (active != null && active.Readable && (active.Mtu == 0 || active.AutoMtu))
+                {
+                    bool updateMtu = (settings.OptimizeMtu && active.Mtu == 0) || (!settings.OptimizeMtu && active.AutoMtu);
+                    if (updateMtu)
+                    {
+                        try
+                        {
+                            ConfFile.Rewrite(Paths.Conf(active.Name), false, AppMode.All, null, true, settings.OptimizeMtu ? 1380 : 0);
+                            active = ConfigInfo.Read(active.Name);
+                        }
+                        catch { }
+                    }
+                }
+            });
             onToggle(chkAuto, SaveSettings);
             onToggle(chkSkipUac, () => { SaveSettings(); SyncTasks(); });
             onToggle(chkHotkey, () => { SaveSettings(); SyncHotkey(); });
@@ -558,11 +579,23 @@ namespace VpnPanel
             configWatcher.EnableRaisingEvents = true;
         }
 
+        bool startupTouched;
+
         // Keeps the scheduled tasks pointing at this exe (in the background: COM calls take a moment)
         void SyncTasks()
         {
             bool skip = settings.SkipUac;
-            ThreadPool.QueueUserWorkItem(_ => Tasks.Sync(skip));
+            ThreadPool.QueueUserWorkItem(_ =>
+            {
+                bool logonExists = Tasks.Sync(skip);
+                w.Dispatcher.BeginInvoke(new Action(() =>
+                {
+                    if (startupTouched) return;
+                    loading = true;
+                    chkStartup.IsChecked = logonExists;
+                    loading = false;
+                }));
+            });
         }
 
         IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
@@ -653,10 +686,14 @@ namespace VpnPanel
             }
             pollTimer.Stop();
             CloseLogStream();
+            Geo.Flush();
             if (showWaitReg != null) { try { showWaitReg.Unregister(null); } catch { } }
             if (showEvent != null) { try { showEvent.Dispose(); } catch { } }
             tray.Visible = false;
             tray.Dispose();
+            if (trayOn != null) trayOn.Dispose();
+            if (trayOff != null) trayOff.Dispose();
+            if (trayWarn != null) trayWarn.Dispose();
             Application.Current.Shutdown();
         }
 
@@ -731,11 +768,22 @@ namespace VpnPanel
 
             string updateDir = System.IO.Path.Combine(Paths.Data, "updates");
             try { Directory.CreateDirectory(updateDir); } catch { }
+            try
+            {
+                foreach (string old in Directory.GetFiles(updateDir, "*.exe"))
+                {
+                    try { File.Delete(old); } catch { }
+                }
+            }
+            catch { }
             string tempFile = System.IO.Path.Combine(updateDir, "VPN-Panel-Setup-" + Guid.NewGuid().ToString("N").Substring(0, 8) + ".exe");
             var wc = new WebClient();
             wc.Headers["User-Agent"] = "vpn-panel";
+            int lastPct = -1;
             wc.DownloadProgressChanged += (s, e) =>
             {
+                if (e.ProgressPercentage == lastPct) return;
+                lastPct = e.ProgressPercentage;
                 btnApplyUpdate.Content = "Baixando (" + e.ProgressPercentage + "%)...";
             };
             wc.DownloadFileCompleted += (s, e) =>
@@ -758,10 +806,6 @@ namespace VpnPanel
                     {
                         try { if (File.Exists(tempFile)) File.Delete(tempFile); } catch { }
                         throw new InvalidOperationException("O instalador baixado é inválido ou está incompleto.");
-                    }
-                    using (var fs = new FileStream(tempFile, FileMode.Open, FileAccess.Read, FileShare.Read))
-                    {
-                        // File can be read cleanly
                     }
 
                     txtUpdateFoundDetail.Text = "Instalando atualização...";
@@ -825,6 +869,7 @@ namespace VpnPanel
             settings.Config = active != null ? active.Name : null;
             settings.AutoReconnect = chkReconnect.IsChecked == true;
             settings.NetworkLock = chkLock.IsChecked == true;
+            settings.OptimizeMtu = chkMtu.IsChecked == true;
             settings.AutoConnect = chkAuto.IsChecked == true;
             settings.SkipUac = chkSkipUac.IsChecked == true;
             settings.Hotkey = chkHotkey.IsChecked == true;
@@ -896,18 +941,24 @@ namespace VpnPanel
                     return;
                 }
             }
-            if (settings.SharedApps && !SameApps(active, settings.AppsMode, settings.Apps))
+            bool updateApps = settings.SharedApps && !SameApps(active, settings.AppsMode, settings.Apps);
+            bool updateMtu = (settings.OptimizeMtu && active.Mtu == 0) || (!settings.OptimizeMtu && active.AutoMtu);
+            if (updateApps || updateMtu)
             {
                 AppMode m = settings.AppsMode != AppMode.All && settings.Apps.Count == 0 ? AppMode.All : settings.AppsMode;
+                int targetMtu = settings.OptimizeMtu ? 1380 : 0;
                 try
                 {
-                    ConfFile.WriteApps(Paths.Conf(active.Name), m, m == AppMode.All ? new List<string>() : settings.Apps);
+                    ConfFile.Rewrite(Paths.Conf(active.Name), updateApps, m, m == AppMode.All ? new List<string>() : settings.Apps, updateMtu, targetMtu);
                     active = ConfigInfo.Read(active.Name);
                 }
                 catch (Exception ex)
                 {
-                    Dialogs.Info(w, "Não foi possível aplicar os apps", ex.Message);
-                    return;
+                    if (updateApps)
+                    {
+                        Dialogs.Info(w, "Não foi possível aplicar os apps", ex.Message);
+                        return;
+                    }
                 }
             }
             CloseLogStream();
@@ -1542,13 +1593,14 @@ namespace VpnPanel
             if (WindowShowing) RenderServerList();
             else serversDirty = true;
 
-            Geo.Place place = active != null ? active.Place : null;
-            txtFlag.Text = place != null ? place.Country : "";
-            txtFlagGlobe.Visibility = place != null ? Visibility.Collapsed : Visibility.Visible;
+            string code = active != null ? active.CountryCode : null;
+            txtFlag.Text = code ?? "";
+            txtFlagGlobe.Visibility = code != null ? Visibility.Collapsed : Visibility.Visible;
             txtSrvName.Text = active != null ? active.Name : "—";
             txtSrvDetail.Text = active == null ? "" : ServerDetail(active);
             txtSrvDetail.ToolTip = active == null ? null : active.Detail;
             UpdateHomePing();
+            SyncDownloadsWatcher();
             if (txtStatus != null && wasRunning != null) UpdateState();
         }
 
@@ -1558,57 +1610,79 @@ namespace VpnPanel
             geoDebounce.Start();
         }
 
+        readonly List<KeyValuePair<ConfigInfo, UIElement>> serverCardItems = new List<KeyValuePair<ConfigInfo, UIElement>>();
+        TextBlock noMatchLabel;
+
         void RenderServerList()
         {
             serversDirty = false;
             string[] names = Paths.ConfigNames();
             serverList.Children.Clear();
+            serverCardItems.Clear();
             pingLabels.Clear();
 
             if (serverSearchBox != null)
                 serverSearchBox.Visibility = names.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
 
-            string query = txtServerSearch != null ? txtServerSearch.Text.Trim() : null;
-            int matches = 0;
-
             foreach (string n in names)
             {
                 ConfigInfo c = active != null && n == active.Name ? active : ConfigInfo.Read(n);
                 if (c.Endpoint != null && c.Place == null) Geo.Lookup(c.Endpoint, ScheduleGeoRefresh);
+                UIElement card = ServerCard(c);
+                serverList.Children.Add(card);
+                serverCardItems.Add(new KeyValuePair<ConfigInfo, UIElement>(c, card));
+            }
 
+            if (names.Length > 0)
+            {
+                if (noMatchLabel == null)
+                {
+                    noMatchLabel = new TextBlock
+                    {
+                        Text = "Nenhum servidor corresponde à pesquisa.",
+                        Foreground = B("Muted"),
+                        FontSize = 13,
+                        HorizontalAlignment = HorizontalAlignment.Center,
+                        Margin = new Thickness(0, 24, 0, 0),
+                        Visibility = Visibility.Collapsed,
+                    };
+                }
+                serverList.Children.Add(noMatchLabel);
+            }
+
+            FilterServerList();
+            emptyServers.Visibility = names.Length == 0 ? Visibility.Visible : Visibility.Collapsed;
+            // a server just added gets measured too (the others are still fresh in the cache)
+            MeasureLatency(false);
+        }
+
+        void FilterServerList()
+        {
+            if (serversDirty) { RenderServerList(); return; }
+            string query = txtServerSearch != null ? txtServerSearch.Text.Trim() : null;
+            int matches = 0;
+            foreach (var kv in serverCardItems)
+            {
+                ConfigInfo c = kv.Key;
+                bool match = true;
                 if (!string.IsNullOrEmpty(query))
                 {
-                    bool match = n.IndexOf(query, StringComparison.OrdinalIgnoreCase) >= 0;
+                    match = c.Name.IndexOf(query, StringComparison.OrdinalIgnoreCase) >= 0;
                     if (!match && c.Place != null)
                     {
                         if (c.Place.Country != null && c.Place.Country.IndexOf(query, StringComparison.OrdinalIgnoreCase) >= 0) match = true;
                         if (!match && c.Place.CountryName != null && c.Place.CountryName.IndexOf(query, StringComparison.OrdinalIgnoreCase) >= 0) match = true;
                         if (!match && c.Place.City != null && c.Place.City.IndexOf(query, StringComparison.OrdinalIgnoreCase) >= 0) match = true;
                     }
+                    if (!match && c.GuessedCountry != null && c.GuessedCountry.IndexOf(query, StringComparison.OrdinalIgnoreCase) >= 0) match = true;
+                    if (!match && c.Server != null && c.Server.IndexOf(query, StringComparison.OrdinalIgnoreCase) >= 0) match = true;
                     if (!match && c.Endpoint != null && c.Endpoint.IndexOf(query, StringComparison.OrdinalIgnoreCase) >= 0) match = true;
-                    if (!match) continue;
                 }
-
-                serverList.Children.Add(ServerCard(c));
-                matches++;
+                kv.Value.Visibility = match ? Visibility.Visible : Visibility.Collapsed;
+                if (match) matches++;
             }
-
-            if (names.Length > 0 && matches == 0)
-            {
-                var noMatch = new TextBlock
-                {
-                    Text = "Nenhum servidor corresponde à pesquisa.",
-                    Foreground = B("Muted"),
-                    FontSize = 13,
-                    HorizontalAlignment = HorizontalAlignment.Center,
-                    Margin = new Thickness(0, 24, 0, 0)
-                };
-                serverList.Children.Add(noMatch);
-            }
-
-            emptyServers.Visibility = names.Length == 0 ? Visibility.Visible : Visibility.Collapsed;
-            // a server just added gets measured too (the others are still fresh in the cache)
-            MeasureLatency(false);
+            if (noMatchLabel != null)
+                noMatchLabel.Visibility = serverCardItems.Count > 0 && matches == 0 ? Visibility.Visible : Visibility.Collapsed;
         }
 
         // "Houston, Estados Unidos" once the location is known; server label and IP until then
@@ -1638,10 +1712,10 @@ namespace VpnPanel
             g.ColumnDefinitions.Add(new ColumnDefinition());
             g.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
 
-            Geo.Place place = c.Place;
+            string code = c.CountryCode;
             var badge = new Border { Width = 40, Height = 40, CornerRadius = new CornerRadius(10), Background = isActive ? B("AccentSoft") : B("Surface2"), VerticalAlignment = VerticalAlignment.Top, Margin = new Thickness(0, 0, 12, 0) };
-            badge.Child = place != null
-                ? new TextBlock { Text = place.Country, FontWeight = FontWeights.Bold, Foreground = isActive ? B("Accent") : B("Text"), HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center }
+            badge.Child = code != null
+                ? new TextBlock { Text = code, FontWeight = FontWeights.Bold, Foreground = isActive ? B("Accent") : B("Text"), HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center }
                 : new TextBlock { Text = "", FontFamily = (FontFamily)Application.Current.FindResource("Icons"), FontSize = 16, Foreground = isActive ? B("Accent") : B("Muted"), HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
             g.Children.Add(badge);
 
@@ -1827,6 +1901,33 @@ namespace VpnPanel
             else Connect();
         }
 
+        static List<ConfigInfo> ServersWithEndpoints(string[] names)
+        {
+            var list = new List<ConfigInfo>(names.Length);
+            foreach (string n in names)
+            {
+                ConfigInfo c = ConfigInfo.Read(n);
+                if (!string.IsNullOrEmpty(c.Endpoint)) list.Add(c);
+            }
+            return list;
+        }
+
+        static string FastestRatedServer(List<ConfigInfo> list)
+        {
+            string bestName = null;
+            int bestMs = int.MaxValue;
+            foreach (ConfigInfo c in list)
+            {
+                Latency.Result r = Latency.Cached(c.Endpoint);
+                if (r != null && r.Ok && r.Ms < bestMs)
+                {
+                    bestMs = r.Ms;
+                    bestName = c.Name;
+                }
+            }
+            return bestName;
+        }
+
         void ConnectFastest()
         {
             string[] names = Paths.ConfigNames();
@@ -1842,10 +1943,7 @@ namespace VpnPanel
                 return;
             }
 
-            var list = names.Select(n => new { Name = n, Info = ConfigInfo.Read(n) })
-                            .Where(s => !string.IsNullOrEmpty(s.Info.Endpoint))
-                            .ToList();
-
+            List<ConfigInfo> list = ServersWithEndpoints(names);
             if (list.Count == 0)
             {
                 SwitchServer(names[0]);
@@ -1853,19 +1951,15 @@ namespace VpnPanel
                 return;
             }
 
-            var withPing = list.Select(s => new { s.Name, Result = Latency.Cached(s.Info.Endpoint) })
-                               .Where(s => s.Result != null && s.Result.Ok)
-                               .OrderBy(s => s.Result.Ms)
-                               .ToList();
-
-            if (withPing.Count > 0)
+            string best = FastestRatedServer(list);
+            if (best != null)
             {
-                SwitchServer(withPing[0].Name);
+                SwitchServer(best);
                 if (WindowShowing) tabHome.IsChecked = true;
                 return;
             }
 
-            bool allTested = list.All(s => Latency.Cached(s.Info.Endpoint) != null);
+            bool allTested = list.All(s => Latency.Cached(s.Endpoint) != null);
             if (allTested)
             {
                 SwitchServer(list[0].Name);
@@ -1883,7 +1977,7 @@ namespace VpnPanel
             if (fastestTimer.IsEnabled) fastestTimer.Stop();
             fastestTimer.Start();
 
-            var hosts = list.Select(s => s.Info.Endpoint).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+            var hosts = list.Select(s => s.Endpoint).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
             Latency.Measure(hosts, true, wasRunning == true);
             if (WindowShowing)
             {
@@ -1902,18 +1996,10 @@ namespace VpnPanel
             connectingFastestPending = false;
             if (fastestTimer.IsEnabled) fastestTimer.Stop();
 
-            string[] names = Paths.ConfigNames();
-            var list = names.Select(n => new { Name = n, Info = ConfigInfo.Read(n) })
-                            .Where(s => !string.IsNullOrEmpty(s.Info.Endpoint))
-                            .ToList();
+            List<ConfigInfo> list = ServersWithEndpoints(Paths.ConfigNames());
             if (list.Count == 0) return;
 
-            var withPing = list.Select(s => new { s.Name, Result = Latency.Cached(s.Info.Endpoint) })
-                               .Where(s => s.Result != null && s.Result.Ok)
-                               .OrderBy(s => s.Result.Ms)
-                               .ToList();
-
-            string target = withPing.Count > 0 ? withPing[0].Name : list[0].Name;
+            string target = FastestRatedServer(list) ?? list[0].Name;
             SwitchServer(target);
             if (WindowShowing) tabHome.IsChecked = true;
         }
@@ -1921,10 +2007,7 @@ namespace VpnPanel
         void TryConnectFastestPending()
         {
             if (!connectingFastestPending) return;
-            string[] names = Paths.ConfigNames();
-            var list = names.Select(n => new { Name = n, Info = ConfigInfo.Read(n) })
-                            .Where(s => !string.IsNullOrEmpty(s.Info.Endpoint))
-                            .ToList();
+            List<ConfigInfo> list = ServersWithEndpoints(Paths.ConfigNames());
             if (list.Count == 0)
             {
                 connectingFastestPending = false;
@@ -1932,13 +2015,10 @@ namespace VpnPanel
                 return;
             }
 
-            bool allDone = list.All(s => Latency.Cached(s.Info.Endpoint) != null);
-            var withPing = list.Select(s => new { s.Name, Result = Latency.Cached(s.Info.Endpoint) })
-                               .Where(s => s.Result != null && s.Result.Ok)
-                               .OrderBy(s => s.Result.Ms)
-                               .ToList();
+            bool allDone = list.All(s => Latency.Cached(s.Endpoint) != null);
+            string best = FastestRatedServer(list);
 
-            if (allDone || (withPing.Count > 0 && (DateTime.UtcNow - fastestStarted).TotalSeconds >= 1.5))
+            if (allDone || (best != null && (DateTime.UtcNow - fastestStarted).TotalSeconds >= 1.5))
             {
                 FinishConnectFastest();
             }
@@ -2096,10 +2176,17 @@ namespace VpnPanel
         // Expect a download during setup, and for a while after the guide was opened
         bool ExpectingDownload { get { return active == null || DateTime.Now < expectDownloadUntil; } }
 
+        void SyncDownloadsWatcher()
+        {
+            if (downloadsWatcher == null) return;
+            try { downloadsWatcher.EnableRaisingEvents = ExpectingDownload; } catch { }
+        }
+
         void OpenGuide(bool otherProvider)
         {
             if (guide != null) { guide.Activate(); return; }
             expectDownloadUntil = DateTime.Now.AddMinutes(20);
+            SyncDownloadsWatcher();
             guide = Dialogs.ProviderGuide(w, otherProvider);
             bool browse = guide.ShowDialog() == true;
             guide = null;
@@ -2115,11 +2202,19 @@ namespace VpnPanel
             try
             {
                 downloadsWatcher = new FileSystemWatcher(dir) { NotifyFilter = NotifyFilters.FileName | NotifyFilters.LastWrite | NotifyFilters.Size };
-                FileSystemEventHandler seen = (s, e) => w.Dispatcher.BeginInvoke(new Action(() => OnDownload(e.FullPath)));
+                FileSystemEventHandler seen = (s, e) =>
+                {
+                    if (e != null && ConfFile.IsImportable(e.FullPath))
+                        w.Dispatcher.BeginInvoke(new Action(() => OnDownload(e.FullPath)));
+                };
                 downloadsWatcher.Created += seen;
                 downloadsWatcher.Changed += seen;
-                downloadsWatcher.Renamed += (s, e) => w.Dispatcher.BeginInvoke(new Action(() => OnDownload(e.FullPath)));
-                downloadsWatcher.EnableRaisingEvents = true;
+                downloadsWatcher.Renamed += (s, e) =>
+                {
+                    if (e != null && ConfFile.IsImportable(e.FullPath))
+                        w.Dispatcher.BeginInvoke(new Action(() => OnDownload(e.FullPath)));
+                };
+                downloadsWatcher.EnableRaisingEvents = ExpectingDownload;
             }
             catch { downloadsWatcher = null; }
         }
@@ -2422,6 +2517,7 @@ namespace VpnPanel
 
         void ToggleStartup()
         {
+            startupTouched = true;
             if (!Paths.IsInstalled && chkStartup.IsChecked == true)
             {
                 Dialogs.Info(w, "Instalação necessária", "Para iniciar automaticamente com o Windows de forma segura, instale o VPN Panel pelo instalador oficial.");
@@ -2476,7 +2572,7 @@ namespace VpnPanel
             try { names = Paths.ConfigNames(); } catch { names = new string[0]; }
             string current = active != null ? active.Name : "";
             string live = wasRunning == true && runningConfig != null ? runningConfig : "";
-            string key = Paths.ConfigsVersion + "|" + current + "|" + live + "|" + string.Join("|", settings.Recent);
+            string key = Paths.ConfigsVersion + "|" + Geo.Version + "|" + current + "|" + live + "|" + string.Join("|", settings.Recent);
             if (key == trayMenuKey) return;
             trayMenuKey = key;
 
@@ -2522,9 +2618,9 @@ namespace VpnPanel
             bool isLive = live.Equals(name, StringComparison.OrdinalIgnoreCase);
             bool isCurrent = current.Equals(name, StringComparison.OrdinalIgnoreCase);
             ConfigInfo c = ConfigInfo.Read(name);
-            Geo.Place place = c.Readable ? c.Place : null;
+            string code = c.Readable ? c.CountryCode : null;
             // "&" would turn into a mnemonic underline
-            string text = name.Replace("&", "&&") + (place != null ? "   " + place.Country : "");
+            string text = name.Replace("&", "&&") + (code != null ? "   " + code : "");
             var item = new WF.ToolStripMenuItem(text) { Checked = isCurrent, Padding = TrayPadding };
             item.ToolTipText = isLive ? "Conectado" : isCurrent ? "Selecionado. Clique para conectar" : "Conectar a este servidor";
             string target = name;
@@ -2553,7 +2649,9 @@ namespace VpnPanel
                     path.CloseFigure();
                     g.FillPath(SD.Brushes.White, path);
                 }
-                return SD.Icon.FromHandle(bmp.GetHicon());
+                IntPtr hIcon = bmp.GetHicon();
+                try { return (SD.Icon)SD.Icon.FromHandle(hIcon).Clone(); }
+                finally { DestroyIcon(hIcon); }
             }
         }
 

@@ -144,8 +144,14 @@
         </Border>
 
         <Grid Grid.Row="1" Width="176" Height="176" Margin="0,22,0,0" HorizontalAlignment="Center">
-          <Ellipse x:Name="Glow" Width="150" Height="150" Fill="{StaticResource Accent}" Opacity="0" Visibility="Collapsed">
-            <Ellipse.Effect><BlurEffect Radius="48"/></Ellipse.Effect>
+          <Ellipse x:Name="Glow" Width="220" Height="220" Margin="-22" IsHitTestVisible="False" Opacity="0" Visibility="Collapsed">
+            <Ellipse.Fill>
+              <RadialGradientBrush>
+                <GradientStop Color="#FF2FBF71" Offset="0"/>
+                <GradientStop Color="#882FBF71" Offset="0.45"/>
+                <GradientStop Color="#002FBF71" Offset="1"/>
+              </RadialGradientBrush>
+            </Ellipse.Fill>
           </Ellipse>
           <Ellipse x:Name="Ring" Stroke="{StaticResource Line}" StrokeThickness="2" Fill="{StaticResource Surface}"/>
           <Ellipse x:Name="Spinner" Stroke="{StaticResource Warn}" StrokeThickness="3" StrokeDashArray="28 200"
@@ -405,6 +411,13 @@
                 <StackPanel>
                   <TextBlock Text="Bloquear a internet se a VPN cair" FontWeight="SemiBold"/>
                   <TextBlock Style="{StaticResource Caption}" Margin="0,2,0,0" Text="Nada sai sem proteção (kill switch). Vale na próxima conexão."/>
+                </StackPanel>
+              </CheckBox>
+              <Border Height="1" Background="{StaticResource Line}" Margin="0,14"/>
+              <CheckBox x:Name="ChkMtu" AutomationProperties.Name="Otimizar para chamadas, transmissões e jogos" Style="{StaticResource Switch}">
+                <StackPanel>
+                  <TextBlock Text="Otimizar para chamadas, transmissões e jogos" FontWeight="SemiBold"/>
+                  <TextBlock Style="{StaticResource Caption}" Margin="0,2,0,0" Text="Evita travamentos em telas compartilhadas e pacotes UDP grandes (MTU 1380). Vale na próxima conexão."/>
                 </StackPanel>
               </CheckBox>
               <Border Height="1" Background="{StaticResource Line}" Margin="0,14"/>

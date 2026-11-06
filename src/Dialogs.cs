@@ -271,34 +271,60 @@ namespace VpnPanel
             ok.IsEnabled = false;
             ok.Click += (s, e) => d.DialogResult = true;
 
-            Action fill = null;
-            fill = () =>
+            var hdrWindowed = new TextBlock
             {
-                rows.Children.Clear();
+                Text = "COM JANELA ABERTA",
+                FontSize = 10.5, FontWeight = FontWeights.SemiBold, Foreground = B("Muted"),
+                Margin = new Thickness(6, 2, 0, 6),
+                Visibility = Visibility.Collapsed,
+            };
+            var hdrBackground = new TextBlock
+            {
+                Text = "EM SEGUNDO PLANO",
+                FontSize = 10.5, FontWeight = FontWeights.SemiBold, Foreground = B("Muted"),
+                Margin = new Thickness(6, 12, 0, 6),
+                Visibility = Visibility.Collapsed,
+            };
+
+            var rowItems = new List<KeyValuePair<ProcessEntry, UIElement>>(list.Count);
+            bool addedWindowedHdr = false, addedBgHdr = false;
+            Action updateOk = () =>
+            {
+                ok.IsEnabled = selected.Count > 0;
+                ok.Content = selected.Count > 1 ? "Adicionar (" + selected.Count + ")" : "Adicionar";
+            };
+            foreach (ProcessEntry entry in list)
+            {
+                if (entry.Windowed && !addedWindowedHdr) { rows.Children.Add(hdrWindowed); addedWindowedHdr = true; }
+                if (!entry.Windowed && !addedBgHdr) { rows.Children.Add(hdrBackground); addedBgHdr = true; }
+                UIElement rowEl = PickRow(entry, icon, selected, updateOk);
+                rows.Children.Add(rowEl);
+                rowItems.Add(new KeyValuePair<ProcessEntry, UIElement>(entry, rowEl));
+            }
+
+            Action applyFilter = () =>
+            {
                 string f = filter.Text.Trim();
-                bool? lastWindowed = null;
-                foreach (ProcessEntry entry in list)
+                bool anyWindowed = false, anyBg = false;
+                foreach (var kv in rowItems)
                 {
-                    if (f.Length > 0 && entry.Name.IndexOf(f, StringComparison.OrdinalIgnoreCase) < 0) continue;
-                    if (lastWindowed != entry.Windowed)
+                    bool vis = f.Length == 0 || kv.Key.Name.IndexOf(f, StringComparison.OrdinalIgnoreCase) >= 0;
+                    kv.Value.Visibility = vis ? Visibility.Visible : Visibility.Collapsed;
+                    if (vis)
                     {
-                        rows.Children.Add(new TextBlock
-                        {
-                            Text = entry.Windowed ? "COM JANELA ABERTA" : "EM SEGUNDO PLANO",
-                            FontSize = 10.5, FontWeight = FontWeights.SemiBold, Foreground = B("Muted"),
-                            Margin = new Thickness(6, lastWindowed == null ? 2 : 12, 0, 6),
-                        });
-                        lastWindowed = entry.Windowed;
+                        if (kv.Key.Windowed) anyWindowed = true;
+                        else anyBg = true;
                     }
-                    rows.Children.Add(PickRow(entry, icon, selected, () =>
-                    {
-                        ok.IsEnabled = selected.Count > 0;
-                        ok.Content = selected.Count > 1 ? "Adicionar (" + selected.Count + ")" : "Adicionar";
-                    }));
+                }
+                if (addedWindowedHdr) hdrWindowed.Visibility = anyWindowed ? Visibility.Visible : Visibility.Collapsed;
+                if (addedBgHdr)
+                {
+                    hdrBackground.Margin = new Thickness(6, anyWindowed ? 12 : 2, 0, 6);
+                    hdrBackground.Visibility = anyBg ? Visibility.Visible : Visibility.Collapsed;
                 }
             };
-            filter.TextChanged += (s, e) => fill();
-            fill();
+            filter.TextChanged += (s, e) => applyFilter();
+            applyFilter();
             Layout(d, "Apps abertos", body, cancel, ok);
             d.Loaded += (s, e) => filter.Focus();
             return d.ShowDialog() == true ? selected.ToList() : new List<string>();
@@ -311,7 +337,7 @@ namespace VpnPanel
             g.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
             g.ColumnDefinitions.Add(new ColumnDefinition());
             g.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-            UIElement img = AppAvatar(entry.Name, icon(entry.Name, entry.Path));
+            UIElement img = AppAvatar(entry.Name, entry.Path != null ? icon(entry.Name, entry.Path) : null);
             g.Children.Add(img);
             var name = new TextBlock { Text = entry.Name, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(10, 0, 8, 0), TextTrimming = TextTrimming.CharacterEllipsis };
             Grid.SetColumn(name, 1);

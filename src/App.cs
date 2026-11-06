@@ -101,6 +101,19 @@ namespace VpnPanel
             {
                 Directory.CreateDirectory(Paths.Data);
                 string crashFile = Path.Combine(Paths.Data, "crash.log");
+                try
+                {
+                    var fi = new FileInfo(crashFile);
+                    if (fi.Exists && fi.Length > 256 * 1024)
+                    {
+                        byte[] all = File.ReadAllBytes(crashFile);
+                        int keep = 128 * 1024;
+                        int start = all.Length - keep;
+                        using (var fs = new FileStream(crashFile, FileMode.Create, FileAccess.Write, FileShare.Read))
+                            fs.Write(all, start, keep);
+                    }
+                }
+                catch { }
                 var sb = new StringBuilder();
                 sb.AppendFormat("[{0:yyyy-MM-dd HH:mm:ss}] [{1}] {2}: {3}\r\n{4}\r\n",
                     DateTime.Now, source, ex.GetType().FullName, ex.Message, ex.StackTrace);
@@ -262,24 +275,43 @@ namespace VpnPanel
         {
             get
             {
+                System.ServiceProcess.ServiceController[] services = null;
                 try
                 {
-                    return System.ServiceProcess.ServiceController.GetServices().Any(s =>
-                        s.ServiceName.StartsWith("wiresock-", StringComparison.OrdinalIgnoreCase) &&
-                        s.Status == System.ServiceProcess.ServiceControllerStatus.Running);
+                    services = System.ServiceProcess.ServiceController.GetServices();
+                    foreach (var s in services)
+                    {
+                        if (s.ServiceName.StartsWith("wiresock-", StringComparison.OrdinalIgnoreCase) &&
+                            s.Status == System.ServiceProcess.ServiceControllerStatus.Running)
+                            return true;
+                    }
+                    return false;
                 }
                 catch { return false; }
+                finally
+                {
+                    if (services != null)
+                        foreach (var s in services) { try { s.Dispose(); } catch { } }
+                }
             }
         }
 
         public static void StopWireSockService()
         {
-            foreach (var s in System.ServiceProcess.ServiceController.GetServices())
+            System.ServiceProcess.ServiceController[] services = System.ServiceProcess.ServiceController.GetServices();
+            try
             {
-                if (!s.ServiceName.StartsWith("wiresock-", StringComparison.OrdinalIgnoreCase) ||
-                    s.Status != System.ServiceProcess.ServiceControllerStatus.Running) continue;
-                s.Stop();
-                s.WaitForStatus(System.ServiceProcess.ServiceControllerStatus.Stopped, TimeSpan.FromSeconds(15));
+                foreach (var s in services)
+                {
+                    if (!s.ServiceName.StartsWith("wiresock-", StringComparison.OrdinalIgnoreCase) ||
+                        s.Status != System.ServiceProcess.ServiceControllerStatus.Running) continue;
+                    s.Stop();
+                    s.WaitForStatus(System.ServiceProcess.ServiceControllerStatus.Stopped, TimeSpan.FromSeconds(15));
+                }
+            }
+            finally
+            {
+                foreach (var s in services) { try { s.Dispose(); } catch { } }
             }
         }
 
@@ -348,6 +380,7 @@ namespace VpnPanel
         public bool NetworkLock;
         public bool AutoConnect;
         public bool AutoReconnect = true;
+        public bool OptimizeMtu = true;
         public bool SkipUac = true;
         public bool SharedApps = true;
         public AppMode AppsMode = AppMode.All;
@@ -386,6 +419,7 @@ namespace VpnPanel
                 if (d.TryGetValue("networkLock", out v) && v is bool) s.NetworkLock = (bool)v;
                 if (d.TryGetValue("autoConnect", out v) && v is bool) s.AutoConnect = (bool)v;
                 if (d.TryGetValue("autoReconnect", out v) && v is bool) s.AutoReconnect = (bool)v;
+                if (d.TryGetValue("optimizeMtu", out v) && v is bool) s.OptimizeMtu = (bool)v;
                 if (d.TryGetValue("skipUac", out v) && v is bool) s.SkipUac = (bool)v;
                 if (d.TryGetValue("hotkey", out v) && v is bool) s.Hotkey = (bool)v;
                 if (d.TryGetValue("checkUpdates", out v) && v is bool) s.CheckUpdates = (bool)v;
@@ -426,9 +460,9 @@ namespace VpnPanel
                 var d = new Dictionary<string, object>
                 {
                     { "config", Config }, { "networkLock", NetworkLock }, { "autoConnect", AutoConnect },
-                    { "autoReconnect", AutoReconnect }, { "skipUac", SkipUac }, { "recent", Recent },
-                    { "sharedApps", SharedApps }, { "appsMode", AppsMode.ToString() }, { "apps", Apps },
-                    { "hotkey", Hotkey }, { "checkUpdates", CheckUpdates },
+                    { "autoReconnect", AutoReconnect }, { "optimizeMtu", OptimizeMtu }, { "skipUac", SkipUac },
+                    { "recent", Recent }, { "sharedApps", SharedApps }, { "appsMode", AppsMode.ToString() },
+                    { "apps", Apps }, { "hotkey", Hotkey }, { "checkUpdates", CheckUpdates },
                 };
                 File.WriteAllText(Paths.Settings, new JavaScriptSerializer().Serialize(d));
             }
@@ -442,13 +476,32 @@ namespace VpnPanel
     class ConfigInfo
     {
         static readonly Dictionary<string, ConfigInfo> cache = new Dictionary<string, ConfigInfo>(StringComparer.OrdinalIgnoreCase);
+        static readonly Regex CountryHintRegex = new Regex(@"(?:^|[^A-Za-z])([A-Za-z]{2})-(?:([A-Za-z]{2})#|(?:[A-Za-z]{3}-wg-)|FREE|[0-9])", RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
         public string Name;
         public string Server;    // first comment in [Peer], e.g. "# US-FREE#40" in Proton configs
         public string Endpoint;  // host only
+        public int Mtu;          // MTU in [Interface], or 0 when not specified
+        public bool AutoMtu;     // true when MTU = 1380 was added by VPN Panel (# vpn-panel-mtu)
+        public string GuessedCountry; // provisional ISO country code from server comment/name
         public AppMode Mode;
         public List<string> Apps = new List<string>();
         public bool Readable;
+
+        static string GuessCountry(string text)
+        {
+            if (string.IsNullOrEmpty(text)) return null;
+            Match m = CountryHintRegex.Match(text);
+            if (!m.Success) return null;
+            string code = (m.Groups[2].Success && m.Groups[2].Value.Length == 2 ? m.Groups[2].Value : m.Groups[1].Value).ToUpperInvariant();
+            if (code == "UK") code = "GB";
+            try
+            {
+                var r = new RegionInfo(code);
+                return r.TwoLetterISORegionName.ToUpperInvariant();
+            }
+            catch { return null; }
+        }
 
         // Every write by the app invalidates its entry, and the configs watcher clears the cache for
         // changes made outside the app, so a cached entry is trusted without touching the disk.
@@ -474,11 +527,27 @@ namespace VpnPanel
             try
             {
                 string[] lines = File.ReadAllLines(path);
-                bool inPeer = false;
+                bool inPeer = false, inInterface = false;
                 foreach (string line in lines)
                 {
                     Match m = ConfFile.SectionLine.Match(line);
-                    if (m.Success) { inPeer = m.Groups[1].Value.Equals("Peer", StringComparison.OrdinalIgnoreCase); continue; }
+                    if (m.Success)
+                    {
+                        string sec = m.Groups[1].Value;
+                        inPeer = sec.Equals("Peer", StringComparison.OrdinalIgnoreCase);
+                        inInterface = sec.Equals("Interface", StringComparison.OrdinalIgnoreCase);
+                        continue;
+                    }
+                    if (inInterface && c.Mtu == 0)
+                    {
+                        m = ConfFile.MtuLine.Match(line);
+                        if (m.Success)
+                        {
+                            int parsedMtu;
+                            c.Mtu = int.TryParse(m.Groups[1].Value, out parsedMtu) && parsedMtu > 0 ? parsedMtu : -1;
+                            c.AutoMtu = line.IndexOf(ConfFile.MtuMarker, StringComparison.OrdinalIgnoreCase) >= 0;
+                        }
+                    }
                     if (!inPeer) continue;
                     if (c.Server == null)
                     {
@@ -497,10 +566,13 @@ namespace VpnPanel
                         }
                     }
                 }
+                c.GuessedCountry = GuessCountry(c.Server) ?? GuessCountry(c.Name);
                 c.Mode = ConfFile.ReadApps(lines, c.Apps);
                 c.Readable = true;
                 cache[name] = c;
             }
+            catch (FileNotFoundException) { cache[name] = c; }
+            catch (DirectoryNotFoundException) { cache[name] = c; }
             catch { }
             return c;
         }
@@ -517,6 +589,17 @@ namespace VpnPanel
 
         // Where the server is, from the cached lookup of its endpoint (null until known)
         public Geo.Place Place { get { return Endpoint != null ? Geo.Cached(Endpoint) : null; } }
+
+        // Country code for flags/badges: uses ipinfo.io result when available, or provisional hint from config name/comment
+        public string CountryCode
+        {
+            get
+            {
+                Geo.Place p = Place;
+                if (p != null && !string.IsNullOrEmpty(p.Country)) return p.Country;
+                return GuessedCountry;
+            }
+        }
 
         public string Location
         {
@@ -543,15 +626,23 @@ namespace VpnPanel
     // in the [Peer] section, leaving every other line of the file untouched.
     static class ConfFile
     {
+        public const string MtuMarker = "# vpn-panel-mtu";
         public static readonly Regex SectionLine = new Regex(@"^\s*\[(\w+)\]\s*$", RegexOptions.Compiled);
         public static readonly Regex CommentLine = new Regex(@"^\s*#\s*(.+?)\s*$", RegexOptions.Compiled);
         public static readonly Regex EndpointLine = new Regex(@"^\s*Endpoint\s*=\s*(\S+)", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+        public static readonly Regex MtuLine = new Regex(@"^\s*MTU\s*=\s*(\S+)", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+        static readonly Regex AddressLine = new Regex(@"^\s*Address\s*=", RegexOptions.IgnoreCase | RegexOptions.Compiled);
         static readonly Regex AppsLine = new Regex(@"^\s*(AllowedApps|DisallowedApps)\s*=\s*([^#]*)", RegexOptions.IgnoreCase | RegexOptions.Compiled);
         static readonly Regex AllowedIpsLine = new Regex(@"^\s*AllowedIPs\s*=", RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
         static bool IsPeer(Match section)
         {
             return section.Groups[1].Value.Equals("Peer", StringComparison.OrdinalIgnoreCase);
+        }
+
+        static bool IsInterface(Match section)
+        {
+            return section.Groups[1].Value.Equals("Interface", StringComparison.OrdinalIgnoreCase);
         }
 
         public static AppMode ReadApps(IEnumerable<string> lines, List<string> apps)
@@ -579,6 +670,12 @@ namespace VpnPanel
 
         public static void WriteApps(string path, AppMode mode, IList<string> apps)
         {
+            Rewrite(path, true, mode, apps, false, 0);
+        }
+
+        public static void Rewrite(string path, bool updateApps, AppMode mode, IList<string> apps, bool updateMtu, int mtu)
+        {
+            if (!updateApps && !updateMtu) return;
             byte[] raw = File.ReadAllBytes(path);
             bool bom = raw.Length >= 3 && raw[0] == 0xEF && raw[1] == 0xBB && raw[2] == 0xBF;
             int offset = bom ? 3 : 0, count = raw.Length - offset;
@@ -595,25 +692,56 @@ namespace VpnPanel
             List<string> lines = text.Split('\n').Select(l => l.TrimEnd('\r')).ToList();
             if (trailingNewline) lines.RemoveAt(lines.Count - 1);
 
-            // Drop the existing keys and find where to insert the new one: after AllowedIPs in the first [Peer]
-            int peers = 0, insertAt = -1;
-            bool inPeer = false;
-            for (int i = 0; i < lines.Count; i++)
+            if (updateMtu)
             {
-                Match m = SectionLine.Match(lines[i]);
-                if (m.Success)
+                int ifaces = 0, mtuInsertAt = -1;
+                bool inIface = false, hasProviderMtu = false;
+                for (int i = 0; i < lines.Count; i++)
                 {
-                    inPeer = IsPeer(m);
-                    if (inPeer && ++peers == 1) insertAt = i + 1;
-                    continue;
+                    Match m = SectionLine.Match(lines[i]);
+                    if (m.Success)
+                    {
+                        inIface = IsInterface(m);
+                        if (inIface && ++ifaces == 1) mtuInsertAt = i + 1;
+                        continue;
+                    }
+                    if (!inIface) continue;
+                    if (MtuLine.IsMatch(lines[i]))
+                    {
+                        if (lines[i].IndexOf(MtuMarker, StringComparison.OrdinalIgnoreCase) >= 0)
+                            lines.RemoveAt(i--);
+                        else
+                            hasProviderMtu = true;
+                        continue;
+                    }
+                    if (ifaces == 1 && AddressLine.IsMatch(lines[i])) mtuInsertAt = i + 1;
                 }
-                if (!inPeer) continue;
-                if (AppsLine.IsMatch(lines[i])) { lines.RemoveAt(i--); continue; }
-                if (peers == 1 && AllowedIpsLine.IsMatch(lines[i])) insertAt = i + 1;
+                if (mtu > 0 && !hasProviderMtu && mtuInsertAt >= 0)
+                    lines.Insert(mtuInsertAt, "MTU = " + mtu + " " + MtuMarker);
             }
-            if (insertAt < 0) throw new InvalidDataException("Seção [Peer] não encontrada no arquivo.");
-            if (mode != AppMode.All && apps.Count > 0)
-                lines.Insert(insertAt, (mode == AppMode.Only ? "AllowedApps" : "DisallowedApps") + " = " + string.Join(", ", apps));
+
+            if (updateApps)
+            {
+                // Drop the existing keys and find where to insert the new one: after AllowedIPs in the first [Peer]
+                int peers = 0, insertAt = -1;
+                bool inPeer = false;
+                for (int i = 0; i < lines.Count; i++)
+                {
+                    Match m = SectionLine.Match(lines[i]);
+                    if (m.Success)
+                    {
+                        inPeer = IsPeer(m);
+                        if (inPeer && ++peers == 1) insertAt = i + 1;
+                        continue;
+                    }
+                    if (!inPeer) continue;
+                    if (AppsLine.IsMatch(lines[i])) { lines.RemoveAt(i--); continue; }
+                    if (peers == 1 && AllowedIpsLine.IsMatch(lines[i])) insertAt = i + 1;
+                }
+                if (insertAt < 0) throw new InvalidDataException("Seção [Peer] não encontrada no arquivo.");
+                if (mode != AppMode.All && apps != null && apps.Count > 0)
+                    lines.Insert(insertAt, (mode == AppMode.Only ? "AllowedApps" : "DisallowedApps") + " = " + string.Join(", ", apps));
+            }
 
             byte[] body = enc.GetBytes(string.Join(nl, lines) + (trailingNewline ? nl : ""));
             string tmp = path + ".tmp";
@@ -685,8 +813,9 @@ namespace VpnPanel
                         using (var ms = new MemoryStream())
                         {
                             st.CopyTo(ms);
-                            if (IsWireGuard(Decode(ms.ToArray())))
-                                found.Add(new KeyValuePair<string, byte[]>(Path.GetFileNameWithoutExtension(entry.Name), ms.ToArray()));
+                            byte[] entryBytes = ms.ToArray();
+                            if (IsWireGuard(Decode(entryBytes)))
+                                found.Add(new KeyValuePair<string, byte[]>(Path.GetFileNameWithoutExtension(entry.Name), entryBytes));
                         }
                     }
                 return found;
@@ -768,24 +897,40 @@ namespace VpnPanel
             return service.GetFolder("\\");
         }
 
+        static dynamic Get(dynamic folder, string name)
+        {
+            try { return folder.GetTask(name); } catch { return null; }
+        }
+
         static dynamic Get(string name)
         {
-            try { return Folder().GetTask(name); } catch { return null; }
+            try { return Get(Folder(), name); } catch { return null; }
         }
 
         public static bool Exists(string name) { return Get(name) != null; }
 
-        // Program the task starts, or null
-        public static string CommandOf(string name)
+        static string CommandOf(dynamic folder, string name)
         {
             try
             {
-                dynamic task = Get(name);
+                dynamic task = Get(folder, name);
                 if (task == null) return null;
                 foreach (dynamic action in task.Definition.Actions) return (string)action.Path;
             }
             catch { }
             return null;
+        }
+
+        // Program the task starts, or null
+        public static string CommandOf(string name)
+        {
+            try { return CommandOf(Folder(), name); } catch { return null; }
+        }
+
+        static bool PointsHere(dynamic folder, string name)
+        {
+            string cmd = CommandOf(folder, name);
+            return cmd != null && cmd.Equals(Paths.Exe, StringComparison.OrdinalIgnoreCase);
         }
 
         public static bool PointsHere(string name)
@@ -806,7 +951,7 @@ namespace VpnPanel
             catch { return false; }
         }
 
-        public static void Create(string name)
+        static void Create(dynamic folder, string name)
         {
             if (!Paths.IsInstalled) return;
             bool logon = name == Logon;
@@ -830,25 +975,42 @@ namespace VpnPanel
                 (logon ? "<Arguments>--tray</Arguments>" : "") + "</Exec></Actions>\r\n" +
                 "</Task>\r\n";
             // 6 = TASK_CREATE_OR_UPDATE, 3 = TASK_LOGON_INTERACTIVE_TOKEN
-            Folder().RegisterTask(name, xml, 6, null, null, 3, null);
+            folder.RegisterTask(name, xml, 6, null, null, 3, null);
+        }
+
+        public static void Create(string name)
+        {
+            if (!Paths.IsInstalled) return;
+            Create(Folder(), name);
+        }
+
+        static void Delete(dynamic folder, string name)
+        {
+            if (Get(folder, name) != null) folder.DeleteTask(name, 0);
         }
 
         public static void Delete(string name)
         {
-            if (Exists(name)) Folder().DeleteTask(name, 0);
+            Delete(Folder(), name);
         }
 
-        // Re-point existing tasks at this exe if it was moved, and add/remove the "open" task
-        public static void Sync(bool skipUac)
+        // Re-point existing tasks at this exe if it was moved, and add/remove the "open" task.
+        // Returns whether the Logon task exists, using a single COM connection.
+        public static bool Sync(bool skipUac)
         {
             try
             {
-                if (!Paths.IsInstalled) return;
-                if (Exists(Logon) && !PointsHere(Logon)) Create(Logon);
-                if (skipUac && !PointsHere(Open)) Create(Open);
-                if (!skipUac) Delete(Open);
+                dynamic folder = Folder();
+                bool logonExists = Get(folder, Logon) != null;
+                if (Paths.IsInstalled)
+                {
+                    if (logonExists && !PointsHere(folder, Logon)) Create(folder, Logon);
+                    if (skipUac && !PointsHere(folder, Open)) Create(folder, Open);
+                    if (!skipUac) Delete(folder, Open);
+                }
+                return logonExists;
             }
-            catch { }
+            catch { return false; }
         }
     }
 
@@ -983,6 +1145,10 @@ namespace VpnPanel
         static readonly Dictionary<string, DateTime> failed = new Dictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
         static readonly Queue<Action> queue = new Queue<Action>();
         static int activeLookups;
+        static bool dirty;
+        static int version;
+
+        public static int Version { get { return version; } }
 
         static void Load()
         {
@@ -999,12 +1165,19 @@ namespace VpnPanel
 
         static void Save()
         {
+            if (!dirty || cache == null) return;
             try
             {
                 var d = cache.ToDictionary(kv => kv.Key, kv => new Dictionary<string, object> { { "country", kv.Value.Country }, { "city", kv.Value.City } });
                 File.WriteAllText(Paths.GeoCache, new JavaScriptSerializer().Serialize(d));
+                dirty = false;
             }
             catch { }
+        }
+
+        public static void Flush()
+        {
+            Save();
         }
 
         public static Place Cached(string host)
@@ -1053,11 +1226,14 @@ namespace VpnPanel
                     if (place == null)
                     {
                         failed[host] = DateTime.UtcNow;
+                        if (activeLookups == 0 && queue.Count == 0) Save();
                         return;
                     }
                     failed.Remove(host);
                     cache[host] = place;
-                    Save();
+                    dirty = true;
+                    version++;
+                    if (activeLookups == 0 && queue.Count == 0) Save();
                     onFound();
                 }));
             });
@@ -1285,52 +1461,67 @@ namespace VpnPanel
     // The wiresock-client process
     static class Tunnel
     {
+        static readonly object stateLock = new object();
+        static readonly object stopLock = new object();
         static int currentPid;
         static IntPtr currentHandle;
         static bool lockHint; // the tracked tunnel runs with -network-lock
         public static string LastStartedConfig { get; private set; }
         public static DateTime LastStartedAt { get; private set; }
-        public static int Pid { get { return currentPid; } }
+        public static int Pid { get { lock (stateLock) return currentPid; } }
         public static DateTime StartTime { get; private set; }
 
         public static Process[] Find() { return Process.GetProcessesByName("wiresock-client"); }
 
         static void ReleaseCurrent()
         {
-            ProcUtil.Close(ref currentHandle);
-            currentPid = 0;
+            lock (stateLock)
+            {
+                ProcUtil.Close(ref currentHandle);
+                currentPid = 0;
+            }
         }
 
         static void Track(int pid, IntPtr handle)
         {
-            ReleaseCurrent();
-            currentPid = pid;
-            currentHandle = handle;
-            StartTime = ProcUtil.StartTime(handle);
+            lock (stateLock)
+            {
+                ProcUtil.Close(ref currentHandle);
+                currentPid = pid;
+                currentHandle = handle;
+                StartTime = ProcUtil.StartTime(handle);
+            }
         }
 
         // True while the tracked client lives, avoiding a full system process scan on every tick.
         // Holding currentHandle prevents Windows from reusing the PID while open.
         public static bool Active(bool allowScan)
         {
-            if (currentPid != 0)
+            lock (stateLock)
             {
-                if (ProcUtil.IsAlive(currentHandle)) return true;
-                ReleaseCurrent();
+                if (currentPid != 0)
+                {
+                    if (ProcUtil.IsAlive(currentHandle)) return true;
+                    ProcUtil.Close(ref currentHandle);
+                    currentPid = 0;
+                }
             }
             if (!allowScan) return false;
             bool found = false; // running but not openable: reported now, scanned again next tick
             foreach (Process p in Find())
             {
                 found = true;
-                if (currentPid == 0)
+                if (Pid == 0)
                 {
                     IntPtr h = ProcUtil.OpenForMonitor(p.Id);
                     if (h != IntPtr.Zero) Track(p.Id, h);
                 }
                 p.Dispose();
             }
-            if (found && currentPid == 0) StartTime = DateTime.Now;
+            lock (stateLock)
+            {
+                if (found && currentPid == 0) StartTime = DateTime.Now;
+            }
             return found;
         }
 
@@ -1342,6 +1533,8 @@ namespace VpnPanel
 
         public static string CommandLine(int pid)
         {
+            string cmd = ProcUtil.CommandLine(pid);
+            if (!string.IsNullOrEmpty(cmd)) return cmd;
             try
             {
                 using (var searcher = new ManagementObjectSearcher("SELECT CommandLine FROM Win32_Process WHERE ProcessId=" + pid))
@@ -1374,8 +1567,6 @@ namespace VpnPanel
             lockHint = networkLock;
         }
 
-        static readonly object stopLock = new object();
-
         // resetLock: the kill switch may be on. A killed client leaves the driver blocking all traffic,
         // so the lock is reset once every client is gone (harmless when no lock is active).
         public static void Stop(bool resetLock)
@@ -1386,8 +1577,10 @@ namespace VpnPanel
                 resetLock |= lockHint;
                 lockHint = false;
                 bool stoppedCleanly = false;
+                int pidToStop;
+                lock (stateLock) pidToStop = currentPid;
                 // Ctrl+C first: WireSock then drops the tunnel and releases the lock by itself
-                if (currentPid != 0) stoppedCleanly = ProcUtil.Shutdown(currentPid, 3000);
+                if (pidToStop != 0) stoppedCleanly = ProcUtil.Shutdown(pidToStop, 3000);
                 ReleaseCurrent();
                 foreach (Process p in Find())
                 {
@@ -1449,10 +1642,37 @@ namespace VpnPanel
         const uint FILE_ATTRIBUTE_NORMAL = 0x80;
         const int STARTF_USESTDHANDLES = 0x100;
         const uint CREATE_NO_WINDOW = 0x08000000;
+        const uint ABOVE_NORMAL_PRIORITY_CLASS = 0x00008000;
         const uint EXTENDED_STARTUPINFO_PRESENT = 0x00080000;
+        const int ProcessPowerThrottling = 4;
+        const uint PROCESS_POWER_THROTTLING_CURRENT_VERSION = 1;
+        const uint PROCESS_POWER_THROTTLING_EXECUTION_SPEED = 0x1;
+        const uint PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION = 0x4;
         static readonly IntPtr PROC_THREAD_ATTRIBUTE_HANDLE_LIST = (IntPtr)0x20002;
         static readonly IntPtr INVALID_HANDLE_VALUE = (IntPtr)(-1);
         const uint CTRL_C_EVENT = 0;
+
+        [StructLayout(LayoutKind.Sequential)]
+        struct PROCESS_POWER_THROTTLING_STATE
+        {
+            public uint Version;
+            public uint ControlMask;
+            public uint StateMask;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        struct UNICODE_STRING
+        {
+            public ushort Length;
+            public ushort MaximumLength;
+            public IntPtr Buffer;
+        }
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        static extern bool SetProcessInformation(IntPtr hProcess, int ProcessInformationClass, ref PROCESS_POWER_THROTTLING_STATE ProcessInformation, int ProcessInformationSize);
+
+        [DllImport("ntdll.dll")]
+        static extern int NtQueryInformationProcess(IntPtr ProcessHandle, int ProcessInformationClass, IntPtr ProcessInformation, uint ProcessInformationLength, out uint ReturnLength);
 
         [StructLayout(LayoutKind.Sequential)]
         struct SECURITY_ATTRIBUTES
@@ -1540,7 +1760,7 @@ namespace VpnPanel
             try
             {
                 var si = new STARTUPINFOEX { cb = Marshal.SizeOf(typeof(STARTUPINFOEX)) };
-                uint flags = CREATE_NO_WINDOW;
+                uint flags = CREATE_NO_WINDOW | ABOVE_NORMAL_PRIORITY_CLASS;
                 if (log != IntPtr.Zero)
                 {
                     IntPtr size = IntPtr.Zero;
@@ -1569,6 +1789,17 @@ namespace VpnPanel
                 }
                 if (!created) throw new Win32Exception();
                 CloseHandle(pi.hThread);
+                try
+                {
+                    var pt = new PROCESS_POWER_THROTTLING_STATE
+                    {
+                        Version = PROCESS_POWER_THROTTLING_CURRENT_VERSION,
+                        ControlMask = PROCESS_POWER_THROTTLING_EXECUTION_SPEED | PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION,
+                        StateMask = 0, // disable EcoQoS and timer resolution throttling so UDP packets aren't delayed
+                    };
+                    SetProcessInformation(pi.hProcess, ProcessPowerThrottling, ref pt, Marshal.SizeOf(typeof(PROCESS_POWER_THROTTLING_STATE)));
+                }
+                catch { }
                 pid = pi.dwProcessId;
                 return pi.hProcess;
             }
@@ -1636,6 +1867,31 @@ namespace VpnPanel
                 return QueryFullProcessImageNameW(h, 0, sb, ref size) ? sb.ToString(0, (int)size) : null;
             }
             finally { CloseHandle(h); }
+        }
+
+        // Fast command line lookup via ProcessCommandLineInformation (60), avoiding WMI overhead
+        public static string CommandLine(int pid)
+        {
+            IntPtr h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid);
+            if (h == IntPtr.Zero) return null;
+            IntPtr buf = IntPtr.Zero;
+            try
+            {
+                uint len = 0;
+                NtQueryInformationProcess(h, 60, IntPtr.Zero, 0, out len);
+                if (len == 0 || len > 65536) return null;
+                buf = Marshal.AllocHGlobal((int)len);
+                if (NtQueryInformationProcess(h, 60, buf, len, out len) != 0) return null;
+                var us = (UNICODE_STRING)Marshal.PtrToStructure(buf, typeof(UNICODE_STRING));
+                if (us.Buffer == IntPtr.Zero || us.Length == 0) return null;
+                return Marshal.PtrToStringUni(us.Buffer, us.Length / 2);
+            }
+            catch { return null; }
+            finally
+            {
+                if (buf != IntPtr.Zero) Marshal.FreeHGlobal(buf);
+                CloseHandle(h);
+            }
         }
 
         public static HashSet<int> WindowedPids()
