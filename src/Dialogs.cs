@@ -266,7 +266,7 @@ namespace VpnPanel
                 };
                 var isoText = new TextBlock
                 {
-                    Text = "Proteção anti-vazamento ativa: IPv6 da VPN isolado para não alterar o ping nem o DNS dos jogos fora da VPN.",
+                    Text = "Proteção anti-vazamento ativa: DNS e IPv6 da VPN isolados para não deixar o DNS do Windows lento nem alterar o ping dos jogos.",
                     FontSize = 11.5,
                     Foreground = B("Accent"),
                     TextWrapping = TextWrapping.Wrap,

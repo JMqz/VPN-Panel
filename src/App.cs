@@ -32,8 +32,8 @@ using System.Windows.Shell;
 [assembly: AssemblyTrademark("VPN Panel")]
 [assembly: ComVisible(false)]
 [assembly: Guid("b7c93e48-8120-4a87-8d2b-65c71d798a21")]
-[assembly: AssemblyVersion("2.7.0.0")]
-[assembly: AssemblyFileVersion("2.7.0.0")]
+[assembly: AssemblyVersion("2.7.1.0")]
+[assembly: AssemblyFileVersion("2.7.1.0")]
 
 namespace VpnPanel
 {
@@ -42,7 +42,7 @@ namespace VpnPanel
         // Same mutex as the old vpn-panel.ps1, so they never run together
         const string MutexName = @"Global\VpnPanelWireSock";
         public const string ShowEventName = @"Global\VpnPanelWireSockShow";
-        public const string Version = "2.7";
+        public const string Version = "2.7.1";
 
         [STAThread]
         static void Main(string[] args)
@@ -633,6 +633,7 @@ namespace VpnPanel
         public static readonly Regex EndpointLine = new Regex(@"^\s*Endpoint\s*=\s*(\S+)", RegexOptions.IgnoreCase | RegexOptions.Compiled);
         public static readonly Regex MtuLine = new Regex(@"^\s*MTU\s*=\s*(\S+)", RegexOptions.IgnoreCase | RegexOptions.Compiled);
         static readonly Regex AddressLine = new Regex(@"^\s*Address\s*=", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+        static readonly Regex DnsLine = new Regex(@"^\s*DNS\s*=", RegexOptions.IgnoreCase | RegexOptions.Compiled);
         static readonly Regex AppsLine = new Regex(@"^\s*(AllowedApps|DisallowedApps)\s*=\s*([^#]*)", RegexOptions.IgnoreCase | RegexOptions.Compiled);
         static readonly Regex AllowedIpsLine = new Regex(@"^\s*AllowedIPs\s*=", RegexOptions.IgnoreCase | RegexOptions.Compiled);
         static readonly Regex V6KeyLine = new Regex(@"^(\s*(?:Address|DNS|AllowedIPs)\s*=\s*)([^#]*)(#.*)?$", RegexOptions.IgnoreCase | RegexOptions.Compiled);
@@ -657,11 +658,14 @@ namespace VpnPanel
             return prefix + string.Join(", ", v4) + comment;
         }
 
-        // In split-tunneling modes (Only / Except), WireSock's NDIS filter still binds [Interface] IPv6
-        // addresses and a default ::/0 route onto the physical NIC, which causes non-tunneled apps
-        // (games, Windows DNS cache) to pick the VPN's IPv6 source address and stall or misroute.
-        // We generate a temporary IPv4-only copy in Paths.Runtime with the same filename so the user's
-        // original .conf stays untouched while non-tunneled apps stay 100% on the local route.
+        // In split-tunneling modes (Only / Except):
+        // 1. WireSock's NDIS filter binds [Interface] IPv6 addresses and a default ::/0 route onto the physical NIC,
+        //    causing non-tunneled apps to pick the VPN's IPv6 source address and stall or misroute.
+        // 2. Windows resolves DNS for all apps through svchost.exe (Dnscache); if [Interface] DNS = 10.2.0.1 is set,
+        //    WireSock redirects system-wide UDP port 53 to the remote VPN DNS server (160+ ms latency) and breaks local
+        //    router DNS queries.
+        // We generate a temporary runtime copy in Paths.Runtime with IPv6 and [Interface] DNS stripped so the user's
+        // original .conf stays untouched while system DNS and non-tunneled apps stay 100% on the fast local route.
         public static string EffectivePath(string name, out bool ipv6Stripped)
         {
             ipv6Stripped = false;
@@ -671,9 +675,21 @@ namespace VpnPanel
             try
             {
                 string[] lines = File.ReadAllLines(src);
-                bool anyChanged = false;
+                bool anyChanged = false, inInterface = false;
                 for (int i = 0; i < lines.Length; i++)
                 {
+                    Match sec = SectionLine.Match(lines[i]);
+                    if (sec.Success)
+                    {
+                        inInterface = IsInterface(sec);
+                        continue;
+                    }
+                    if (inInterface && DnsLine.IsMatch(lines[i]))
+                    {
+                        lines[i] = "# " + lines[i].Trim() + " # vpn-panel: DNS local mantido em split tunneling";
+                        anyChanged = true;
+                        continue;
+                    }
                     Match m = V6KeyLine.Match(lines[i]);
                     if (!m.Success) continue;
                     bool lineChanged;
