@@ -548,7 +548,19 @@ namespace VpnPanel
             pollTimer.Start();
             // WireSock is required: install it as soon as someone is looking (not on a silent tray start)
             if (w.IsVisible && !wireSockInstalled) InstallWireSock();
-            if (settings.AutoConnect && wasRunning == false && Ready) Connect();
+            if (wasRunning == true && active != null && active.Mode != AppMode.All && (!Tunnel.Ipv6Isolated || ConfFile.HasGhostIpv6()))
+            {
+                Reconnect();
+            }
+            else if (wasRunning == false)
+            {
+                if (settings.AutoConnect && Ready) Connect();
+                else
+                {
+                    ThreadPool.QueueUserWorkItem(_ => ConfFile.CleanGhostNetwork());
+                    CheckIp();
+                }
+            }
             else CheckIp();
         }
 

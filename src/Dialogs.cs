@@ -228,6 +228,27 @@ namespace VpnPanel
             "WidgetService", "Widgets", "winlogon", "wiresock-client",
         };
 
+        // Multi-process apps that break if their helper/UI processes end up on a different route than the main client
+        static readonly string[][] CompanionGroups = new[]
+        {
+            new[] { "steam", "steamwebhelper", "steamservice" },
+            new[] { "LeagueClient", "LeagueClientUx", "League of Legends", "RiotClientServices" },
+        };
+
+        static List<string> ExpandCompanions(HashSet<string> selected)
+        {
+            var result = new List<string>(selected);
+            foreach (string[] group in CompanionGroups)
+            {
+                if (group.Any(g => selected.Contains(g)))
+                {
+                    foreach (string g in group)
+                        if (!result.Contains(g, StringComparer.OrdinalIgnoreCase)) result.Add(g);
+                }
+            }
+            return result;
+        }
+
         class ProcessEntry { public string Name, Path; public int Count; public bool Windowed; }
 
         static bool MatchesRule(string procName, string path, IList<string> rules)
@@ -529,7 +550,7 @@ namespace VpnPanel
             applyFilter();
             Layout(d, "Apps abertos", body, cancel, ok);
             d.Loaded += (s, e) => filter.Focus();
-            return d.ShowDialog() == true ? selected.ToList() : new List<string>();
+            return d.ShowDialog() == true ? ExpandCompanions(selected) : new List<string>();
         }
 
         static UIElement PickRow(ProcessEntry entry, Func<string, string, ImageSource> icon, HashSet<string> selected, Action changed)
