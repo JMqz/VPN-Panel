@@ -34,8 +34,8 @@ using System.Windows.Shell;
 [assembly: AssemblyTrademark("VPN Panel")]
 [assembly: ComVisible(false)]
 [assembly: Guid("b7c93e48-8120-4a87-8d2b-65c71d798a21")]
-[assembly: AssemblyVersion("2.8.3.0")]
-[assembly: AssemblyFileVersion("2.8.3.0")]
+[assembly: AssemblyVersion("2.8.4.0")]
+[assembly: AssemblyFileVersion("2.8.4.0")]
 
 namespace VpnPanel
 {
@@ -44,7 +44,7 @@ namespace VpnPanel
         // Same mutex as the old vpn-panel.ps1, so they never run together
         const string MutexName = @"Global\VpnPanelWireSock";
         public const string ShowEventName = @"Global\VpnPanelWireSockShow";
-        public const string Version = "2.8.3";
+        public const string Version = "2.8.4";
 
         [STAThread]
         static void Main(string[] args)
@@ -392,6 +392,8 @@ namespace VpnPanel
         public bool Hotkey = false;
         public bool CheckUpdates = true;
         public string InstalledDigest = "";
+        public double WindowLeft = double.NaN;
+        public double WindowTop = double.NaN;
         public List<string> Recent = new List<string>(); // servers connected to, newest first
 
         const int MaxRecent = 5;
@@ -428,6 +430,8 @@ namespace VpnPanel
                 if (d.TryGetValue("hotkey", out v) && v is bool) s.Hotkey = (bool)v;
                 if (d.TryGetValue("checkUpdates", out v) && v is bool) s.CheckUpdates = (bool)v;
                 if (d.TryGetValue("installedDigest", out v) && v is string) s.InstalledDigest = (string)v;
+                if (d.TryGetValue("windowLeft", out v) && (v is int || v is decimal || v is double)) s.WindowLeft = Convert.ToDouble(v);
+                if (d.TryGetValue("windowTop", out v) && (v is int || v is decimal || v is double)) s.WindowTop = Convert.ToDouble(v);
                 if (d.TryGetValue("sharedApps", out v) && v is bool) { s.SharedApps = (bool)v; s.HasSharedAppsKey = true; }
                 if (d.TryGetValue("appsMode", out v) && v is string)
                 {
@@ -470,6 +474,11 @@ namespace VpnPanel
                     { "apps", Apps }, { "hotkey", Hotkey }, { "checkUpdates", CheckUpdates },
                     { "installedDigest", InstalledDigest ?? "" },
                 };
+                if (!double.IsNaN(WindowLeft) && !double.IsNaN(WindowTop))
+                {
+                    d["windowLeft"] = Math.Round(WindowLeft);
+                    d["windowTop"] = Math.Round(WindowTop);
+                }
                 File.WriteAllText(Paths.Settings, new JavaScriptSerializer().Serialize(d));
             }
             catch { }

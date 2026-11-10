@@ -122,7 +122,8 @@ namespace VpnPanel
 
         [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
         static extern uint RegisterWindowMessage(string lpString);
-        DateTime connectRequested, startedAt, lastProcScan;
+        DateTime connectRequested, startedAt, lastProcScan, lastHomePing, lastHomeAppsCheck;
+        string lastHomeAppsRunningKey = "";
         Conn shown = Conn.Off;
         Action bannerPrimary, bannerSecondary;
 
@@ -261,6 +262,7 @@ namespace VpnPanel
             btnClose.Click += (s, e) => w.Close();
             w.Closing += (s, e) =>
             {
+                SaveWindowPosition();
                 if (exiting) return;
                 e.Cancel = true;
                 w.Hide();
@@ -268,6 +270,14 @@ namespace VpnPanel
                 {
                     tray.ShowBalloonTip(2000, "VPN Panel", "Continuo aqui na bandeja. Clique com o botão direito no ícone para sair.", WF.ToolTipIcon.Info);
                     hintShown = true;
+                }
+            };
+            w.LocationChanged += (s, e) =>
+            {
+                if (w.IsVisible && w.WindowState == WindowState.Normal)
+                {
+                    settings.WindowLeft = w.Left;
+                    settings.WindowTop = w.Top;
                 }
             };
             w.SourceInitialized += (s, e) =>
@@ -513,8 +523,36 @@ namespace VpnPanel
             WatchConfigs();
             WatchDownloads();
             SyncTasks();
+            RestoreWindowPosition();
             if (!startInTray) w.Show();
             w.Dispatcher.BeginInvoke(new Action(OnStart));
+        }
+
+        void RestoreWindowPosition()
+        {
+            if (double.IsNaN(settings.WindowLeft) || double.IsNaN(settings.WindowTop)) return;
+            try
+            {
+                var rect = new SD.Rectangle((int)settings.WindowLeft + 40, (int)settings.WindowTop + 40, 200, 200);
+                if (WF.Screen.AllScreens.Any(scr => scr.WorkingArea.IntersectsWith(rect)))
+                {
+                    w.WindowStartupLocation = WindowStartupLocation.Manual;
+                    w.Left = settings.WindowLeft;
+                    w.Top = settings.WindowTop;
+                }
+            }
+            catch { }
+        }
+
+        void SaveWindowPosition()
+        {
+            if (w == null) return;
+            if (w.WindowState == WindowState.Normal && !double.IsNaN(w.Left) && !double.IsNaN(w.Top))
+            {
+                settings.WindowLeft = w.Left;
+                settings.WindowTop = w.Top;
+                settings.Save();
+            }
         }
 
         bool WindowShowing { get { return w != null && w.IsVisible && w.WindowState != WindowState.Minimized; } }
@@ -726,6 +764,7 @@ namespace VpnPanel
         void Quit()
         {
             exiting = true;
+            SaveWindowPosition();
             if (powerModeHandler != null) { try { Microsoft.Win32.SystemEvents.PowerModeChanged -= powerModeHandler; } catch { } }
             if (networkAddressHandler != null) { try { System.Net.NetworkInformation.NetworkChange.NetworkAddressChanged -= networkAddressHandler; } catch { } }
             if (hotkeyRegistered && windowHandle != IntPtr.Zero)
@@ -1662,6 +1701,21 @@ namespace VpnPanel
                 if (WindowShowing) UpdateUptimeText();
                 if ((DateTime.Now - startedAt).TotalSeconds > 60 && now == Conn.On) reconnectAttempts = 0;
             }
+            if (WindowShowing && pageHome.Visibility == Visibility.Visible)
+            {
+                if (active != null && !string.IsNullOrEmpty(active.Endpoint) && (DateTime.UtcNow - lastHomePing).TotalSeconds >= 15)
+                {
+                    lastHomePing = DateTime.UtcNow;
+                    Latency.Measure(new[] { active.Endpoint }, true, wasRunning == true);
+                }
+                if (now == Conn.On && active != null && active.Mode != AppMode.All && active.Apps.Count > 0 &&
+                    (DateTime.UtcNow - lastHomeAppsCheck).TotalSeconds >= 3)
+                {
+                    lastHomeAppsCheck = DateTime.UtcNow;
+                    string key = GetRunningAppsKey(active.Apps);
+                    if (key != lastHomeAppsRunningKey) RenderHomeApps();
+                }
+            }
             UpdatePollInterval();
         }
 
@@ -1758,6 +1812,42 @@ namespace VpnPanel
             UpdateAppsSaved();
         }
 
+        static bool IsAppRunning(string appName)
+        {
+            if (string.IsNullOrEmpty(appName)) return false;
+            string clean = appName.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)
+                ? appName.Substring(0, appName.Length - 4)
+                : appName;
+            try
+            {
+                Process[] procs = Process.GetProcessesByName(clean);
+                bool any = procs != null && procs.Length > 0;
+                if (procs != null)
+                {
+                    for (int i = 0; i < procs.Length; i++)
+                    {
+                        try { procs[i].Dispose(); } catch { }
+                    }
+                }
+                return any;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        static string GetRunningAppsKey(IList<string> apps)
+        {
+            if (apps == null || apps.Count == 0) return "";
+            var sb = new StringBuilder();
+            for (int i = 0; i < apps.Count; i++)
+            {
+                sb.Append(apps[i]).Append(':').Append(IsAppRunning(apps[i]) ? '1' : '0').Append(';');
+            }
+            return sb.ToString();
+        }
+
         void RenderHomeApps()
         {
             if (homeAppsPanel == null) return;
@@ -1785,27 +1875,34 @@ namespace VpnPanel
                 txtScope.Visibility = Visibility.Visible;
                 homeAppsPanel.Visibility = Visibility.Collapsed;
                 homeAppsPanel.Children.Clear();
+                lastHomeAppsRunningKey = "";
                 return;
             }
 
             txtScope.Visibility = Visibility.Collapsed;
             if (!WindowShowing) return;
+            lastHomeAppsRunningKey = GetRunningAppsKey(apps);
+            lastHomeAppsCheck = DateTime.UtcNow;
             homeAppsPanel.Children.Clear();
             int maxPills = 4;
             int count = Math.Min(apps.Count, maxPills);
             for (int i = 0; i < count; i++)
             {
                 string appName = apps[i];
+                bool isRunning = IsAppRunning(appName);
                 var pill = new Border
                 {
-                    Background = B("AccentSoft"),
-                    BorderBrush = B("Accent"),
+                    Background = isRunning ? B("AccentSoft") : B("Surface2"),
+                    BorderBrush = isRunning ? B("Accent") : B("Line"),
                     BorderThickness = new Thickness(1),
                     CornerRadius = new CornerRadius(11),
                     Padding = new Thickness(9, 3, 10, 3),
                     Margin = new Thickness(3, 2, 3, 2),
+                    Opacity = isRunning ? 1.0 : 0.75,
                     Cursor = Cursors.Hand,
-                    ToolTip = "Clique para conferir quais programas abertos estão passando pela VPN"
+                    ToolTip = isRunning
+                        ? appName + " está aberto e ativo · Clique para conferir o roteamento em tempo real"
+                        : appName + " está fechado no momento · Assim que abrir, passará pela VPN"
                 };
                 var sp = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
                 ImageSource ico = AppIcon(appName, null);
@@ -1827,20 +1924,25 @@ namespace VpnPanel
                         Text = mode == AppMode.Only ? "\uE73E" : "\uE711",
                         FontFamily = (FontFamily)Application.Current.FindResource("Icons"),
                         FontSize = 10,
-                        Foreground = B("Accent"),
+                        Foreground = isRunning ? B("Accent") : B("Muted"),
                         Margin = new Thickness(0, 0, 5, 0),
                         VerticalAlignment = VerticalAlignment.Center
                     });
                 }
-                string labelText = apps.Count == 1
-                    ? (mode == AppMode.Only ? "Só " + appName + " na VPN" : "Tudo exceto " + appName)
-                    : (mode == AppMode.Except ? "Sem " : "") + appName;
                 sp.Children.Add(new TextBlock
                 {
-                    Text = labelText,
+                    Text = mode == AppMode.Except ? "Sem " + appName : appName,
                     FontSize = 11.5,
                     FontWeight = FontWeights.SemiBold,
-                    Foreground = B("Accent"),
+                    Foreground = isRunning ? B("Accent") : B("Muted"),
+                    VerticalAlignment = VerticalAlignment.Center
+                });
+                sp.Children.Add(new Ellipse
+                {
+                    Width = 5,
+                    Height = 5,
+                    Fill = isRunning ? B("Accent") : B("Muted"),
+                    Margin = new Thickness(6, 1, 0, 0),
                     VerticalAlignment = VerticalAlignment.Center
                 });
                 pill.Child = sp;
@@ -2137,13 +2239,21 @@ namespace VpnPanel
 
         bool ServersShowing { get { return WindowShowing && pageServers.Visibility == Visibility.Visible; } }
 
-        // Only while someone is looking at Servidores: never in the tray, never on a timer
+        // Measures all servers while on Servidores, or just the active server while on Início
         void MeasureLatency(bool force)
         {
-            if (!ServersShowing) return;
-            var hosts = Paths.ConfigNames().Select(n => ConfigInfo.Read(n).Endpoint).Where(h => h != null).ToList();
-            Latency.Measure(hosts, force, wasRunning == true);
-            UpdateAllPingLabels(); // "···" on what was just queued
+            if (ServersShowing)
+            {
+                var hosts = Paths.ConfigNames().Select(n => ConfigInfo.Read(n).Endpoint).Where(h => h != null).ToList();
+                Latency.Measure(hosts, force, wasRunning == true);
+                UpdateAllPingLabels(); // "···" on what was just queued
+            }
+            else if (WindowShowing && pageHome.Visibility == Visibility.Visible && active != null && !string.IsNullOrEmpty(active.Endpoint))
+            {
+                lastHomePing = DateTime.UtcNow;
+                Latency.Measure(new[] { active.Endpoint }, force, wasRunning == true);
+                UpdateHomePing();
+            }
         }
 
         void OnLatencyMeasured(string host)
