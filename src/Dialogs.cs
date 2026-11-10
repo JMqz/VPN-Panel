@@ -265,6 +265,37 @@ namespace VpnPanel
             return false;
         }
 
+        static Dictionary<string, ProcessEntry> GetSessionProcesses()
+        {
+            int session = Process.GetCurrentProcess().SessionId;
+            HashSet<int> windowed = ProcUtil.WindowedPids();
+            var entries = new Dictionary<string, ProcessEntry>(StringComparer.OrdinalIgnoreCase);
+            foreach (Process p in Process.GetProcesses())
+            {
+                try
+                {
+                    string procName = p.ProcessName;
+                    if (HiddenProcesses.Contains(procName) || p.SessionId != session) continue;
+                    int pid = p.Id;
+                    ProcessEntry e;
+                    if (!entries.TryGetValue(procName, out e))
+                    {
+                        e = new ProcessEntry { Name = procName, Path = ProcUtil.ExePath(pid), Count = 1 };
+                        entries[procName] = e;
+                    }
+                    else
+                    {
+                        e.Count++;
+                        if (e.Path == null) e.Path = ProcUtil.ExePath(pid);
+                    }
+                    if (windowed.Contains(pid)) e.Windowed = true;
+                }
+                catch { }
+                finally { p.Dispose(); }
+            }
+            return entries;
+        }
+
         // Shows with 100% certainty which open apps are routed through the VPN and which are on the direct local connection
         public static void VerifyRouting(Window owner, ConfigInfo cfg, bool ipv6Isolated, Func<string, string, ImageSource> icon)
         {
@@ -310,32 +341,7 @@ namespace VpnPanel
             Action refresh = () =>
             {
                 listHost.Children.Clear();
-                int session = Process.GetCurrentProcess().SessionId;
-                HashSet<int> windowed = ProcUtil.WindowedPids();
-                var entries = new Dictionary<string, ProcessEntry>(StringComparer.OrdinalIgnoreCase);
-                foreach (Process p in Process.GetProcesses())
-                {
-                    try
-                    {
-                        string procName = p.ProcessName;
-                        if (HiddenProcesses.Contains(procName) || p.SessionId != session) continue;
-                        int pid = p.Id;
-                        ProcessEntry e;
-                        if (!entries.TryGetValue(procName, out e))
-                        {
-                            e = new ProcessEntry { Name = procName, Path = ProcUtil.ExePath(pid), Count = 1 };
-                            entries[procName] = e;
-                        }
-                        else
-                        {
-                            e.Count++;
-                            if (e.Path == null) e.Path = ProcUtil.ExePath(pid);
-                        }
-                        if (windowed.Contains(pid)) e.Windowed = true;
-                    }
-                    catch { }
-                    finally { p.Dispose(); }
-                }
+                var entries = GetSessionProcesses();
 
                 var inVpn = new List<ProcessEntry>();
                 var outVpn = new List<ProcessEntry>();
@@ -456,28 +462,7 @@ namespace VpnPanel
         // Lets the user tick apps that are running now; returns their process names
         public static List<string> PickProcesses(Window owner, Func<string, string, ImageSource> icon)
         {
-            int session = Process.GetCurrentProcess().SessionId;
-            HashSet<int> windowed = ProcUtil.WindowedPids();
-            var entries = new Dictionary<string, ProcessEntry>(StringComparer.OrdinalIgnoreCase);
-            foreach (Process p in Process.GetProcesses())
-            {
-                try
-                {
-                    string procName = p.ProcessName;
-                    if (HiddenProcesses.Contains(procName) || p.SessionId != session) continue;
-                    int pid = p.Id;
-                    ProcessEntry e;
-                    if (!entries.TryGetValue(procName, out e))
-                    {
-                        e = new ProcessEntry { Name = procName, Path = ProcUtil.ExePath(pid) };
-                        entries[procName] = e;
-                    }
-                    else if (e.Path == null) e.Path = ProcUtil.ExePath(pid);
-                    if (windowed.Contains(pid)) e.Windowed = true;
-                }
-                catch { }
-                finally { p.Dispose(); }
-            }
+            var entries = GetSessionProcesses();
             List<ProcessEntry> list = entries.Values.OrderBy(e => !e.Windowed).ThenBy(e => e.Name, StringComparer.OrdinalIgnoreCase).ToList();
 
             Window d = Frame(owner, "Apps abertos", 340);

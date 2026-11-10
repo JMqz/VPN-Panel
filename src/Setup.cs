@@ -77,19 +77,16 @@ namespace VpnPanel
         public static byte[] GetAppBytes()
         {
             Stream s = Res.Open("app.payload");
-            if (s != null)
+            if (s == null) return null;
+            using (s)
+            using (var gz = new System.IO.Compression.GZipStream(s, System.IO.Compression.CompressionMode.Decompress))
+            using (var ms = new MemoryStream())
             {
-                using (s)
-                using (var gz = new System.IO.Compression.GZipStream(s, System.IO.Compression.CompressionMode.Decompress))
-                using (var ms = new MemoryStream())
-                {
-                    byte[] buf = new byte[8192];
-                    int r;
-                    while ((r = gz.Read(buf, 0, buf.Length)) > 0) ms.Write(buf, 0, r);
-                    return ms.ToArray();
-                }
+                byte[] buf = new byte[8192];
+                int r;
+                while ((r = gz.Read(buf, 0, buf.Length)) > 0) ms.Write(buf, 0, r);
+                return ms.ToArray();
             }
-            return Res.Bytes("VpnPanel.exe");
         }
 
         public static bool IsInstalledBinaryDifferent(byte[] newExe)

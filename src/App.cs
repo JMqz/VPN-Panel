@@ -34,8 +34,8 @@ using System.Windows.Shell;
 [assembly: AssemblyTrademark("VPN Panel")]
 [assembly: ComVisible(false)]
 [assembly: Guid("b7c93e48-8120-4a87-8d2b-65c71d798a21")]
-[assembly: AssemblyVersion("2.9.0.0")]
-[assembly: AssemblyFileVersion("2.9.0.0")]
+[assembly: AssemblyVersion("2.9.1.0")]
+[assembly: AssemblyFileVersion("2.9.1.0")]
 
 namespace VpnPanel
 {
@@ -44,7 +44,7 @@ namespace VpnPanel
         // Same mutex as the old vpn-panel.ps1, so they never run together
         const string MutexName = @"Global\VpnPanelWireSock";
         public const string ShowEventName = @"Global\VpnPanelWireSockShow";
-        public const string Version = "2.9.0";
+        public const string Version = "2.9.1";
 
         [STAThread]
         static void Main(string[] args)
@@ -142,12 +142,6 @@ namespace VpnPanel
         public static string Text(string name)
         {
             using (var r = new StreamReader(Open(name))) return r.ReadToEnd();
-        }
-
-        public static byte[] Bytes(string name)
-        {
-            using (Stream st = Open(name))
-            using (var ms = new MemoryStream()) { st.CopyTo(ms); return ms.ToArray(); }
         }
     }
 
@@ -518,24 +512,29 @@ namespace VpnPanel
             catch { return null; }
         }
 
+        static readonly object cacheLock = new object();
+
         // Every write by the app invalidates its entry, and the configs watcher clears the cache for
         // changes made outside the app, so a cached entry is trusted without touching the disk.
         public static void Invalidate(string name)
         {
-            if (name != null) cache.Remove(name);
+            if (name != null) lock (cacheLock) { cache.Remove(name); }
             Paths.ConfigsChanged();
         }
 
         public static void InvalidateAll()
         {
-            cache.Clear();
+            lock (cacheLock) { cache.Clear(); }
             Paths.ConfigsChanged();
         }
 
         public static ConfigInfo Read(string name)
         {
             ConfigInfo cached;
-            if (cache.TryGetValue(name, out cached)) return cached;
+            lock (cacheLock)
+            {
+                if (cache.TryGetValue(name, out cached)) return cached;
+            }
 
             string path = Paths.Conf(name);
             var c = new ConfigInfo { Name = name };
@@ -584,10 +583,10 @@ namespace VpnPanel
                 c.GuessedCountry = GuessCountry(c.Server) ?? GuessCountry(c.Name);
                 c.Mode = ConfFile.ReadApps(lines, c.Apps);
                 c.Readable = true;
-                cache[name] = c;
+                lock (cacheLock) { cache[name] = c; }
             }
-            catch (FileNotFoundException) { cache[name] = c; }
-            catch (DirectoryNotFoundException) { cache[name] = c; }
+            catch (FileNotFoundException) { lock (cacheLock) { cache[name] = c; } }
+            catch (DirectoryNotFoundException) { lock (cacheLock) { cache[name] = c; } }
             catch { }
             return c;
         }
@@ -613,26 +612,6 @@ namespace VpnPanel
                 Geo.Place p = Place;
                 if (p != null && !string.IsNullOrEmpty(p.Country)) return p.Country;
                 return GuessedCountry;
-            }
-        }
-
-        public string Location
-        {
-            get
-            {
-                Geo.Place p = Place;
-                if (p == null) return null;
-                return string.IsNullOrEmpty(p.City) ? p.CountryName : p.CountryName + " · " + p.City;
-            }
-        }
-
-        public string AppsSummary
-        {
-            get
-            {
-                if (Mode == AppMode.Only) return "Só " + string.Join(", ", Apps);
-                if (Mode == AppMode.Except) return "Todos, exceto " + string.Join(", ", Apps);
-                return "Todos os apps";
             }
         }
     }
@@ -822,8 +801,8 @@ namespace VpnPanel
 
         static void CollectVpnIpv6(out HashSet<string> addrs, out HashSet<string> gws)
         {
-            addrs = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "2a07:b944::2:2" };
-            gws = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "2a07:b944::2:1" };
+            addrs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            gws = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             try
             {
                 if (!Directory.Exists(Paths.Configs)) return;
@@ -1097,10 +1076,10 @@ namespace VpnPanel
                 if (bom) fs.Write(new byte[] { 0xEF, 0xBB, 0xBF }, 0, 3);
                 fs.Write(body, 0, body.Length);
             }
-            try { File.Replace(tmp, path, null); }
-            catch (IOException) { File.Copy(tmp, path, true); File.Delete(tmp); }
             lastWriteName = Path.GetFileNameWithoutExtension(path);
             lastWriteAt = DateTime.UtcNow;
+            try { File.Replace(tmp, path, null); }
+            catch (IOException) { File.Copy(tmp, path, true); File.Delete(tmp); }
             ConfigInfo.Invalidate(lastWriteName);
         }
 
@@ -1254,8 +1233,6 @@ namespace VpnPanel
             try { return Get(Folder(), name); } catch { return null; }
         }
 
-        public static bool Exists(string name) { return Get(name) != null; }
-
         static string CommandOf(dynamic folder, string name)
         {
             try
@@ -1268,12 +1245,6 @@ namespace VpnPanel
             return null;
         }
 
-        // Program the task starts, or null
-        public static string CommandOf(string name)
-        {
-            try { return CommandOf(Folder(), name); } catch { return null; }
-        }
-
         static bool PointsHere(dynamic folder, string name)
         {
             string cmd = CommandOf(folder, name);
@@ -1282,8 +1253,7 @@ namespace VpnPanel
 
         public static bool PointsHere(string name)
         {
-            string cmd = CommandOf(name);
-            return cmd != null && cmd.Equals(Paths.Exe, StringComparison.OrdinalIgnoreCase);
+            try { return PointsHere(Folder(), name); } catch { return false; }
         }
 
         public static bool Run(string name)
@@ -1365,7 +1335,6 @@ namespace VpnPanel
     {
         public class ReleaseInfo
         {
-            public string Tag;
             public string Version;
             public string HtmlUrl;
             public string DownloadUrl;
@@ -1427,13 +1396,15 @@ namespace VpnPanel
             }
         }
 
+        static string cachedLocalExeDigest;
+
         public static void Check(Action<ReleaseInfo, Exception> callback)
         {
             ThreadPool.QueueUserWorkItem(_ =>
             {
                 try
                 {
-                    ServicePointManager.SecurityProtocol = (SecurityProtocolType)3072; // Tls12
+                    ServicePointManager.SecurityProtocol |= SecurityProtocolType.Tls12 | (SecurityProtocolType)12288; // Tls12 + Tls13
                     var req = (HttpWebRequest)WebRequest.Create(ApiUrl + "?t=" + DateTime.UtcNow.Ticks);
                     req.CachePolicy = new System.Net.Cache.RequestCachePolicy(System.Net.Cache.RequestCacheLevel.NoCacheNoStore);
                     req.Headers["Cache-Control"] = "no-cache, no-store";
@@ -1490,7 +1461,8 @@ namespace VpnPanel
                         bool sameVerUpdated = false;
                         if (!versionNewer && IsSameVersion(tag, Program.Version) && (!string.IsNullOrEmpty(appDigest) || !string.IsNullOrEmpty(setupDigest)))
                         {
-                            string localDigest = FileSha256(Paths.Exe);
+                            if (cachedLocalExeDigest == null) cachedLocalExeDigest = FileSha256(Paths.Exe);
+                            string localDigest = cachedLocalExeDigest;
                             string savedDigest = Settings.Load().InstalledDigest;
                             bool matchesLocalExe = !string.IsNullOrEmpty(localDigest) &&
                                 (!string.IsNullOrEmpty(appDigest)
@@ -1508,7 +1480,6 @@ namespace VpnPanel
 
                         var info = new ReleaseInfo
                         {
-                            Tag = tag,
                             Version = Regex.Replace(tag, @"^[^\d]*", ""),
                             HtmlUrl = html,
                             DownloadUrl = downloadUrl,

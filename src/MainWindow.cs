@@ -64,8 +64,7 @@ namespace VpnPanel
         string totalText = "";
         readonly TextBlock txtFlag, txtFlagGlobe, txtSrvName, txtSrvDetail, txtSrvPing;
         readonly TextBlock txtIp, txtLoc, txtOrg, txtIpNote;
-        readonly Ellipse glow, ring, spinner;
-        readonly RotateTransform spinnerRotate;
+        readonly Ellipse glow;
         // Servidores
         readonly StackPanel serverList, emptyServers;
         readonly TextBox txtServerSearch;
@@ -142,7 +141,7 @@ namespace VpnPanel
 
         // handshake tracking from the WireSock log, for tunnels this app started
         bool monitoring, handshakeOk, sawHandshake, seekToTail;
-        bool spinnerRunning, step1SpinnerRunning;
+        bool step1SpinnerRunning;
         DateTime? pendingSince;
         FileStream logStream;
         readonly byte[] logBuf = new byte[8192];
@@ -235,9 +234,6 @@ namespace VpnPanel
             txtOrg = E<TextBlock>("TxtOrg");
             txtIpNote = E<TextBlock>("TxtIpNote");
             glow = E<Ellipse>("Glow");
-            ring = E<Ellipse>("Ring");
-            spinner = E<Ellipse>("Spinner");
-            spinnerRotate = (RotateTransform)spinner.RenderTransform;
             serverList = E<StackPanel>("ServerList");
             emptyServers = E<StackPanel>("EmptyServers");
             txtServerSearch = E<TextBox>("TxtServerSearch");
@@ -1368,7 +1364,15 @@ namespace VpnPanel
                         ipTimer.Stop();
                         ipTimer.Start();
                         UpdatePollInterval();
-                        Poll();
+                        if (reconnectPending)
+                        {
+                            reconnectPending = false;
+                            Connect();
+                        }
+                        else
+                        {
+                            Poll();
+                        }
                     }));
                 }
             });
@@ -1650,16 +1654,6 @@ namespace VpnPanel
 
         void UpdateSpinnerAnimation()
         {
-            bool wantMain = (shown == Conn.Connecting || shown == Conn.Retrying || shown == Conn.NoResponse) && WindowShowing;
-            if (wantMain != spinnerRunning)
-            {
-                spinnerRunning = wantMain;
-                if (wantMain)
-                    spinnerRotate.BeginAnimation(RotateTransform.AngleProperty,
-                        new DoubleAnimation(0, 360, TimeSpan.FromSeconds(1.1)) { RepeatBehavior = RepeatBehavior.Forever });
-                else spinnerRotate.BeginAnimation(RotateTransform.AngleProperty, null);
-            }
-
             bool wantStep1 = installingWireSock && WindowShowing;
             if (wantStep1 != step1SpinnerRunning)
             {
@@ -1747,7 +1741,10 @@ namespace VpnPanel
                     reconnectPending = false;
                     Connect();
                 }
-                RefreshConfigs();
+                else
+                {
+                    RefreshConfigs();
+                }
             }
 
             if (running && monitoring)
@@ -1857,7 +1854,6 @@ namespace VpnPanel
                 MeasureLatency(false);
             }
             bool busy = st == Conn.Connecting || st == Conn.Retrying || st == Conn.NoResponse;
-            spinner.Visibility = busy ? Visibility.Visible : Visibility.Collapsed;
             UpdateSpinnerAnimation();
 
             string status, scope;
@@ -1916,7 +1912,8 @@ namespace VpnPanel
             UpdateAppsSaved();
         }
 
-        static readonly Dictionary<string, KeyValuePair<DateTime, bool>> appRunCache = new Dictionary<string, KeyValuePair<DateTime, bool>>(StringComparer.OrdinalIgnoreCase);
+        static DateTime appScanTime = DateTime.MinValue;
+        static HashSet<string> runningProcNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         static bool IsAppRunning(string appName)
         {
@@ -1925,27 +1922,23 @@ namespace VpnPanel
                 ? appName.Substring(0, appName.Length - 4)
                 : appName;
             DateTime now = DateTime.UtcNow;
-            KeyValuePair<DateTime, bool> cached;
-            if (appRunCache.TryGetValue(clean, out cached) && (now - cached.Key).TotalSeconds < 2.5)
-                return cached.Value;
-            try
+            if ((now - appScanTime).TotalSeconds >= 2.5)
             {
-                Process[] procs = Process.GetProcessesByName(clean);
-                bool any = procs != null && procs.Length > 0;
-                if (procs != null)
+                var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                try
                 {
-                    for (int i = 0; i < procs.Length; i++)
+                    Process[] all = Process.GetProcesses();
+                    for (int i = 0; i < all.Length; i++)
                     {
-                        try { procs[i].Dispose(); } catch { }
+                        try { names.Add(all[i].ProcessName); } catch { }
+                        finally { try { all[i].Dispose(); } catch { } }
                     }
                 }
-                appRunCache[clean] = new KeyValuePair<DateTime, bool>(now, any);
-                return any;
+                catch { }
+                runningProcNames = names;
+                appScanTime = now;
             }
-            catch
-            {
-                return false;
-            }
+            return runningProcNames.Contains(clean);
         }
 
         static string GetRunningAppsKey(IList<string> apps)
@@ -3498,6 +3491,16 @@ namespace VpnPanel
             var baseBrush = new SolidColorBrush(Color.FromArgb(64, 38, 56, 115));
             baseBrush.Freeze();
             double cx = 140.0, cy = 140.0, innerR = 68.0, maxOuterR = 136.0;
+            var grad = new LinearGradientBrush
+            {
+                StartPoint = new Point(0, 0),
+                EndPoint = new Point(1, 1)
+            };
+            grad.GradientStops.Add(new GradientStop(Color.FromArgb(235, 247, 212, 104), 0.0));
+            grad.GradientStops.Add(new GradientStop(Color.FromArgb(180, 208, 32, 36), 0.55));
+            grad.GradientStops.Add(new GradientStop(Color.FromArgb(0, 55, 90, 195), 1.0));
+            grad.Freeze();
+
             for (int i = 0; i < 16; i++)
             {
                 double ang = (i * 22.5) * Math.PI / 180.0;
@@ -3514,16 +3517,6 @@ namespace VpnPanel
                     StrokeThickness = 1.2
                 };
                 raysCanvas.Children.Add(baseLine);
-
-                var grad = new LinearGradientBrush
-                {
-                    StartPoint = new Point(0, 0),
-                    EndPoint = new Point(1, 1)
-                };
-                grad.GradientStops.Add(new GradientStop(Color.FromArgb(235, 247, 212, 104), 0.0));
-                grad.GradientStops.Add(new GradientStop(Color.FromArgb(180, 208, 32, 36), 0.55));
-                grad.GradientStops.Add(new GradientStop(Color.FromArgb(0, 55, 90, 195), 1.0));
-                grad.Freeze();
 
                 var scale = new ScaleTransform(0.0, 0.0, x1, y1);
                 var activeLine = new Line

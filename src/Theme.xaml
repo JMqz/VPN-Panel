@@ -13,7 +13,6 @@
   <SolidColorBrush x:Key="Text" Color="#EEF1FA"/>
   <SolidColorBrush x:Key="Muted" Color="#8E9BC0"/>
   <SolidColorBrush x:Key="Accent" Color="#9370F5"/>
-  <SolidColorBrush x:Key="AccentHover" Color="#A688FA"/>
   <SolidColorBrush x:Key="AccentSoft" Color="#269370F5"/>
   <SolidColorBrush x:Key="RubySoft" Color="#246828A8"/>
   <SolidColorBrush x:Key="OnAccent" Color="#EEF1FA"/>
@@ -69,7 +68,6 @@
       </Trigger>
     </Style.Triggers>
   </Style>
-  <Style x:Key="AccentButton" TargetType="Button" BasedOn="{StaticResource PrimaryButton}"/>
 
   <Style x:Key="DangerButton" TargetType="Button" BasedOn="{StaticResource BtnBase}">
     <Setter Property="Background" Value="{StaticResource Danger}"/>
