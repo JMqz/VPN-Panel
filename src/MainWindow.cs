@@ -46,6 +46,7 @@ namespace VpnPanel
         readonly TextBlock txtErrTitle, txtErrDetail;
         readonly Button btnPower;
         readonly TextBlock powerGlyph, txtStatus, txtScope, txtUptime, txtDown, txtUp;
+        readonly WrapPanel homeAppsPanel;
         readonly FrameworkElement trafficRow;
         int downKey = -1, upKey = -1, totalKey = -1; // what the traffic labels show now (see SpeedKey)
         string totalText = "";
@@ -185,6 +186,7 @@ namespace VpnPanel
             powerGlyph = E<TextBlock>("PowerGlyph");
             txtStatus = E<TextBlock>("TxtStatus");
             txtScope = E<TextBlock>("TxtScope");
+            homeAppsPanel = E<WrapPanel>("HomeAppsPanel");
             txtUptime = E<TextBlock>("TxtUptime");
             txtDown = E<TextBlock>("TxtDown");
             txtUp = E<TextBlock>("TxtUp");
@@ -525,6 +527,7 @@ namespace VpnPanel
             {
                 if (serversDirty) RenderServerList();
                 if (appsDirty) RenderApps();
+                RenderHomeApps();
                 UpdateTraffic();
                 if (wasRunning == true) UpdateUptimeText();
                 if (ipDirty) CheckIp();
@@ -811,6 +814,23 @@ namespace VpnPanel
             PromptUpdate(availableUpdate, true);
         }
 
+        static string FormatReleaseNotes(string raw)
+        {
+            if (string.IsNullOrEmpty(raw)) return null;
+            var lines = new List<string>();
+            foreach (string rawLine in raw.Replace("\r\n", "\n").Split('\n'))
+            {
+                string line = rawLine.Trim();
+                if (line.Length == 0) continue;
+                line = Regex.Replace(line, @"^#+\s*", "");
+                line = line.Replace("**", "");
+                if (line.StartsWith("- ") || line.StartsWith("* "))
+                    line = "\u2022 " + line.Substring(2).Trim();
+                lines.Add(line);
+            }
+            return lines.Count > 0 ? string.Join("\n", lines.ToArray()) : null;
+        }
+
         void PromptUpdate(Updater.ReleaseInfo info, bool startImmediately)
         {
             if (info == null || updateDialogOpen) return;
@@ -821,9 +841,48 @@ namespace VpnPanel
                 string msg = info.SameVersionUpdated
                     ? "Uma atualização com arquivos modificados da v" + info.Version + " foi encontrada.\n\nDeseja baixar e instalar a atualização agora?"
                     : "A versão v" + info.Version + " do VPN Panel está disponível (você está na v" + Program.Version + ").\n\nDeseja baixar e instalar a atualização agora?";
-                Window d = Dialogs.Frame(w, title, 370);
+                Window d = Dialogs.Frame(w, title, 380);
                 var body = new StackPanel();
                 body.Children.Add(Dialogs.Message(msg));
+
+                string notes = FormatReleaseNotes(info.Notes);
+                if (!string.IsNullOrEmpty(notes))
+                {
+                    var notesCard = new Border
+                    {
+                        Background = Dialogs.B("Surface2"),
+                        BorderBrush = Dialogs.B("Line"),
+                        BorderThickness = new Thickness(1),
+                        CornerRadius = new CornerRadius(8),
+                        Padding = new Thickness(12, 10, 12, 10),
+                        Margin = new Thickness(0, 12, 0, 0)
+                    };
+                    var notesStack = new StackPanel();
+                    notesStack.Children.Add(new TextBlock
+                    {
+                        Text = "O QUE MUDOU",
+                        FontSize = 10,
+                        FontWeight = FontWeights.SemiBold,
+                        Foreground = Dialogs.B("Accent"),
+                        Margin = new Thickness(0, 0, 0, 6)
+                    });
+                    var scroll = new ScrollViewer
+                    {
+                        MaxHeight = 140,
+                        VerticalScrollBarVisibility = ScrollBarVisibility.Auto
+                    };
+                    scroll.Content = new TextBlock
+                    {
+                        Text = notes,
+                        Foreground = Dialogs.B("Text"),
+                        FontSize = 12.5,
+                        LineHeight = 18,
+                        TextWrapping = TextWrapping.Wrap
+                    };
+                    notesStack.Children.Add(scroll);
+                    notesCard.Child = notesStack;
+                    body.Children.Add(notesCard);
+                }
                 var status = new TextBlock
                 {
                     Foreground = Dialogs.B("Accent"),
@@ -1195,8 +1254,15 @@ namespace VpnPanel
 
         void InspectHandshakeLine(string line)
         {
-            if (line.Contains("Handshake response received")) { handshakeOk = sawHandshake = true; pendingSince = null; }
-            else if (line.Contains("Handshake initiation sent"))
+            if (line.IndexOf("Handshake response received", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                line.IndexOf("Receiving handshake response", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                handshakeOk = sawHandshake = true;
+                pendingSince = null;
+            }
+            else if (line.IndexOf("Handshake initiation sent", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                     line.IndexOf("Sending handshake initiation", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                     line.IndexOf("Handshake did not complete", StringComparison.OrdinalIgnoreCase) >= 0)
             {
                 sawHandshake = true;
                 if (pendingSince == null) pendingSince = DateTime.Now;
@@ -1530,28 +1596,34 @@ namespace VpnPanel
             if (running && monitoring)
             {
                 ReadHandshakes();
-                // a WireSock version that logs handshakes differently: don't judge the connection by the log
-                // (wait longer when logPos == 0 because C runtime stdout redirection buffers up to 4 KB)
+                // a WireSock version that logs handshakes differently or whose 4 KB stdout buffer hasn't flushed yet:
+                // assume initial connection succeeded after the grace window, but keep monitoring open for future stalls
                 if (!sawHandshake && (DateTime.Now - startedAt).TotalSeconds > (logPos > 0 ? 10 : 25))
                 {
-                    StopMonitoring();
+                    if (logPos > 0) StopMonitoring();
+                    else handshakeOk = true;
                     pendingSince = null;
                 }
-                // no handshake response for too long: the server is down or blocked
+                // no handshake response for too long: the server is down or frozen
                 if (pendingSince != null && (DateTime.Now - pendingSince.Value).TotalSeconds > GiveUpAfter)
                 {
                     // it worked before: a stall, worth retrying; never worked: wrong or dead server
                     if (handshakeOk && settings.AutoReconnect && reconnectAttempts < MaxReconnects)
                     {
                         reconnectAttempts++;
+                        if (!WindowShowing)
+                            Balloon("O servidor " + (active != null ? active.Name : "") + " parou de responder. Reconectando...");
                         Reconnect();
                     }
                     else
                     {
                         Disconnect(false);
-                        ShowBanner(false, "O servidor não respondeu",
-                            "Ele pode estar fora do ar ou bloqueado pela sua rede. Tente de novo ou escolha outro servidor.",
-                            "Tentar de novo", Connect, "Trocar servidor", () => tabServers.IsChecked = true);
+                        bool hasMultiple = Paths.ConfigNames().Length > 1;
+                        ShowBanner(false, "O servidor parou de responder",
+                            "O handshake congelou ou o servidor ficou fora do ar. Tente reconectar ou troque para o mais rápido.",
+                            hasMultiple ? "Ir para o mais rápido" : "Tentar de novo",
+                            hasMultiple ? (Action)ConnectFastest : Connect,
+                            "Trocar servidor", () => tabServers.IsChecked = true);
                     }
                 }
             }
@@ -1682,7 +1754,129 @@ namespace VpnPanel
             bool partial = on && active != null && active.Mode == AppMode.Only;
             txtIpNote.Text = partial ? "Este é o IP dos apps fora da VPN. " + JoinPt(active.Apps) + " usa o IP do servidor." : "";
             txtIpNote.Visibility = partial ? Visibility.Visible : Visibility.Collapsed;
+            RenderHomeApps();
             UpdateAppsSaved();
+        }
+
+        void RenderHomeApps()
+        {
+            if (homeAppsPanel == null) return;
+            AppMode mode = AppMode.All;
+            IList<string> apps = null;
+            bool on = shown == Conn.On;
+            if (on && active != null)
+            {
+                mode = active.Mode;
+                apps = active.Apps;
+            }
+            else if (settings.SharedApps)
+            {
+                mode = settings.AppsMode;
+                apps = settings.Apps;
+            }
+            else if (active != null)
+            {
+                mode = active.Mode;
+                apps = active.Apps;
+            }
+
+            if (mode == AppMode.All || apps == null || apps.Count == 0)
+            {
+                homeAppsPanel.Visibility = Visibility.Collapsed;
+                homeAppsPanel.Children.Clear();
+                return;
+            }
+
+            if (!WindowShowing) return;
+            homeAppsPanel.Children.Clear();
+            int maxPills = 4;
+            int count = Math.Min(apps.Count, maxPills);
+            for (int i = 0; i < count; i++)
+            {
+                string appName = apps[i];
+                var pill = new Border
+                {
+                    Background = on ? B("AccentSoft") : B("Surface2"),
+                    BorderBrush = on ? B("Accent") : B("Line"),
+                    BorderThickness = new Thickness(1),
+                    CornerRadius = new CornerRadius(11),
+                    Padding = new Thickness(8, 3, 9, 3),
+                    Margin = new Thickness(3, 2, 3, 2),
+                    Cursor = Cursors.Hand,
+                    ToolTip = on ? "Clique para conferir o roteamento em tempo real" : "Clique para configurar os apps na VPN"
+                };
+                var sp = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
+                ImageSource ico = AppIcon(appName, null);
+                if (ico != null)
+                {
+                    sp.Children.Add(new Image
+                    {
+                        Source = ico,
+                        Width = 14,
+                        Height = 14,
+                        Margin = new Thickness(0, 0, 5, 0),
+                        VerticalAlignment = VerticalAlignment.Center
+                    });
+                }
+                else
+                {
+                    sp.Children.Add(new TextBlock
+                    {
+                        Text = mode == AppMode.Only ? "\uE73E" : "\uE711",
+                        FontFamily = (FontFamily)Application.Current.FindResource("Icons"),
+                        FontSize = 10,
+                        Foreground = on ? B("Accent") : B("Muted"),
+                        Margin = new Thickness(0, 0, 5, 0),
+                        VerticalAlignment = VerticalAlignment.Center
+                    });
+                }
+                sp.Children.Add(new TextBlock
+                {
+                    Text = (mode == AppMode.Except ? "Sem " : "") + appName,
+                    FontSize = 11.5,
+                    FontWeight = FontWeights.SemiBold,
+                    Foreground = on ? B("Accent") : B("Text"),
+                    VerticalAlignment = VerticalAlignment.Center
+                });
+                pill.Child = sp;
+                pill.MouseLeftButtonUp += (s, e) =>
+                {
+                    if (shown == Conn.On && active != null)
+                        Dialogs.VerifyRouting(w, active, Tunnel.Ipv6Isolated, AppIcon);
+                    else
+                        tabApps.IsChecked = true;
+                };
+                homeAppsPanel.Children.Add(pill);
+            }
+            if (apps.Count > maxPills)
+            {
+                var morePill = new Border
+                {
+                    Background = B("Surface2"),
+                    BorderBrush = B("Line"),
+                    BorderThickness = new Thickness(1),
+                    CornerRadius = new CornerRadius(11),
+                    Padding = new Thickness(7, 3, 7, 3),
+                    Margin = new Thickness(3, 2, 3, 2),
+                    Cursor = Cursors.Hand
+                };
+                morePill.Child = new TextBlock
+                {
+                    Text = "+" + (apps.Count - maxPills),
+                    FontSize = 11,
+                    FontWeight = FontWeights.SemiBold,
+                    Foreground = B("Muted")
+                };
+                morePill.MouseLeftButtonUp += (s, e) =>
+                {
+                    if (shown == Conn.On && active != null)
+                        Dialogs.VerifyRouting(w, active, Tunnel.Ipv6Isolated, AppIcon);
+                    else
+                        tabApps.IsChecked = true;
+                };
+                homeAppsPanel.Children.Add(morePill);
+            }
+            homeAppsPanel.Visibility = Visibility.Visible;
         }
 
         void CheckIp()
@@ -2594,6 +2788,7 @@ namespace VpnPanel
 
         void UpdateAppsSaved()
         {
+            RenderHomeApps();
             if (applyBanner == null || active == null) return;
             bool incomplete = editMode != AppMode.All && editApps.Count == 0;
             bool showApply = appsNeedReconnect && IsLive(active.Name) && !incomplete;

@@ -171,6 +171,7 @@
           <TextBlock x:Name="TxtStatus" Text="Desconectado" FontSize="24" FontWeight="SemiBold" HorizontalAlignment="Center"/>
           <TextBlock x:Name="TxtScope" Text="Seu tráfego não está protegido" Foreground="{StaticResource Muted}"
                      HorizontalAlignment="Center" TextAlignment="Center" TextWrapping="Wrap" Margin="12,4,12,0"/>
+          <WrapPanel x:Name="HomeAppsPanel" HorizontalAlignment="Center" Margin="8,7,8,2" Visibility="Collapsed"/>
           <TextBlock x:Name="TxtUptime" Text="" Foreground="{StaticResource Muted}" FontSize="12"
                      HorizontalAlignment="Center" Margin="0,3,0,0" Visibility="Collapsed"/>
           <!-- fixed widths: a new number re-measures only these TextBlocks, never the page -->
