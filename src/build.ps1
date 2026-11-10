@@ -19,7 +19,7 @@ $csc = "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
 
 Add-Type -AssemblyName System.Drawing
 
-# App icon: white raven outline on a purple disc
+# App icon: white raven head outline on a purple disc
 function New-IconPng([int]$s) {
     $bmp = New-Object Drawing.Bitmap $s, $s
     $g = [Drawing.Graphics]::FromImage($bmp)
@@ -27,27 +27,40 @@ function New-IconPng([int]$s) {
     $g.ScaleTransform($s / 32.0, $s / 32.0)
     $brush = New-Object Drawing.SolidBrush ([Drawing.Color]::FromArgb(139, 92, 246))
     $g.FillEllipse($brush, 0.5, 0.5, 31, 31)
-    $pen = New-Object Drawing.Pen ([Drawing.Color]::White, 1.9)
+    $pen = New-Object Drawing.Pen ([Drawing.Color]::White, 1.85)
     $pen.StartCap = [Drawing.Drawing2D.LineCap]::Round
     $pen.EndCap = [Drawing.Drawing2D.LineCap]::Round
     $pen.LineJoin = [Drawing.Drawing2D.LineJoin]::Round
     $p = New-Object Drawing.Drawing2D.GraphicsPath
-    $p.AddLine(21.2, 11.2, 26.2, 10.0)
-    $p.AddLine(26.2, 10.0, 21.5, 8.5)
-    $p.AddBezier(21.5, 8.5, 19.2, 6.4, 15.8, 6.8, 14.5, 9.8)
-    $p.AddBezier(14.5, 9.8, 11.2, 12.0, 8.5, 16.5, 6.2, 23.2)
-    $p.AddLine(6.2, 23.2, 9.6, 23.8)
-    $p.AddLine(9.6, 23.8, 12.2, 20.2)
-    $p.AddBezier(12.2, 20.2, 17.5, 20.8, 21.8, 16.5, 21.2, 11.2)
+    $p.AddBezier(5.8, 15.8, 7.2, 9.2, 12.8, 7.2, 18.0, 9.6)
+    $p.AddBezier(18.0, 9.6, 21.8, 9.8, 25.4, 11.0, 27.2, 13.6)
+    $p.AddBezier(27.2, 13.6, 24.2, 14.8, 21.0, 15.4, 18.2, 15.6)
+    $p.AddBezier(18.2, 15.6, 18.0, 18.8, 16.4, 21.8, 13.8, 24.2)
+    $p.AddLine(13.8, 24.2, 12.2, 20.2)
+    $p.AddLine(12.2, 20.2, 7.6, 21.2)
+    $p.AddLine(7.6, 21.2, 9.8, 16.8)
+    $p.AddLine(9.8, 16.8, 5.8, 15.8)
     $p.CloseFigure()
     $g.DrawPath($pen, $p)
-    $wing = New-Object Drawing.Drawing2D.GraphicsPath
-    $wing.AddBezier(15.2, 12.2, 16.8, 14.5, 15.0, 17.8, 11.0, 19.2)
-    $g.DrawPath($pen, $wing)
-    $g.DrawLine($pen, 15.5, 20.2, 15.5, 24.8)
-    $g.DrawLine($pen, 14.0, 24.8, 17.8, 24.8)
-    $g.FillEllipse([Drawing.Brushes]::White, 18.2, 8.4, 1.7, 1.7)
-    $p.Dispose(); $wing.Dispose(); $pen.Dispose(); $brush.Dispose()
+    $beakBase = New-Object Drawing.Drawing2D.GraphicsPath
+    $beakBase.AddLines([Drawing.PointF[]]@(
+        (New-Object Drawing.PointF 18.0, 9.6),
+        (New-Object Drawing.PointF 16.4, 12.8),
+        (New-Object Drawing.PointF 18.2, 15.6)
+    ))
+    $g.DrawPath($pen, $beakBase)
+    $beakMid = New-Object Drawing.Drawing2D.GraphicsPath
+    $beakMid.AddBezier(16.4, 12.8, 20.0, 12.5, 23.5, 12.8, 26.6, 13.4)
+    $g.DrawPath($pen, $beakMid)
+    $eye = New-Object Drawing.Drawing2D.GraphicsPath
+    $eye.AddPolygon([Drawing.PointF[]]@(
+        (New-Object Drawing.PointF 11.4, 12.0),
+        (New-Object Drawing.PointF 14.4, 11.2),
+        (New-Object Drawing.PointF 13.8, 13.2),
+        (New-Object Drawing.PointF 11.8, 13.2)
+    ))
+    $g.FillPath([Drawing.Brushes]::White, $eye)
+    $p.Dispose(); $beakBase.Dispose(); $beakMid.Dispose(); $eye.Dispose(); $pen.Dispose(); $brush.Dispose()
     $g.Dispose()
     $ms = New-Object IO.MemoryStream
     $bmp.Save($ms, [Drawing.Imaging.ImageFormat]::Png)

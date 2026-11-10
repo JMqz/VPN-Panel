@@ -34,8 +34,8 @@ using System.Windows.Shell;
 [assembly: AssemblyTrademark("VPN Panel")]
 [assembly: ComVisible(false)]
 [assembly: Guid("b7c93e48-8120-4a87-8d2b-65c71d798a21")]
-[assembly: AssemblyVersion("2.8.0.0")]
-[assembly: AssemblyFileVersion("2.8.0.0")]
+[assembly: AssemblyVersion("2.8.1.0")]
+[assembly: AssemblyFileVersion("2.8.1.0")]
 
 namespace VpnPanel
 {
@@ -44,7 +44,7 @@ namespace VpnPanel
         // Same mutex as the old vpn-panel.ps1, so they never run together
         const string MutexName = @"Global\VpnPanelWireSock";
         public const string ShowEventName = @"Global\VpnPanelWireSockShow";
-        public const string Version = "2.8";
+        public const string Version = "2.8.1";
 
         [STAThread]
         static void Main(string[] args)
@@ -391,6 +391,7 @@ namespace VpnPanel
         public bool HasSharedAppsKey;
         public bool Hotkey = false;
         public bool CheckUpdates = true;
+        public string InstalledDigest = "";
         public List<string> Recent = new List<string>(); // servers connected to, newest first
 
         const int MaxRecent = 5;
@@ -426,6 +427,7 @@ namespace VpnPanel
                 if (d.TryGetValue("skipUac", out v) && v is bool) s.SkipUac = (bool)v;
                 if (d.TryGetValue("hotkey", out v) && v is bool) s.Hotkey = (bool)v;
                 if (d.TryGetValue("checkUpdates", out v) && v is bool) s.CheckUpdates = (bool)v;
+                if (d.TryGetValue("installedDigest", out v) && v is string) s.InstalledDigest = (string)v;
                 if (d.TryGetValue("sharedApps", out v) && v is bool) { s.SharedApps = (bool)v; s.HasSharedAppsKey = true; }
                 if (d.TryGetValue("appsMode", out v) && v is string)
                 {
@@ -466,6 +468,7 @@ namespace VpnPanel
                     { "autoReconnect", AutoReconnect }, { "optimizeMtu", OptimizeMtu }, { "skipUac", SkipUac },
                     { "recent", Recent }, { "sharedApps", SharedApps }, { "appsMode", AppsMode.ToString() },
                     { "apps", Apps }, { "hotkey", Hotkey }, { "checkUpdates", CheckUpdates },
+                    { "installedDigest", InstalledDigest ?? "" },
                 };
                 File.WriteAllText(Paths.Settings, new JavaScriptSerializer().Serialize(d));
             }
@@ -1358,25 +1361,60 @@ namespace VpnPanel
             public string HtmlUrl;
             public string DownloadUrl;
             public string Notes;
+            public string SetupDigest;
+            public string AppDigest;
             public bool IsNewer;
+            public bool SameVersionUpdated;
         }
 
         const string ApiUrl = "https://api.github.com/repos/JMqz/VPN-Panel/releases/latest";
 
-        public static bool IsNewer(string remoteTag, string currentVer)
+        static Version ParseVersion(string ver)
         {
-            if (string.IsNullOrEmpty(remoteTag)) return false;
-            string cleanRemote = Regex.Replace(remoteTag.Trim(), @"^[^\d]*", "");
-            string cleanCurrent = Regex.Replace(currentVer.Trim(), @"^[^\d]*", "");
+            if (string.IsNullOrEmpty(ver)) return null;
+            string clean = Regex.Replace(ver.Trim(), @"^[^\d]*", "");
+            if (string.IsNullOrEmpty(clean)) return null;
             try
             {
-                Version r = new Version(cleanRemote.Contains(".") ? cleanRemote : cleanRemote + ".0");
-                Version c = new Version(cleanCurrent.Contains(".") ? cleanCurrent : cleanCurrent + ".0");
-                return r > c;
+                return new Version(clean.Contains(".") ? clean : clean + ".0");
             }
             catch
             {
-                return false;
+                return null;
+            }
+        }
+
+        public static bool IsNewer(string remoteTag, string currentVer)
+        {
+            Version r = ParseVersion(remoteTag);
+            Version c = ParseVersion(currentVer);
+            return r != null && c != null && r > c;
+        }
+
+        public static bool IsSameVersion(string remoteTag, string currentVer)
+        {
+            Version r = ParseVersion(remoteTag);
+            Version c = ParseVersion(currentVer);
+            return r != null && c != null && r == c;
+        }
+
+        public static string FileSha256(string path)
+        {
+            if (string.IsNullOrEmpty(path) || !File.Exists(path)) return null;
+            try
+            {
+                using (var sha = System.Security.Cryptography.SHA256.Create())
+                using (var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+                {
+                    byte[] hash = sha.ComputeHash(fs);
+                    var sb = new StringBuilder("sha256:", 7 + hash.Length * 2);
+                    for (int i = 0; i < hash.Length; i++) sb.Append(hash[i].ToString("x2"));
+                    return sb.ToString();
+                }
+            }
+            catch
+            {
+                return null;
             }
         }
 
@@ -1399,6 +1437,9 @@ namespace VpnPanel
                         string html = d.ContainsKey("html_url") ? Convert.ToString(d["html_url"]) : "";
                         string body = d.ContainsKey("body") ? Convert.ToString(d["body"]) : "";
                         string downloadUrl = null;
+                        string setupDigest = null;
+                        string appDigest = null;
+                        var allAppDigests = new List<string>();
 
                         object assetsObj;
                         if (d.TryGetValue("assets", out assetsObj) && assetsObj is System.Collections.IEnumerable)
@@ -1410,14 +1451,46 @@ namespace VpnPanel
                                 {
                                     string name = Convert.ToString(asset["name"]);
                                     string url = Convert.ToString(asset["browser_download_url"]);
-                                    if (name.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) && name.IndexOf("Setup", StringComparison.OrdinalIgnoreCase) >= 0)
+                                    string digest = asset.ContainsKey("digest") && asset["digest"] != null ? Convert.ToString(asset["digest"]) : null;
+                                    if (!name.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)) continue;
+
+                                    if (name.IndexOf("Setup", StringComparison.OrdinalIgnoreCase) >= 0)
                                     {
-                                        downloadUrl = url;
-                                        break;
+                                        if (downloadUrl == null || name.StartsWith("VPN-Panel-Setup-", StringComparison.OrdinalIgnoreCase))
+                                        {
+                                            downloadUrl = url;
+                                            setupDigest = digest;
+                                        }
                                     }
-                                    if (name.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) && downloadUrl == null)
-                                        downloadUrl = url;
+                                    else
+                                    {
+                                        if (!string.IsNullOrEmpty(digest)) allAppDigests.Add(digest);
+                                        if (appDigest == null || name.IndexOf("portatil", StringComparison.OrdinalIgnoreCase) >= 0)
+                                        {
+                                            appDigest = digest;
+                                        }
+                                    }
                                 }
+                            }
+                        }
+
+                        bool versionNewer = IsNewer(tag, Program.Version);
+                        bool sameVerUpdated = false;
+                        if (!versionNewer && IsSameVersion(tag, Program.Version) && (!string.IsNullOrEmpty(appDigest) || !string.IsNullOrEmpty(setupDigest)))
+                        {
+                            string localDigest = FileSha256(Paths.Exe);
+                            string savedDigest = Settings.Load().InstalledDigest;
+                            bool matchesLocalExe = !string.IsNullOrEmpty(localDigest) &&
+                                (!string.IsNullOrEmpty(appDigest)
+                                    ? string.Equals(localDigest, appDigest, StringComparison.OrdinalIgnoreCase)
+                                    : allAppDigests.Any(x => string.Equals(x, localDigest, StringComparison.OrdinalIgnoreCase)));
+                            bool matchesSavedSetup = !string.IsNullOrEmpty(savedDigest) &&
+                                ((!string.IsNullOrEmpty(setupDigest) && string.Equals(savedDigest, setupDigest, StringComparison.OrdinalIgnoreCase)) ||
+                                 (!string.IsNullOrEmpty(appDigest) && string.Equals(savedDigest, appDigest, StringComparison.OrdinalIgnoreCase)));
+
+                            if (!matchesLocalExe && !matchesSavedSetup)
+                            {
+                                sameVerUpdated = true;
                             }
                         }
 
@@ -1428,7 +1501,10 @@ namespace VpnPanel
                             HtmlUrl = html,
                             DownloadUrl = downloadUrl,
                             Notes = body,
-                            IsNewer = IsNewer(tag, Program.Version)
+                            SetupDigest = setupDigest,
+                            AppDigest = appDigest,
+                            IsNewer = versionNewer || sameVerUpdated,
+                            SameVersionUpdated = sameVerUpdated
                         };
 
                         var ui = Application.Current != null ? Application.Current.Dispatcher : null;

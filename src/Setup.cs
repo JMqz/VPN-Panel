@@ -92,6 +92,25 @@ namespace VpnPanel
             return Res.Bytes("VpnPanel.exe");
         }
 
+        public static bool IsInstalledBinaryDifferent(byte[] newExe)
+        {
+            if (newExe == null || !File.Exists(Exe)) return true;
+            try
+            {
+                byte[] existing = File.ReadAllBytes(Exe);
+                if (existing.Length != newExe.Length) return true;
+                for (int i = 0; i < existing.Length; i++)
+                {
+                    if (existing[i] != newExe[i]) return true;
+                }
+                return false;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
         // Closes other running copies of the app (the VPN tunnel itself keeps running)
         static void StopApp()
         {
@@ -315,7 +334,10 @@ namespace VpnPanel
             body.Children.Add(new TextBlock { Text = "VPN Panel", FontSize = 24, FontWeight = FontWeights.SemiBold, HorizontalAlignment = HorizontalAlignment.Center, Margin = new Thickness(0, 14, 0, 0) });
 
             string installed = Installer.InstalledVersion;
+            byte[] embeddedBytes = Installer.GetAppBytes();
+            bool sameVerDiffBytes = installed == Program.Version && Installer.IsInstalledBinaryDifferent(embeddedBytes);
             string versionText = installed == null ? "Versão " + Program.Version
+                               : sameVerDiffBytes ? "Atualizar versão " + Program.Version + " (arquivos modificados)"
                                : installed == Program.Version ? "Versão " + Program.Version + " (já instalada)"
                                : "Atualizar da versão " + installed + " para " + Program.Version;
             body.Children.Add(new TextBlock { Text = versionText, Style = S("Caption"), HorizontalAlignment = HorizontalAlignment.Center, Margin = new Thickness(0, 4, 0, 0) });
@@ -355,7 +377,7 @@ namespace VpnPanel
             var install = new Button
             {
                 Style = S("PrimaryButton"),
-                Content = installed == null ? "Instalar" : installed == Program.Version ? "Reinstalar" : "Atualizar",
+                Content = installed == null ? "Instalar" : (installed == Program.Version && !sameVerDiffBytes) ? "Reinstalar" : "Atualizar",
                 Padding = new Thickness(14, 11, 14, 11), Margin = new Thickness(0, 16, 0, 0), IsDefault = true,
             };
             install.Click += (s, e) =>

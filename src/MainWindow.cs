@@ -776,8 +776,10 @@ namespace VpnPanel
                 if (info != null && info.IsNewer)
                 {
                     availableUpdate = info;
-                    txtUpdateBadge.Text = "v" + info.Version;
-                    txtUpdateFoundTitle.Text = "Nova versão " + info.Version + " disponível";
+                    txtUpdateBadge.Text = info.SameVersionUpdated ? "Nova build" : "v" + info.Version;
+                    txtUpdateFoundTitle.Text = info.SameVersionUpdated
+                        ? "Atualização disponível (v" + info.Version + ")"
+                        : "Nova versão " + info.Version + " disponível";
                     txtUpdateFoundDetail.Text = "Clique em Atualizar agora para instalar.";
                     cardUpdate.Visibility = Visibility.Visible;
                     if (manual || WindowShowing)
@@ -788,7 +790,7 @@ namespace VpnPanel
                     else
                     {
                         pendingUpdatePrompt = true;
-                        tray.ShowBalloonTip(3000, "VPN Panel", "Nova versão " + info.Version + " disponível! Clique para atualizar.", WF.ToolTipIcon.Info);
+                        tray.ShowBalloonTip(3000, "VPN Panel", "Nova atualização (v" + info.Version + ") disponível! Clique para atualizar.", WF.ToolTipIcon.Info);
                     }
                 }
                 else
@@ -815,9 +817,13 @@ namespace VpnPanel
             updateDialogOpen = true;
             try
             {
-                Window d = Dialogs.Frame(w, "Nova versão disponível", 370);
+                string title = info.SameVersionUpdated ? "Atualização disponível" : "Nova versão disponível";
+                string msg = info.SameVersionUpdated
+                    ? "Uma atualização com arquivos modificados da v" + info.Version + " foi encontrada.\n\nDeseja baixar e instalar a atualização agora?"
+                    : "A versão v" + info.Version + " do VPN Panel está disponível (você está na v" + Program.Version + ").\n\nDeseja baixar e instalar a atualização agora?";
+                Window d = Dialogs.Frame(w, title, 370);
                 var body = new StackPanel();
-                body.Children.Add(Dialogs.Message("A versão v" + info.Version + " do VPN Panel está disponível (você está na v" + Program.Version + ").\n\nDeseja baixar e instalar a atualização agora?"));
+                body.Children.Add(Dialogs.Message(msg));
                 var status = new TextBlock
                 {
                     Foreground = Dialogs.B("Accent"),
@@ -923,6 +929,13 @@ namespace VpnPanel
                             txtUpdateFoundDetail.Text = "Instalando atualização...";
                             btnApplyUpdate.Content = "Instalando...";
 
+                            string targetDigest = !string.IsNullOrEmpty(info.SetupDigest) ? info.SetupDigest : info.AppDigest;
+                            if (!string.IsNullOrEmpty(targetDigest))
+                            {
+                                settings.InstalledDigest = targetDigest;
+                                settings.Save();
+                            }
+
                             bool installed = Paths.ExeDir.Equals(Installer.Dir, StringComparison.OrdinalIgnoreCase);
                             var psi = new ProcessStartInfo(tempFile, installed ? "--silent" : "") { UseShellExecute = true };
                             Process.Start(psi);
@@ -958,7 +971,7 @@ namespace VpnPanel
                     d.Loaded += (s, e) => startDownload();
                 }
 
-                Dialogs.Layout(d, "Nova versão disponível", body, btnLater, btnNow);
+                Dialogs.Layout(d, title, body, btnLater, btnNow);
                 d.ShowDialog();
             }
             finally
@@ -2771,7 +2784,7 @@ namespace VpnPanel
             return item;
         }
 
-        // App mark (white raven outline on a colored disc) at the tray's icon size
+        // App mark (white raven head outline on a colored disc) at the tray's icon size
         static SD.Icon TrayIcon(SD.Color disc)
         {
             SD.Size size = WF.SystemInformation.SmallIconSize;
@@ -2779,9 +2792,11 @@ namespace VpnPanel
             {
                 using (SD.Graphics g = SD.Graphics.FromImage(bmp))
                 using (var brush = new SD.SolidBrush(disc))
-                using (var pen = new SD.Pen(SD.Color.White, 1.9F))
+                using (var pen = new SD.Pen(SD.Color.White, 1.85F))
                 using (var path = new SD.Drawing2D.GraphicsPath())
-                using (var wing = new SD.Drawing2D.GraphicsPath())
+                using (var beakBase = new SD.Drawing2D.GraphicsPath())
+                using (var beakMid = new SD.Drawing2D.GraphicsPath())
+                using (var eye = new SD.Drawing2D.GraphicsPath())
                 {
                     g.SmoothingMode = SD.Drawing2D.SmoothingMode.AntiAlias;
                     g.ScaleTransform(size.Width / 32F, size.Height / 32F);
@@ -2789,20 +2804,33 @@ namespace VpnPanel
                     pen.StartCap = SD.Drawing2D.LineCap.Round;
                     pen.EndCap = SD.Drawing2D.LineCap.Round;
                     pen.LineJoin = SD.Drawing2D.LineJoin.Round;
-                    path.AddLine(21.2F, 11.2F, 26.2F, 10.0F);
-                    path.AddLine(26.2F, 10.0F, 21.5F, 8.5F);
-                    path.AddBezier(21.5F, 8.5F, 19.2F, 6.4F, 15.8F, 6.8F, 14.5F, 9.8F);
-                    path.AddBezier(14.5F, 9.8F, 11.2F, 12.0F, 8.5F, 16.5F, 6.2F, 23.2F);
-                    path.AddLine(6.2F, 23.2F, 9.6F, 23.8F);
-                    path.AddLine(9.6F, 23.8F, 12.2F, 20.2F);
-                    path.AddBezier(12.2F, 20.2F, 17.5F, 20.8F, 21.8F, 16.5F, 21.2F, 11.2F);
+                    path.AddBezier(5.8F, 15.8F, 7.2F, 9.2F, 12.8F, 7.2F, 18.0F, 9.6F);
+                    path.AddBezier(18.0F, 9.6F, 21.8F, 9.8F, 25.4F, 11.0F, 27.2F, 13.6F);
+                    path.AddBezier(27.2F, 13.6F, 24.2F, 14.8F, 21.0F, 15.4F, 18.2F, 15.6F);
+                    path.AddBezier(18.2F, 15.6F, 18.0F, 18.8F, 16.4F, 21.8F, 13.8F, 24.2F);
+                    path.AddLine(13.8F, 24.2F, 12.2F, 20.2F);
+                    path.AddLine(12.2F, 20.2F, 7.6F, 21.2F);
+                    path.AddLine(7.6F, 21.2F, 9.8F, 16.8F);
+                    path.AddLine(9.8F, 16.8F, 5.8F, 15.8F);
                     path.CloseFigure();
                     g.DrawPath(pen, path);
-                    wing.AddBezier(15.2F, 12.2F, 16.8F, 14.5F, 15.0F, 17.8F, 11.0F, 19.2F);
-                    g.DrawPath(pen, wing);
-                    g.DrawLine(pen, 15.5F, 20.2F, 15.5F, 24.8F);
-                    g.DrawLine(pen, 14.0F, 24.8F, 17.8F, 24.8F);
-                    g.FillEllipse(SD.Brushes.White, 18.2F, 8.4F, 1.7F, 1.7F);
+                    beakBase.AddLines(new[]
+                    {
+                        new SD.PointF(18.0F, 9.6F),
+                        new SD.PointF(16.4F, 12.8F),
+                        new SD.PointF(18.2F, 15.6F)
+                    });
+                    g.DrawPath(pen, beakBase);
+                    beakMid.AddBezier(16.4F, 12.8F, 20.0F, 12.5F, 23.5F, 12.8F, 26.6F, 13.4F);
+                    g.DrawPath(pen, beakMid);
+                    eye.AddPolygon(new[]
+                    {
+                        new SD.PointF(11.4F, 12.0F),
+                        new SD.PointF(14.4F, 11.2F),
+                        new SD.PointF(13.8F, 13.2F),
+                        new SD.PointF(11.8F, 13.2F)
+                    });
+                    g.FillPath(SD.Brushes.White, eye);
                 }
                 IntPtr hIcon = bmp.GetHicon();
                 try { return (SD.Icon)SD.Icon.FromHandle(hIcon).Clone(); }

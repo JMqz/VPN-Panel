@@ -29,9 +29,9 @@
         <StackPanel Margin="20,12,20,16">
           <Border Width="64" Height="64" CornerRadius="32" Background="{StaticResource AccentSoft}" HorizontalAlignment="Center">
             <Canvas Width="32" Height="32" HorizontalAlignment="Center" VerticalAlignment="Center">
-              <Path Stroke="{StaticResource Accent}" StrokeThickness="2" StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"
-                    Data="M 21.2,11.2 L 26.2,10.0 L 21.5,8.5 C 19.2,6.4 15.8,6.8 14.5,9.8 C 11.2,12.0 8.5,16.5 6.2,23.2 L 9.6,23.8 L 12.2,20.2 C 17.5,20.8 21.8,16.5 21.2,11.2 Z M 15.2,12.2 C 16.8,14.5 15.0,17.8 11.0,19.2 M 15.5,20.2 L 15.5,24.8 M 14.0,24.8 L 17.8,24.8"/>
-              <Ellipse Width="1.8" Height="1.8" Canvas.Left="18.2" Canvas.Top="8.4" Fill="{StaticResource Accent}"/>
+              <Path Stroke="{StaticResource Accent}" StrokeThickness="1.85" StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"
+                    Data="M 5.8,15.8 C 7.2,9.2 12.8,7.2 18.0,9.6 C 21.8,9.8 25.4,11.0 27.2,13.6 C 24.2,14.8 21.0,15.4 18.2,15.6 C 18.0,18.8 16.4,21.8 13.8,24.2 L 12.2,20.2 L 7.6,21.2 L 9.8,16.8 L 5.8,15.8 Z M 18.0,9.6 L 16.4,12.8 L 18.2,15.6 M 16.4,12.8 C 20.0,12.5 23.5,12.8 26.6,13.4"/>
+              <Path Fill="{StaticResource Accent}" Data="M 11.4,12.0 L 14.4,11.2 L 13.8,13.2 L 11.8,13.2 Z"/>
             </Canvas>
           </Border>
           <TextBlock Text="Vamos deixar tudo pronto" FontSize="21" FontWeight="SemiBold" HorizontalAlignment="Center" Margin="0,16,0,6"/>
