@@ -45,8 +45,15 @@ namespace VpnPanel
         readonly Border errorBanner;
         readonly TextBlock txtErrTitle, txtErrDetail;
         readonly Button btnPower;
-        readonly Image medallionImg;
+        readonly Image medallionImg, medallionOffImg;
         readonly ImageSource medallionOn, medallionOff;
+        readonly Canvas raysCanvas;
+        readonly Line[] activeRays = new Line[16];
+        readonly System.Windows.Shapes.Path traceRingPath, traceMoonPath, traceRavenPath;
+        readonly DispatcherTimer medallionAnimTimer;
+        DateTime lastAnimTick;
+        double animPhaseTime, animFlowPhase, animSpeed, animLineDraw, animGlassFill;
+        string animMode = "off";
         readonly TextBlock txtStatus, txtScope, txtUptime, txtDown, txtUp;
         readonly WrapPanel homeAppsPanel;
         readonly FrameworkElement trafficRow;
@@ -188,10 +195,19 @@ namespace VpnPanel
             btnPower = E<Button>("BtnPower");
             medallionOn = RenderMedallionBitmap(288, true, false, false);
             medallionOff = RenderMedallionBitmap(288, false, false, false);
+            medallionOffImg = E<Image>("MedallionOffImg");
+            medallionOffImg.Source = medallionOff;
             medallionImg = E<Image>("MedallionImg");
-            medallionImg.Source = medallionOff;
+            medallionImg.Source = medallionOn;
+            medallionImg.Opacity = 0;
+            traceRingPath = E<System.Windows.Shapes.Path>("TraceRingPath");
+            traceMoonPath = E<System.Windows.Shapes.Path>("TraceMoonPath");
+            traceRavenPath = E<System.Windows.Shapes.Path>("TraceRavenPath");
+            raysCanvas = E<Canvas>("RaysCanvas");
+            InitRaysCanvas();
+            medallionAnimTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(22) };
+            medallionAnimTimer.Tick += (s, e) => TickMedallionAnim();
             E<Image>("SetupMedallion").Source = medallionOn;
-            E<Image>("RaysImg").Source = RenderRaysBitmap(340);
             txtStatus = E<TextBlock>("TxtStatus");
             txtScope = E<TextBlock>("TxtScope");
             homeAppsPanel = E<WrapPanel>("HomeAppsPanel");
@@ -577,11 +593,7 @@ namespace VpnPanel
                 if (wasRunning == true) UpdateUptimeText();
                 if (ipDirty) CheckIp();
                 MeasureLatency(false);
-                if (shown == Conn.On)
-                {
-                    glow.Visibility = Visibility.Visible;
-                    glow.Opacity = 0.28;
-                }
+                SyncMedallionAnimState(shown);
                 if (pendingUpdatePrompt && availableUpdate != null && availableUpdate.IsNewer)
                 {
                     pendingUpdatePrompt = false;
@@ -595,10 +607,14 @@ namespace VpnPanel
                     CheckForUpdates(false);
                 }
             }
-            else if (glow.Visibility == Visibility.Visible)
+            else
             {
-                glow.BeginAnimation(UIElement.OpacityProperty, null);
-                glow.Visibility = Visibility.Collapsed;
+                if (medallionAnimTimer != null) medallionAnimTimer.Stop();
+                if (glow.Visibility == Visibility.Visible)
+                {
+                    glow.BeginAnimation(UIElement.OpacityProperty, null);
+                    glow.Visibility = Visibility.Collapsed;
+                }
             }
             UpdatePollInterval();
         }
@@ -1738,7 +1754,6 @@ namespace VpnPanel
             string status, scope;
             if (on)
             {
-                medallionImg.Source = medallionOn;
                 txtStatus.Foreground = B("Text");
                 status = "Conectado";
                 scope = active == null || active.Mode == AppMode.All ? "Todo o tráfego do PC está protegido"
@@ -1747,7 +1762,6 @@ namespace VpnPanel
             }
             else
             {
-                medallionImg.Source = medallionOff;
                 txtStatus.Foreground = st == Conn.NoResponse ? B("Warn") : B("Text");
                 switch (st)
                 {
@@ -1786,28 +1800,7 @@ namespace VpnPanel
             miStatus.Text = on && active != null ? "Conectado · " + active.Name : status;
             miToggle.Text = stoppable ? "Desconectar" : "Conectar";
 
-            if (on)
-            {
-                if (WindowShowing)
-                {
-                    glow.Visibility = Visibility.Visible;
-                    glow.BeginAnimation(UIElement.OpacityProperty, new DoubleAnimation(0.55, TimeSpan.FromMilliseconds(400)));
-                }
-            }
-            else if (glow.Visibility == Visibility.Visible)
-            {
-                if (WindowShowing)
-                {
-                    var fadeOut = new DoubleAnimation(0, TimeSpan.FromMilliseconds(400));
-                    fadeOut.Completed += (s, e) => { if (State != Conn.On) glow.Visibility = Visibility.Collapsed; };
-                    glow.BeginAnimation(UIElement.OpacityProperty, fadeOut);
-                }
-                else
-                {
-                    glow.BeginAnimation(UIElement.OpacityProperty, null);
-                    glow.Visibility = Visibility.Collapsed;
-                }
-            }
+            SyncMedallionAnimState(st);
             bool partial = on && active != null && active.Mode == AppMode.Only;
             txtIpNote.Text = partial ? "Este é o IP dos apps fora da VPN. " + JoinPt(active.Apps) + " usa o IP do servidor." : "";
             txtIpNote.Visibility = partial ? Visibility.Visible : Visibility.Collapsed;
@@ -3380,31 +3373,287 @@ namespace VpnPanel
             }
         }
 
-        static ImageSource RenderRaysBitmap(int px)
+        void InitRaysCanvas()
         {
-            using (var bmp = new SD.Bitmap(px, px))
-            using (SD.Graphics g = SD.Graphics.FromImage(bmp))
-            using (var rayPen = new SD.Pen(SD.Color.FromArgb(26, 45, 75, 165), 1.5F))
+            if (raysCanvas == null) return;
+            raysCanvas.Children.Clear();
+            var baseBrush = new SolidColorBrush(Color.FromArgb(64, 38, 56, 115));
+            baseBrush.Freeze();
+            double cx = 140.0, cy = 140.0, innerR = 68.0, maxOuterR = 136.0;
+            for (int i = 0; i < 16; i++)
             {
-                g.SmoothingMode = SD.Drawing2D.SmoothingMode.AntiAlias;
-                float c = px / 2F;
-                for (double a = 0; a < 360.0; a += 22.5)
+                double ang = (i * 22.5) * Math.PI / 180.0;
+                double cos = Math.Cos(ang), sin = Math.Sin(ang);
+                var baseLine = new Line
                 {
-                    double rad = a * Math.PI / 180.0;
-                    g.DrawLine(rayPen, c, c, c + (float)(Math.Cos(rad) * c), c + (float)(Math.Sin(rad) * c));
-                }
-                using (var ms = new MemoryStream())
+                    X1 = cx + cos * innerR,
+                    Y1 = cy + sin * innerR,
+                    X2 = cx + cos * maxOuterR,
+                    Y2 = cy + sin * maxOuterR,
+                    Stroke = baseBrush,
+                    StrokeThickness = 1.2
+                };
+                raysCanvas.Children.Add(baseLine);
+
+                var grad = new LinearGradientBrush
                 {
-                    bmp.Save(ms, SD.Imaging.ImageFormat.Png);
-                    ms.Position = 0;
-                    var bi = new BitmapImage();
-                    bi.BeginInit();
-                    bi.CacheOption = BitmapCacheOption.OnLoad;
-                    bi.StreamSource = ms;
-                    bi.EndInit();
-                    bi.Freeze();
-                    return bi;
+                    StartPoint = new Point(0, 0),
+                    EndPoint = new Point(1, 1)
+                };
+                grad.GradientStops.Add(new GradientStop(Color.FromArgb(235, 247, 212, 104), 0.0));
+                grad.GradientStops.Add(new GradientStop(Color.FromArgb(180, 208, 32, 36), 0.55));
+                grad.GradientStops.Add(new GradientStop(Color.FromArgb(0, 55, 90, 195), 1.0));
+                grad.Freeze();
+
+                var activeLine = new Line
+                {
+                    X1 = cx + cos * innerR,
+                    Y1 = cy + sin * innerR,
+                    X2 = cx + cos * innerR,
+                    Y2 = cy + sin * innerR,
+                    Stroke = grad,
+                    StrokeThickness = 1.8,
+                    StrokeStartLineCap = PenLineCap.Round,
+                    StrokeEndLineCap = PenLineCap.Round,
+                    Opacity = 0
+                };
+                activeRays[i] = activeLine;
+                raysCanvas.Children.Add(activeLine);
+            }
+        }
+
+        void SyncMedallionAnimState(Conn st)
+        {
+            if (medallionImg == null || medallionAnimTimer == null) return;
+            bool busy = st == Conn.Connecting || st == Conn.Retrying || st == Conn.NoResponse;
+            if (!WindowShowing)
+            {
+                medallionAnimTimer.Stop();
+                if (st == Conn.On)
+                {
+                    animMode = "on";
+                    animGlassFill = 1.0;
+                    animLineDraw = 1.0;
+                    animSpeed = 1.0;
                 }
+                else if (busy)
+                {
+                    animMode = "connecting";
+                    animGlassFill = 0.15;
+                    animLineDraw = 1.0;
+                }
+                else
+                {
+                    animMode = "off";
+                    animGlassFill = 0.0;
+                    animLineDraw = 0.0;
+                    animSpeed = 0.0;
+                }
+                ApplyMedallionVisuals();
+                return;
+            }
+
+            if (busy)
+            {
+                if (animMode != "connecting")
+                {
+                    animMode = "connecting";
+                    animPhaseTime = 0;
+                    animSpeed = 0.8;
+                }
+                if (!medallionAnimTimer.IsEnabled)
+                {
+                    lastAnimTick = DateTime.UtcNow;
+                    medallionAnimTimer.Start();
+                }
+            }
+            else if (st == Conn.On)
+            {
+                if (animMode != "on" && animMode != "igniting")
+                {
+                    animMode = "igniting";
+                    animPhaseTime = 0;
+                    if (animSpeed < 2.4) animSpeed = 2.8;
+                    if (!medallionAnimTimer.IsEnabled)
+                    {
+                        lastAnimTick = DateTime.UtcNow;
+                        medallionAnimTimer.Start();
+                    }
+                }
+                else if (animMode == "on")
+                {
+                    animGlassFill = 1.0;
+                    animLineDraw = 1.0;
+                    ApplyMedallionVisuals();
+                }
+            }
+            else
+            {
+                if (animMode != "off" && animMode != "turning_off")
+                {
+                    if (animGlassFill > 0.04 || animLineDraw > 0.04)
+                    {
+                        animMode = "turning_off";
+                        animPhaseTime = 0;
+                        if (!medallionAnimTimer.IsEnabled)
+                        {
+                            lastAnimTick = DateTime.UtcNow;
+                            medallionAnimTimer.Start();
+                        }
+                    }
+                    else
+                    {
+                        animMode = "off";
+                        animGlassFill = 0.0;
+                        animLineDraw = 0.0;
+                        animSpeed = 0.0;
+                        medallionAnimTimer.Stop();
+                        ApplyMedallionVisuals();
+                    }
+                }
+                else if (animMode == "off")
+                {
+                    animGlassFill = 0.0;
+                    animLineDraw = 0.0;
+                    ApplyMedallionVisuals();
+                }
+            }
+        }
+
+        void TickMedallionAnim()
+        {
+            if (!WindowShowing)
+            {
+                medallionAnimTimer.Stop();
+                return;
+            }
+            DateTime now = DateTime.UtcNow;
+            double dt = Math.Min(0.05, Math.Max(0.001, (now - lastAnimTick).TotalSeconds));
+            lastAnimTick = now;
+            animPhaseTime += dt;
+
+            if (animMode == "connecting")
+            {
+                double rampT = Math.Min(1.0, animPhaseTime / 2.0);
+                animSpeed = 0.8 + (3.8 - 0.8) * (rampT * rampT);
+                animFlowPhase += dt * animSpeed;
+                animLineDraw = Math.Min(1.0, animPhaseTime / 0.45);
+                animGlassFill = 0.14 + 0.08 * Math.Sin(animFlowPhase * 2.0);
+            }
+            else if (animMode == "igniting")
+            {
+                double dur = 0.85;
+                double t = Math.Min(1.0, animPhaseTime / dur);
+                double ease = 1.0 - Math.Pow(1.0 - t, 3.0);
+                animSpeed = 3.8 - 2.6 * ease;
+                animFlowPhase += dt * animSpeed;
+                animLineDraw = 1.0;
+                animGlassFill = 0.18 + (1.0 - 0.18) * ease;
+                if (animPhaseTime >= dur)
+                {
+                    animMode = "on";
+                    animGlassFill = 1.0;
+                    animLineDraw = 1.0;
+                    medallionAnimTimer.Stop();
+                }
+            }
+            else if (animMode == "turning_off")
+            {
+                double dur = 0.75;
+                double t = Math.Min(1.0, animPhaseTime / dur);
+                double ease = t < 0.5 ? 4.0 * t * t * t : 1.0 - Math.Pow(-2.0 * t + 2.0, 3.0) / 2.0;
+                animSpeed = 2.4 * (1.0 - t) + 0.3;
+                animFlowPhase -= dt * animSpeed;
+                animGlassFill = Math.Max(0.0, 1.0 - Math.Min(1.0, animPhaseTime / 0.45));
+                animLineDraw = 1.0 - ease;
+                if (animPhaseTime >= dur)
+                {
+                    animMode = "off";
+                    animGlassFill = 0.0;
+                    animLineDraw = 0.0;
+                    animSpeed = 0.0;
+                    medallionAnimTimer.Stop();
+                }
+            }
+            else
+            {
+                medallionAnimTimer.Stop();
+            }
+
+            ApplyMedallionVisuals();
+        }
+
+        void ApplyMedallionVisuals()
+        {
+            double gf = Math.Max(0.0, Math.Min(1.0, animGlassFill));
+            double ld = Math.Max(0.0, Math.Min(1.0, animLineDraw));
+            medallionImg.Opacity = gf;
+
+            bool conn = animMode == "connecting";
+            double speedNorm = Math.Max(0.0, Math.Min(1.0, (animSpeed - 0.8) / 3.0));
+            double glowAlpha = Math.Max(gf * 0.55, conn ? (0.12 + 0.25 * speedNorm) : 0.0);
+            if (glowAlpha > 0.01)
+            {
+                glow.Visibility = Visibility.Visible;
+                glow.Opacity = glowAlpha;
+            }
+            else
+            {
+                glow.Visibility = Visibility.Collapsed;
+                glow.Opacity = 0;
+            }
+
+            double lineAlpha = conn
+                ? (0.48 + 0.50 * speedNorm)
+                : Math.Max(0.0, Math.Min(1.0, (1.0 - gf) * ld * 1.15));
+
+            if (lineAlpha > 0.01)
+            {
+                double dash = conn ? (12.0 + 38.0 * speedNorm) : (8.0 + 92.0 * ld);
+                double gap = conn ? (40.0 - 18.0 * speedNorm) : 110.0;
+                double off = -animFlowPhase * 36.0;
+
+                traceRingPath.StrokeDashArray = new DoubleCollection { dash, gap };
+                traceRingPath.StrokeDashOffset = off;
+                traceRingPath.Opacity = lineAlpha;
+
+                traceMoonPath.StrokeDashArray = new DoubleCollection { dash * 0.85, gap * 0.85 };
+                traceMoonPath.StrokeDashOffset = off * 1.15;
+                traceMoonPath.Opacity = lineAlpha;
+
+                traceRavenPath.StrokeDashArray = new DoubleCollection { dash * 0.75, gap * 0.75 };
+                traceRavenPath.StrokeDashOffset = off * 1.3;
+                traceRavenPath.Opacity = lineAlpha;
+            }
+            else
+            {
+                traceRingPath.Opacity = 0;
+                traceMoonPath.Opacity = 0;
+                traceRavenPath.Opacity = 0;
+            }
+
+            double cx = 140.0, cy = 140.0, innerR = 68.0, maxOuterR = 136.0;
+            for (int i = 0; i < 16; i++)
+            {
+                Line line = activeRays[i];
+                if (line == null) continue;
+                if (ld <= 0.01)
+                {
+                    line.Opacity = 0;
+                    continue;
+                }
+                double ang = (i * 22.5) * Math.PI / 180.0;
+                double wave = conn
+                    ? (0.35 + 0.65 * (0.5 + 0.5 * Math.Sin(animFlowPhase * 2.2 - i * 0.45)))
+                    : ld;
+                double wClamp = Math.Max(0.0, Math.Min(1.0, wave));
+                double curR = innerR + (maxOuterR - innerR) * wClamp;
+                line.X2 = cx + Math.Cos(ang) * curR;
+                line.Y2 = cy + Math.Sin(ang) * curR;
+                double rayAlpha = conn
+                    ? (0.25 + 0.55 * speedNorm) * wClamp
+                    : (0.55 - 0.33 * gf) * ld;
+                line.Opacity = Math.Max(0.0, Math.Min(1.0, rayAlpha));
             }
         }
 

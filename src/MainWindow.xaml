@@ -141,7 +141,7 @@
         </Border>
 
         <Grid Grid.Row="1" Width="176" Height="176" Margin="0,22,0,0" HorizontalAlignment="Center">
-          <Image x:Name="RaysImg" Width="340" Height="340" Margin="-82" IsHitTestVisible="False" Opacity="0.95"/>
+          <Canvas x:Name="RaysCanvas" Width="280" Height="280" Margin="-52" IsHitTestVisible="False"/>
           <Ellipse x:Name="Glow" Width="228" Height="228" Margin="-26" IsHitTestVisible="False" Opacity="0" Visibility="Collapsed">
             <Ellipse.Fill>
               <RadialGradientBrush>
@@ -152,12 +152,24 @@
             </Ellipse.Fill>
           </Ellipse>
           <Ellipse x:Name="Ring" StrokeThickness="0" Fill="Transparent"/>
-          <Ellipse x:Name="Spinner" Stroke="{StaticResource Accent}" StrokeThickness="3" StrokeDashArray="28 200"
-                   StrokeDashCap="Round" RenderTransformOrigin="0.5,0.5" Visibility="Collapsed">
+          <Ellipse x:Name="Spinner" StrokeThickness="0" Visibility="Collapsed">
             <Ellipse.RenderTransform><RotateTransform/></Ellipse.RenderTransform>
           </Ellipse>
           <Button x:Name="BtnPower" AutomationProperties.Name="Conectar ou desconectar" Style="{StaticResource PowerButton}" Width="148" Height="148" Background="Transparent">
-            <Image x:Name="MedallionImg" Width="144" Height="144" RenderOptions.BitmapScalingMode="HighQuality"/>
+            <Grid Width="144" Height="144">
+              <Image x:Name="MedallionOffImg" Width="144" Height="144" RenderOptions.BitmapScalingMode="HighQuality"/>
+              <Image x:Name="MedallionImg" Width="144" Height="144" Opacity="0" RenderOptions.BitmapScalingMode="HighQuality"/>
+              <Viewbox Width="144" Height="144" IsHitTestVisible="False">
+                <Canvas Width="128" Height="128">
+                  <Path x:Name="TraceRingPath" Stroke="#F7D468" StrokeThickness="2.2" StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round" Opacity="0"
+                        Data="M 64,2 A 62,62 0 1 1 63.99,2 M 64,13 A 51,51 0 1 1 63.99,13 M 15,52 L 113,79 M 28,100 L 102,30"/>
+                  <Path x:Name="TraceMoonPath" Stroke="#FFF096" StrokeThickness="2.1" StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round" Opacity="0"
+                        Data="M 68,26 C 26,30 20,86 70,90 C 86,90 98,80 104,68 C 90,78 68,78 52,66 C 38,54 46,34 68,26 Z M 93,41.5 L 95.3,49.9 L 101.1,44.9 L 96.1,50.7 L 104.5,53 L 96.1,55.3 L 101.1,61.1 L 95.3,56.1 L 93,64.5 L 90.7,56.1 L 84.9,61.1 L 89.9,55.3 L 81.5,53 L 89.9,50.7 L 84.9,44.9 L 90.7,49.9 Z"/>
+                  <Path x:Name="TraceRavenPath" Stroke="#BC8CFF" StrokeThickness="2.1" StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round" Opacity="0"
+                        Data="M 52,50 C 54,37 62,32 70,34 C 75,35 76,41 73,44 M 73,36 C 81,36 87,39 90,43 C 83,44 78,44 73,43 M 52,50 C 42,60 44,80 58,93 C 62,97 66,97 69,93 C 82,80 84,62 76,54 C 68,52 60,52 52,50 M 64,66 C 62,78 63,86 66,95 M 49,62 C 54,70 60,72 63,68 M 79,64 C 74,71 68,73 64,68 M 50,74 C 55,81 60,82 63,77 M 78,75 C 73,82 68,83 64,78 M 54,86 C 51,98 50,107 56,109 C 61,113 67,113 72,109 C 77,107 76,98 73,86 M 60,89 L 59,110 M 64,90 L 64,112 M 68,89 L 69,110"/>
+                </Canvas>
+              </Viewbox>
+            </Grid>
           </Button>
         </Grid>
 
