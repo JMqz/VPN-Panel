@@ -12,11 +12,11 @@
   <SolidColorBrush x:Key="Line" Color="#262B35"/>
   <SolidColorBrush x:Key="Text" Color="#E9ECF1"/>
   <SolidColorBrush x:Key="Muted" Color="#8A93A3"/>
-  <SolidColorBrush x:Key="Accent" Color="#2FBF71"/>
-  <SolidColorBrush x:Key="AccentHover" Color="#3DD382"/>
-  <SolidColorBrush x:Key="AccentSoft" Color="#1F2FBF71"/>
-  <SolidColorBrush x:Key="OnAccent" Color="#06140C"/>
-  <SolidColorBrush x:Key="ActiveCard" Color="#12201A"/>
+  <SolidColorBrush x:Key="Accent" Color="#9B6DFF"/>
+  <SolidColorBrush x:Key="AccentHover" Color="#B088FF"/>
+  <SolidColorBrush x:Key="AccentSoft" Color="#249B6DFF"/>
+  <SolidColorBrush x:Key="OnAccent" Color="#FFFFFF"/>
+  <SolidColorBrush x:Key="ActiveCard" Color="#1A1528"/>
   <SolidColorBrush x:Key="Danger" Color="#F0565B"/>
   <SolidColorBrush x:Key="DangerSoft" Color="#26F0565B"/>
   <SolidColorBrush x:Key="Warn" Color="#E3A535"/>

@@ -19,21 +19,35 @@ $csc = "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
 
 Add-Type -AssemblyName System.Drawing
 
-# App icon: white shield on a green disc
+# App icon: white raven outline on a purple disc
 function New-IconPng([int]$s) {
     $bmp = New-Object Drawing.Bitmap $s, $s
     $g = [Drawing.Graphics]::FromImage($bmp)
     $g.SmoothingMode = 'AntiAlias'
     $g.ScaleTransform($s / 32.0, $s / 32.0)
-    $g.FillEllipse((New-Object Drawing.SolidBrush ([Drawing.Color]::FromArgb(46, 160, 67))), 0.5, 0.5, 31, 31)
+    $brush = New-Object Drawing.SolidBrush ([Drawing.Color]::FromArgb(139, 92, 246))
+    $g.FillEllipse($brush, 0.5, 0.5, 31, 31)
+    $pen = New-Object Drawing.Pen ([Drawing.Color]::White, 1.9)
+    $pen.StartCap = [Drawing.Drawing2D.LineCap]::Round
+    $pen.EndCap = [Drawing.Drawing2D.LineCap]::Round
+    $pen.LineJoin = [Drawing.Drawing2D.LineJoin]::Round
     $p = New-Object Drawing.Drawing2D.GraphicsPath
-    $p.AddLine(16, 6, 24, 9)
-    $p.AddLine(24, 9, 24, 15)
-    $p.AddBezier(24, 15, 24, 20, 20, 23.5, 16, 26)
-    $p.AddBezier(16, 26, 12, 23.5, 8, 20, 8, 15)
-    $p.AddLine(8, 15, 8, 9)
+    $p.AddLine(21.2, 11.2, 26.2, 10.0)
+    $p.AddLine(26.2, 10.0, 21.5, 8.5)
+    $p.AddBezier(21.5, 8.5, 19.2, 6.4, 15.8, 6.8, 14.5, 9.8)
+    $p.AddBezier(14.5, 9.8, 11.2, 12.0, 8.5, 16.5, 6.2, 23.2)
+    $p.AddLine(6.2, 23.2, 9.6, 23.8)
+    $p.AddLine(9.6, 23.8, 12.2, 20.2)
+    $p.AddBezier(12.2, 20.2, 17.5, 20.8, 21.8, 16.5, 21.2, 11.2)
     $p.CloseFigure()
-    $g.FillPath([Drawing.Brushes]::White, $p)
+    $g.DrawPath($pen, $p)
+    $wing = New-Object Drawing.Drawing2D.GraphicsPath
+    $wing.AddBezier(15.2, 12.2, 16.8, 14.5, 15.0, 17.8, 11.0, 19.2)
+    $g.DrawPath($pen, $wing)
+    $g.DrawLine($pen, 15.5, 20.2, 15.5, 24.8)
+    $g.DrawLine($pen, 14.0, 24.8, 17.8, 24.8)
+    $g.FillEllipse([Drawing.Brushes]::White, 18.2, 8.4, 1.7, 1.7)
+    $p.Dispose(); $wing.Dispose(); $pen.Dispose(); $brush.Dispose()
     $g.Dispose()
     $ms = New-Object IO.MemoryStream
     $bmp.Save($ms, [Drawing.Imaging.ImageFormat]::Png)

@@ -28,8 +28,11 @@
       <ScrollViewer x:Name="PageSetup" VerticalScrollBarVisibility="Auto" Visibility="Collapsed">
         <StackPanel Margin="20,12,20,16">
           <Border Width="64" Height="64" CornerRadius="32" Background="{StaticResource AccentSoft}" HorizontalAlignment="Center">
-            <TextBlock Text="&#xE72E;" FontFamily="{StaticResource Icons}" FontSize="26" Foreground="{StaticResource Accent}"
-                       HorizontalAlignment="Center" VerticalAlignment="Center"/>
+            <Canvas Width="32" Height="32" HorizontalAlignment="Center" VerticalAlignment="Center">
+              <Path Stroke="{StaticResource Accent}" StrokeThickness="2" StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"
+                    Data="M 21.2,11.2 L 26.2,10.0 L 21.5,8.5 C 19.2,6.4 15.8,6.8 14.5,9.8 C 11.2,12.0 8.5,16.5 6.2,23.2 L 9.6,23.8 L 12.2,20.2 C 17.5,20.8 21.8,16.5 21.2,11.2 Z M 15.2,12.2 C 16.8,14.5 15.0,17.8 11.0,19.2 M 15.5,20.2 L 15.5,24.8 M 14.0,24.8 L 17.8,24.8"/>
+              <Ellipse Width="1.8" Height="1.8" Canvas.Left="18.2" Canvas.Top="8.4" Fill="{StaticResource Accent}"/>
+            </Canvas>
           </Border>
           <TextBlock Text="Vamos deixar tudo pronto" FontSize="21" FontWeight="SemiBold" HorizontalAlignment="Center" Margin="0,16,0,6"/>
           <TextBlock Style="{StaticResource Caption}" TextAlignment="Center" FontSize="13" Margin="10,0"
@@ -147,9 +150,9 @@
           <Ellipse x:Name="Glow" Width="220" Height="220" Margin="-22" IsHitTestVisible="False" Opacity="0" Visibility="Collapsed">
             <Ellipse.Fill>
               <RadialGradientBrush>
-                <GradientStop Color="#FF2FBF71" Offset="0"/>
-                <GradientStop Color="#882FBF71" Offset="0.45"/>
-                <GradientStop Color="#002FBF71" Offset="1"/>
+                <GradientStop Color="#FF9B6DFF" Offset="0"/>
+                <GradientStop Color="#889B6DFF" Offset="0.45"/>
+                <GradientStop Color="#009B6DFF" Offset="1"/>
               </RadialGradientBrush>
             </Ellipse.Fill>
           </Ellipse>

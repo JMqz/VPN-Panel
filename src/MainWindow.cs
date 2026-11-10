@@ -76,6 +76,7 @@ namespace VpnPanel
         readonly Button btnApplyUpdate, btnCheckUpdate, btnResetLock;
         readonly TextBlock txtUpdateFoundTitle, txtUpdateFoundDetail, txtUpdateBadge;
         Updater.ReleaseInfo availableUpdate;
+        bool pendingUpdatePrompt, updateDialogOpen, firstOpenUpdateChecked;
         readonly DispatcherTimer updateCheckTimer;
         // Tabs
         readonly RadioButton tabHome, tabServers, tabApps, tabOptions;
@@ -401,7 +402,7 @@ namespace VpnPanel
             E<Button>("BtnQuit").Click += (s, e) => Quit();
 
             // tray
-            trayOn = TrayIcon(SD.Color.FromArgb(47, 191, 113));
+            trayOn = TrayIcon(SD.Color.FromArgb(139, 92, 246));
             trayOff = TrayIcon(SD.Color.FromArgb(110, 117, 130));
             trayWarn = TrayIcon(SD.Color.FromArgb(227, 165, 53));
             var renderer = new DarkMenuRenderer();
@@ -432,7 +433,11 @@ namespace VpnPanel
             tray.BalloonTipClicked += (s, e) =>
             {
                 ShowWindow();
-                if (availableUpdate != null && availableUpdate.IsNewer) tabOptions.IsChecked = true;
+                if (availableUpdate != null && availableUpdate.IsNewer)
+                {
+                    pendingUpdatePrompt = false;
+                    PromptUpdate(availableUpdate, false);
+                }
             };
 
             wireSockInstalled = Paths.WireSock != null;
@@ -453,11 +458,15 @@ namespace VpnPanel
             ipTimer.Tick += (s, e) => { ipTimer.Stop(); CheckIp(); };
             reconnectTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(3) };
             reconnectTimer.Tick += (s, e) => { reconnectTimer.Stop(); Connect(); };
-            updateCheckTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(6) };
+            updateCheckTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(1200) };
             updateCheckTimer.Tick += (s, e) =>
             {
                 updateCheckTimer.Stop();
-                if (settings.CheckUpdates) CheckForUpdates(false);
+                if (settings.CheckUpdates)
+                {
+                    firstOpenUpdateChecked = true;
+                    CheckForUpdates(false);
+                }
             };
             updateCheckTimer.Start();
 
@@ -524,6 +533,18 @@ namespace VpnPanel
                 {
                     glow.Visibility = Visibility.Visible;
                     glow.Opacity = 0.28;
+                }
+                if (pendingUpdatePrompt && availableUpdate != null && availableUpdate.IsNewer)
+                {
+                    pendingUpdatePrompt = false;
+                    Updater.ReleaseInfo info = availableUpdate;
+                    w.Dispatcher.BeginInvoke(new Action(() => PromptUpdate(info, false)));
+                }
+                else if (!firstOpenUpdateChecked && settings.CheckUpdates)
+                {
+                    firstOpenUpdateChecked = true;
+                    updateCheckTimer.Stop();
+                    CheckForUpdates(false);
                 }
             }
             else if (glow.Visibility == Visibility.Visible)
@@ -759,9 +780,15 @@ namespace VpnPanel
                     txtUpdateFoundTitle.Text = "Nova versão " + info.Version + " disponível";
                     txtUpdateFoundDetail.Text = "Clique em Atualizar agora para instalar.";
                     cardUpdate.Visibility = Visibility.Visible;
-                    if (!w.IsVisible)
+                    if (manual || WindowShowing)
                     {
-                        tray.ShowBalloonTip(3000, "VPN Panel", "Nova versão " + info.Version + " disponível! Clique para ver.", WF.ToolTipIcon.Info);
+                        pendingUpdatePrompt = false;
+                        PromptUpdate(info, false);
+                    }
+                    else
+                    {
+                        pendingUpdatePrompt = true;
+                        tray.ShowBalloonTip(3000, "VPN Panel", "Nova versão " + info.Version + " disponível! Clique para atualizar.", WF.ToolTipIcon.Info);
                     }
                 }
                 else
@@ -779,77 +806,165 @@ namespace VpnPanel
         void InstallUpdate()
         {
             if (availableUpdate == null) return;
-            if (string.IsNullOrEmpty(availableUpdate.DownloadUrl) ||
-                !availableUpdate.DownloadUrl.StartsWith("https://github.com/JMqz/VPN-Panel/releases/download/", StringComparison.OrdinalIgnoreCase))
-            {
-                if (!string.IsNullOrEmpty(availableUpdate.HtmlUrl))
-                    Process.Start(availableUpdate.HtmlUrl);
-                return;
-            }
+            PromptUpdate(availableUpdate, true);
+        }
 
-            btnApplyUpdate.IsEnabled = false;
-            btnApplyUpdate.Content = "Baixando...";
-            txtUpdateFoundDetail.Text = "Baixando a versão " + availableUpdate.Version + "...";
-
-            string updateDir = System.IO.Path.Combine(Paths.Data, "updates");
-            try { Directory.CreateDirectory(updateDir); } catch { }
+        void PromptUpdate(Updater.ReleaseInfo info, bool startImmediately)
+        {
+            if (info == null || updateDialogOpen) return;
+            updateDialogOpen = true;
             try
             {
-                foreach (string old in Directory.GetFiles(updateDir, "*.exe"))
+                Window d = Dialogs.Frame(w, "Nova versão disponível", 370);
+                var body = new StackPanel();
+                body.Children.Add(Dialogs.Message("A versão v" + info.Version + " do VPN Panel está disponível (você está na v" + Program.Version + ").\n\nDeseja baixar e instalar a atualização agora?"));
+                var status = new TextBlock
                 {
-                    try { File.Delete(old); } catch { }
-                }
-            }
-            catch { }
-            string tempFile = System.IO.Path.Combine(updateDir, "VPN-Panel-Setup-" + Guid.NewGuid().ToString("N").Substring(0, 8) + ".exe");
-            var wc = new WebClient();
-            wc.Headers["User-Agent"] = "vpn-panel";
-            int lastPct = -1;
-            wc.DownloadProgressChanged += (s, e) =>
-            {
-                if (e.ProgressPercentage == lastPct) return;
-                lastPct = e.ProgressPercentage;
-                btnApplyUpdate.Content = "Baixando (" + e.ProgressPercentage + "%)...";
-            };
-            wc.DownloadFileCompleted += (s, e) =>
-            {
-                wc.Dispose();
-                if (e.Error != null)
-                {
-                    try { if (File.Exists(tempFile)) File.Delete(tempFile); } catch { }
-                    btnApplyUpdate.IsEnabled = true;
-                    btnApplyUpdate.Content = "Atualizar agora";
-                    txtUpdateFoundDetail.Text = "Erro ao baixar: " + e.Error.Message;
-                    Dialogs.Info(w, "Erro na atualização", "Não foi possível baixar o arquivo: " + e.Error.Message);
-                    return;
-                }
+                    Foreground = Dialogs.B("Accent"),
+                    FontWeight = FontWeights.SemiBold,
+                    TextWrapping = TextWrapping.Wrap,
+                    Margin = new Thickness(0, 12, 0, 0),
+                    Visibility = Visibility.Collapsed
+                };
+                body.Children.Add(status);
 
-                try
+                Button btnLater = Dialogs.Btn("Depois", "GhostButton");
+                Button btnNow = Dialogs.Btn("Atualizar agora", "PrimaryButton");
+                btnLater.IsCancel = true;
+                btnNow.IsDefault = true;
+
+                WebClient activeWc = null;
+                bool downloading = false;
+
+                Action startDownload = () =>
                 {
-                    var fi = new FileInfo(tempFile);
-                    if (!fi.Exists || fi.Length < 100 * 1024)
+                    if (downloading) return;
+                    if (string.IsNullOrEmpty(info.DownloadUrl) ||
+                        !info.DownloadUrl.StartsWith("https://github.com/JMqz/VPN-Panel/releases/download/", StringComparison.OrdinalIgnoreCase))
                     {
-                        try { if (File.Exists(tempFile)) File.Delete(tempFile); } catch { }
-                        throw new InvalidOperationException("O instalador baixado é inválido ou está incompleto.");
+                        if (!string.IsNullOrEmpty(info.HtmlUrl))
+                            Process.Start(info.HtmlUrl);
+                        d.Close();
+                        return;
                     }
 
-                    txtUpdateFoundDetail.Text = "Instalando atualização...";
-                    btnApplyUpdate.Content = "Instalando...";
+                    downloading = true;
+                    btnNow.IsEnabled = false;
+                    btnLater.IsEnabled = false;
+                    btnNow.Content = "Baixando...";
+                    status.Foreground = Dialogs.B("Accent");
+                    status.Text = "Baixando a versão v" + info.Version + "...";
+                    status.Visibility = Visibility.Visible;
 
-                    bool installed = Paths.ExeDir.Equals(Installer.Dir, StringComparison.OrdinalIgnoreCase);
-                    var psi = new ProcessStartInfo(tempFile, installed ? "--silent" : "") { UseShellExecute = true };
-                    Process.Start(psi);
-                }
-                catch (Exception ex)
+                    btnApplyUpdate.IsEnabled = false;
+                    btnApplyUpdate.Content = "Baixando...";
+                    txtUpdateFoundDetail.Text = "Baixando a versão " + info.Version + "...";
+
+                    string updateDir = System.IO.Path.Combine(Paths.Data, "updates");
+                    try { Directory.CreateDirectory(updateDir); } catch { }
+                    try
+                    {
+                        foreach (string old in Directory.GetFiles(updateDir, "*.exe"))
+                        {
+                            try { File.Delete(old); } catch { }
+                        }
+                    }
+                    catch { }
+                    string tempFile = System.IO.Path.Combine(updateDir, "VPN-Panel-Setup-" + Guid.NewGuid().ToString("N").Substring(0, 8) + ".exe");
+                    var wc = new WebClient();
+                    activeWc = wc;
+                    wc.Headers["User-Agent"] = "vpn-panel";
+                    int lastPct = -1;
+                    wc.DownloadProgressChanged += (s, e) =>
+                    {
+                        if (e.ProgressPercentage == lastPct) return;
+                        lastPct = e.ProgressPercentage;
+                        string pctText = "Baixando (" + e.ProgressPercentage + "%)...";
+                        btnNow.Content = pctText;
+                        btnApplyUpdate.Content = pctText;
+                        status.Text = "Baixando o instalador (" + e.ProgressPercentage + "%)...";
+                    };
+                    wc.DownloadFileCompleted += (s, e) =>
+                    {
+                        wc.Dispose();
+                        activeWc = null;
+                        downloading = false;
+                        if (e.Cancelled)
+                        {
+                            try { if (File.Exists(tempFile)) File.Delete(tempFile); } catch { }
+                            return;
+                        }
+                        if (e.Error != null)
+                        {
+                            try { if (File.Exists(tempFile)) File.Delete(tempFile); } catch { }
+                            btnNow.IsEnabled = true;
+                            btnLater.IsEnabled = true;
+                            btnNow.Content = "Tentar de novo";
+                            status.Foreground = Dialogs.B("Danger");
+                            status.Text = "Erro ao baixar: " + e.Error.Message;
+                            btnApplyUpdate.IsEnabled = true;
+                            btnApplyUpdate.Content = "Atualizar agora";
+                            txtUpdateFoundDetail.Text = "Erro ao baixar: " + e.Error.Message;
+                            return;
+                        }
+
+                        try
+                        {
+                            var fi = new FileInfo(tempFile);
+                            if (!fi.Exists || fi.Length < 100 * 1024)
+                            {
+                                try { if (File.Exists(tempFile)) File.Delete(tempFile); } catch { }
+                                throw new InvalidOperationException("O instalador baixado é inválido ou está incompleto.");
+                            }
+
+                            status.Foreground = Dialogs.B("Accent");
+                            status.Text = "Instalando atualização...";
+                            btnNow.Content = "Instalando...";
+                            txtUpdateFoundDetail.Text = "Instalando atualização...";
+                            btnApplyUpdate.Content = "Instalando...";
+
+                            bool installed = Paths.ExeDir.Equals(Installer.Dir, StringComparison.OrdinalIgnoreCase);
+                            var psi = new ProcessStartInfo(tempFile, installed ? "--silent" : "") { UseShellExecute = true };
+                            Process.Start(psi);
+                            d.Close();
+                        }
+                        catch (Exception ex)
+                        {
+                            btnNow.IsEnabled = true;
+                            btnLater.IsEnabled = true;
+                            btnNow.Content = "Tentar de novo";
+                            status.Foreground = Dialogs.B("Danger");
+                            status.Text = "Erro ao instalar: " + ex.Message;
+                            btnApplyUpdate.IsEnabled = true;
+                            btnApplyUpdate.Content = "Atualizar agora";
+                            txtUpdateFoundDetail.Text = "Erro ao instalar: " + ex.Message;
+                        }
+                    };
+
+                    wc.DownloadFileAsync(new Uri(info.DownloadUrl), tempFile);
+                };
+
+                btnNow.Click += (s, e) => startDownload();
+                btnLater.Click += (s, e) => { if (!downloading) d.Close(); };
+                d.Closing += (s, e) =>
                 {
-                    btnApplyUpdate.IsEnabled = true;
-                    btnApplyUpdate.Content = "Atualizar agora";
-                    txtUpdateFoundDetail.Text = "Erro ao instalar: " + ex.Message;
-                    Dialogs.Info(w, "Erro ao instalar", ex.Message);
+                    if (activeWc != null)
+                    {
+                        try { activeWc.CancelAsync(); } catch { }
+                    }
+                };
+                if (startImmediately)
+                {
+                    d.Loaded += (s, e) => startDownload();
                 }
-            };
 
-            wc.DownloadFileAsync(new Uri(availableUpdate.DownloadUrl), tempFile);
+                Dialogs.Layout(d, "Nova versão disponível", body, btnLater, btnNow);
+                d.ShowDialog();
+            }
+            finally
+            {
+                updateDialogOpen = false;
+            }
         }
 
         // Ready = WireSock installed and at least one server; until then Início shows the setup steps
@@ -2656,7 +2771,7 @@ namespace VpnPanel
             return item;
         }
 
-        // App mark (white shield on a colored disc) at the tray's icon size
+        // App mark (white raven outline on a colored disc) at the tray's icon size
         static SD.Icon TrayIcon(SD.Color disc)
         {
             SD.Size size = WF.SystemInformation.SmallIconSize;
@@ -2664,18 +2779,30 @@ namespace VpnPanel
             {
                 using (SD.Graphics g = SD.Graphics.FromImage(bmp))
                 using (var brush = new SD.SolidBrush(disc))
+                using (var pen = new SD.Pen(SD.Color.White, 1.9F))
                 using (var path = new SD.Drawing2D.GraphicsPath())
+                using (var wing = new SD.Drawing2D.GraphicsPath())
                 {
                     g.SmoothingMode = SD.Drawing2D.SmoothingMode.AntiAlias;
                     g.ScaleTransform(size.Width / 32F, size.Height / 32F);
                     g.FillEllipse(brush, 0.5F, 0.5F, 31, 31);
-                    path.AddLine(16, 6, 24, 9);
-                    path.AddLine(24, 9, 24, 15);
-                    path.AddBezier(24, 15, 24, 20, 20, 23.5F, 16, 26);
-                    path.AddBezier(16, 26, 12, 23.5F, 8, 20, 8, 15);
-                    path.AddLine(8, 15, 8, 9);
+                    pen.StartCap = SD.Drawing2D.LineCap.Round;
+                    pen.EndCap = SD.Drawing2D.LineCap.Round;
+                    pen.LineJoin = SD.Drawing2D.LineJoin.Round;
+                    path.AddLine(21.2F, 11.2F, 26.2F, 10.0F);
+                    path.AddLine(26.2F, 10.0F, 21.5F, 8.5F);
+                    path.AddBezier(21.5F, 8.5F, 19.2F, 6.4F, 15.8F, 6.8F, 14.5F, 9.8F);
+                    path.AddBezier(14.5F, 9.8F, 11.2F, 12.0F, 8.5F, 16.5F, 6.2F, 23.2F);
+                    path.AddLine(6.2F, 23.2F, 9.6F, 23.8F);
+                    path.AddLine(9.6F, 23.8F, 12.2F, 20.2F);
+                    path.AddBezier(12.2F, 20.2F, 17.5F, 20.8F, 21.8F, 16.5F, 21.2F, 11.2F);
                     path.CloseFigure();
-                    g.FillPath(SD.Brushes.White, path);
+                    g.DrawPath(pen, path);
+                    wing.AddBezier(15.2F, 12.2F, 16.8F, 14.5F, 15.0F, 17.8F, 11.0F, 19.2F);
+                    g.DrawPath(pen, wing);
+                    g.DrawLine(pen, 15.5F, 20.2F, 15.5F, 24.8F);
+                    g.DrawLine(pen, 14.0F, 24.8F, 17.8F, 24.8F);
+                    g.FillEllipse(SD.Brushes.White, 18.2F, 8.4F, 1.7F, 1.7F);
                 }
                 IntPtr hIcon = bmp.GetHicon();
                 try { return (SD.Icon)SD.Icon.FromHandle(hIcon).Clone(); }
@@ -2708,7 +2835,7 @@ namespace VpnPanel
                 var smoothing = g.SmoothingMode;
                 g.SmoothingMode = SD.Drawing2D.SmoothingMode.AntiAlias;
                 float x = r.Left + r.Width / 2F, y = r.Top + r.Height / 2F, u = Math.Min(r.Width, r.Height) / 16F;
-                using (var pen = new SD.Pen(SD.Color.FromArgb(47, 191, 113), 2F * u))
+                using (var pen = new SD.Pen(SD.Color.FromArgb(155, 109, 255), 2F * u))
                     g.DrawLines(pen, new[] { new SD.PointF(x - 5 * u, y), new SD.PointF(x - 1.5F * u, y + 3.5F * u), new SD.PointF(x + 5 * u, y - 4 * u) });
                 g.SmoothingMode = smoothing;
             }
