@@ -1232,6 +1232,8 @@ namespace VpnPanel
             int targetMtu = settings.OptimizeMtu ? 1380 : 0;
 
             CloseLogStream();
+            Traffic.Stop();
+            ResetTrafficLabels();
             userStopped = false;
             connecting = true;
             connectRequested = DateTime.Now;
@@ -1351,6 +1353,7 @@ namespace VpnPanel
             runningConfig = null;
             StopMonitoring();
             Traffic.Stop();
+            ResetTrafficLabels();
             if (byUser) reconnectAttempts = 0;
             bool netLock = settings.NetworkLock;
             UpdateState();
@@ -1575,7 +1578,7 @@ namespace VpnPanel
         {
             downKey = upKey = totalKey = -1;
             totalText = "";
-            txtDown.Text = txtUp.Text = "—";
+            txtDown.Text = txtUp.Text = "0 KB/s";
         }
 
         // The text is rebuilt only when the rounded number changes (an idle connection allocates nothing)
@@ -1744,7 +1747,6 @@ namespace VpnPanel
                     reconnectPending = false;
                     Connect();
                 }
-                if (running && monitoring) ReadHandshakes();
                 RefreshConfigs();
             }
 
@@ -1837,9 +1839,23 @@ namespace VpnPanel
 
         void UpdateState()
         {
+            Conn prev = shown;
             Conn st = State;
             shown = st;
             bool on = st == Conn.On;
+            if (on && !Traffic.Running)
+            {
+                Traffic.Start(active != null ? active.Endpoint : null);
+                ResetTrafficLabels();
+            }
+            if (on && prev != Conn.On)
+            {
+                HideBanner();
+                CheckIp();
+                Latency.RouteChanged();
+                UpdateAllPingLabels();
+                MeasureLatency(false);
+            }
             bool busy = st == Conn.Connecting || st == Conn.Retrying || st == Conn.NoResponse;
             spinner.Visibility = busy ? Visibility.Visible : Visibility.Collapsed;
             UpdateSpinnerAnimation();
