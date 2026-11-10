@@ -45,7 +45,9 @@ namespace VpnPanel
         readonly Border errorBanner;
         readonly TextBlock txtErrTitle, txtErrDetail;
         readonly Button btnPower;
-        readonly TextBlock powerGlyph, txtStatus, txtScope, txtUptime, txtDown, txtUp;
+        readonly Image medallionImg;
+        readonly ImageSource medallionOn, medallionOff;
+        readonly TextBlock txtStatus, txtScope, txtUptime, txtDown, txtUp;
         readonly WrapPanel homeAppsPanel;
         readonly FrameworkElement trafficRow;
         int downKey = -1, upKey = -1, totalKey = -1; // what the traffic labels show now (see SpeedKey)
@@ -184,7 +186,12 @@ namespace VpnPanel
             txtErrTitle = E<TextBlock>("TxtErrTitle");
             txtErrDetail = E<TextBlock>("TxtErrDetail");
             btnPower = E<Button>("BtnPower");
-            powerGlyph = E<TextBlock>("PowerGlyph");
+            medallionOn = RenderMedallionBitmap(288, true, false, false);
+            medallionOff = RenderMedallionBitmap(288, false, false, false);
+            medallionImg = E<Image>("MedallionImg");
+            medallionImg.Source = medallionOff;
+            E<Image>("SetupMedallion").Source = medallionOn;
+            E<Image>("RaysImg").Source = RenderRaysBitmap(340);
             txtStatus = E<TextBlock>("TxtStatus");
             txtScope = E<TextBlock>("TxtScope");
             homeAppsPanel = E<WrapPanel>("HomeAppsPanel");
@@ -414,9 +421,9 @@ namespace VpnPanel
             E<Button>("BtnQuit").Click += (s, e) => Quit();
 
             // tray
-            trayOn = TrayIcon(SD.Color.FromArgb(139, 92, 246));
-            trayOff = TrayIcon(SD.Color.FromArgb(110, 117, 130));
-            trayWarn = TrayIcon(SD.Color.FromArgb(227, 165, 53));
+            trayOn = TrayIcon(true, false);
+            trayOff = TrayIcon(false, false);
+            trayWarn = TrayIcon(true, true);
             var renderer = new DarkMenuRenderer();
             var menu = trayMenu = new WF.ContextMenuStrip { Renderer = renderer, ShowImageMargin = false, ShowCheckMargin = true, Font = new SD.Font("Segoe UI", 9.5F) };
             miStatus = (WF.ToolStripMenuItem)menu.Items.Add("Desconectado");
@@ -1731,8 +1738,7 @@ namespace VpnPanel
             string status, scope;
             if (on)
             {
-                btnPower.Background = B("Accent");
-                powerGlyph.Foreground = B("OnAccent");
+                medallionImg.Source = medallionOn;
                 ring.Stroke = B("Accent");
                 txtStatus.Foreground = B("Accent");
                 status = "Conectado";
@@ -1742,8 +1748,7 @@ namespace VpnPanel
             }
             else
             {
-                btnPower.Background = B("Surface2");
-                powerGlyph.Foreground = busy ? B("Warn") : B("Muted");
+                medallionImg.Source = medallionOff;
                 ring.Stroke = st == Conn.NoResponse ? B("Warn") : B("Line");
                 txtStatus.Foreground = st == Conn.NoResponse ? B("Warn") : B("Text");
                 switch (st)
@@ -1788,7 +1793,7 @@ namespace VpnPanel
                 if (WindowShowing)
                 {
                     glow.Visibility = Visibility.Visible;
-                    glow.BeginAnimation(UIElement.OpacityProperty, new DoubleAnimation(0.28, TimeSpan.FromMilliseconds(400)));
+                    glow.BeginAnimation(UIElement.OpacityProperty, new DoubleAnimation(0.55, TimeSpan.FromMilliseconds(400)));
                 }
             }
             else if (glow.Visibility == Visibility.Visible)
@@ -3092,53 +3097,255 @@ namespace VpnPanel
             return item;
         }
 
-        // App mark (white raven head outline on a colored disc) at the tray's icon size
-        static SD.Icon TrayIcon(SD.Color disc)
+        static void DrawMedallion(SD.Graphics g, float cx, float cy, float radius, bool active, bool warn, bool iconMode)
+        {
+            SD.Drawing2D.GraphicsState state = g.Save();
+            g.TranslateTransform(cx, cy);
+            float scale = radius / 64F;
+            g.ScaleTransform(scale, scale);
+
+            float leadWidth = iconMode ? 2.2F : 1.8F;
+            using (var leadPen = new SD.Pen(SD.Color.FromArgb(10, 10, 14), leadWidth))
+            {
+                leadPen.StartCap = SD.Drawing2D.LineCap.Round;
+                leadPen.EndCap = SD.Drawing2D.LineCap.Round;
+                leadPen.LineJoin = SD.Drawing2D.LineJoin.Round;
+
+                // 1. Outer Gold Frame Ring (-62 to +62)
+                SD.Color gold1 = active ? SD.Color.FromArgb(235, 172, 34) : SD.Color.FromArgb(52, 62, 92);
+                SD.Color gold2 = active ? SD.Color.FromArgb(247, 212, 104) : SD.Color.FromArgb(68, 80, 115);
+                using (var ringBrush = new SD.Drawing2D.LinearGradientBrush(new SD.PointF(-62F, -62F), new SD.PointF(62F, 62F), gold2, gold1))
+                {
+                    g.FillEllipse(ringBrush, -62F, -62F, 124F, 124F);
+                    g.DrawEllipse(leadPen, -62F, -62F, 124F, 124F);
+                }
+
+                // Stained-glass segment lines on the gold ring
+                if (!iconMode)
+                {
+                    int[] angles = new[] { 25, 70, 115, 155, 205, 250, 295, 335 };
+                    for (int i = 0; i < angles.Length; i++)
+                    {
+                        double rad = angles[i] * Math.PI / 180.0;
+                        float x1 = (float)(Math.Cos(rad) * 51.0);
+                        float y1 = (float)(Math.Sin(rad) * 51.0);
+                        float x2 = (float)(Math.Cos(rad) * 62.0);
+                        float y2 = (float)(Math.Sin(rad) * 62.0);
+                        g.DrawLine(leadPen, x1, y1, x2, y2);
+                    }
+                }
+
+                // 2. Inner Crimson / Ruby Core (-51 to +51)
+                SD.Color rubyLight = warn ? SD.Color.FromArgb(215, 140, 28)
+                                   : active ? SD.Color.FromArgb(208, 32, 36) : SD.Color.FromArgb(24, 31, 56);
+                SD.Color rubyDark = warn ? SD.Color.FromArgb(135, 75, 14)
+                                  : active ? SD.Color.FromArgb(115, 12, 18) : SD.Color.FromArgb(15, 20, 38);
+                using (var coreBrush = new SD.Drawing2D.LinearGradientBrush(new SD.PointF(-40F, -51F), new SD.PointF(40F, 51F), rubyLight, rubyDark))
+                {
+                    g.FillEllipse(coreBrush, -51F, -51F, 102F, 102F);
+                }
+
+                // Subtle stained glass facet arcs inside ruby core
+                if (!iconMode)
+                {
+                    SD.Color facetColor = active ? SD.Color.FromArgb(70, 80, 5, 10) : SD.Color.FromArgb(50, 10, 14, 28);
+                    using (var facetBrush = new SD.SolidBrush(facetColor))
+                    {
+                        g.FillPie(facetBrush, -51F, -51F, 102F, 102F, -30F, 50F);
+                        g.FillPie(facetBrush, -51F, -51F, 102F, 102F, 110F, 55F);
+                        g.FillPie(facetBrush, -51F, -51F, 102F, 102F, 215F, 45F);
+                    }
+                    g.DrawLine(leadPen, -49F, -12F, 49F, 15F);
+                    g.DrawLine(leadPen, -36F, 36F, 38F, -34F);
+                }
+                g.DrawEllipse(leadPen, -51F, -51F, 102F, 102F);
+
+                // 3. Pale Gold Crescent Moon behind the Raven
+                SD.Color moonColor = active ? SD.Color.FromArgb(250, 238, 145) : SD.Color.FromArgb(95, 108, 142);
+                using (var moonBrush = new SD.SolidBrush(moonColor))
+                using (var moonPath = new SD.Drawing2D.GraphicsPath())
+                {
+                    moonPath.AddBezier(4F, -38F, -38F, -34F, -44F, 22F, 6F, 26F);
+                    moonPath.AddBezier(6F, 26F, 22F, 26F, 34F, 16F, 40F, 4F);
+                    moonPath.AddBezier(40F, 4F, 26F, 14F, 4F, 14F, -12F, 2F);
+                    moonPath.AddBezier(-12F, 2F, -26F, -10F, -18F, -30F, 4F, -38F);
+                    moonPath.CloseFigure();
+                    g.FillPath(moonBrush, moonPath);
+                    g.DrawPath(leadPen, moonPath);
+
+                    // 5. Small 4-pointed diamond star at bottom-left (-29, 19)
+                    if (!iconMode)
+                    {
+                        var dPts = new[]
+                        {
+                            new SD.PointF(-29F, 11F),
+                            new SD.PointF(-26F, 17F),
+                            new SD.PointF(-21F, 19F),
+                            new SD.PointF(-26F, 21F),
+                            new SD.PointF(-29F, 27F),
+                            new SD.PointF(-32F, 21F),
+                            new SD.PointF(-37F, 19F),
+                            new SD.PointF(-32F, 17F)
+                        };
+                        g.FillPolygon(moonBrush, dPts);
+                        g.DrawPolygon(leadPen, dPts);
+                    }
+                }
+
+                // 4. 8-Pointed Gold Star near beak (around x=29, y=-11)
+                SD.Color starColor = active ? SD.Color.FromArgb(255, 234, 90) : SD.Color.FromArgb(110, 122, 155);
+                using (var starBrush = new SD.SolidBrush(starColor))
+                {
+                    var starPts = new SD.PointF[16];
+                    float sx = 29F, sy = -11F;
+                    for (int i = 0; i < 16; i++)
+                    {
+                        double a = (i * 22.5 - 90.0) * Math.PI / 180.0;
+                        double r = (i % 2 == 0) ? ((i % 4 == 0) ? 11.5 : 8.0) : 3.4;
+                        starPts[i] = new SD.PointF(sx + (float)(Math.Cos(a) * r), sy + (float)(Math.Sin(a) * r));
+                    }
+                    g.FillPolygon(starBrush, starPts);
+                    g.DrawPolygon(leadPen, starPts);
+                }
+
+                // 6. The Raven (Back view with head turned in right profile)
+                // 6a. Tail feathers at bottom (dark teal + black)
+                SD.Color tailColor = active ? SD.Color.FromArgb(18, 92, 104) : SD.Color.FromArgb(28, 45, 62);
+                using (var tailBrush = new SD.SolidBrush(tailColor))
+                using (var tailPath = new SD.Drawing2D.GraphicsPath())
+                {
+                    tailPath.AddBezier(-10F, 22F, -13F, 34F, -14F, 43F, -8F, 45F);
+                    tailPath.AddBezier(-8F, 45F, -3F, 49F, 3F, 49F, 8F, 45F);
+                    tailPath.AddBezier(8F, 45F, 13F, 43F, 12F, 34F, 9F, 22F);
+                    tailPath.CloseFigure();
+                    g.FillPath(tailBrush, tailPath);
+                    g.DrawPath(leadPen, tailPath);
+                    g.DrawLine(leadPen, -4F, 25F, -5F, 46F);
+                    g.DrawLine(leadPen, 0F, 26F, 0F, 48F);
+                    g.DrawLine(leadPen, 4F, 25F, 5F, 46F);
+                }
+
+                // 6b. Beak (slate gray, pointing right above the star)
+                SD.Color beakColor = active ? SD.Color.FromArgb(68, 72, 84) : SD.Color.FromArgb(65, 72, 92);
+                using (var beakBrush = new SD.SolidBrush(beakColor))
+                using (var beakPath = new SD.Drawing2D.GraphicsPath())
+                {
+                    beakPath.AddBezier(9F, -28F, 17F, -28F, 23F, -25F, 26F, -21F);
+                    beakPath.AddBezier(26F, -21F, 19F, -20F, 14F, -20F, 9F, -21F);
+                    beakPath.CloseFigure();
+                    g.FillPath(beakBrush, beakPath);
+                    g.DrawPath(leadPen, beakPath);
+                }
+
+                // 6c. Head & Neck (deep obsidian black)
+                using (var headBrush = new SD.SolidBrush(SD.Color.FromArgb(14, 14, 20)))
+                using (var headPath = new SD.Drawing2D.GraphicsPath())
+                {
+                    headPath.AddBezier(-12F, -14F, -10F, -27F, -2F, -32F, 6F, -30F);
+                    headPath.AddBezier(6F, -30F, 11F, -29F, 12F, -23F, 9F, -20F);
+                    headPath.AddBezier(9F, -20F, 8F, -16F, 10F, -13F, 12F, -10F);
+                    headPath.AddBezier(12F, -10F, 4F, -8F, -4F, -8F, -12F, -14F);
+                    headPath.CloseFigure();
+                    g.FillPath(headBrush, headPath);
+                    g.DrawPath(leadPen, headPath);
+                }
+
+                // 6d. Back & Folded Wings (deep amethyst purple + dark plum feathers)
+                SD.Color wpColor = active ? SD.Color.FromArgb(74, 22, 118) : SD.Color.FromArgb(36, 30, 64);
+                SD.Color wplColor = active ? SD.Color.FromArgb(104, 20, 64) : SD.Color.FromArgb(44, 32, 58);
+                using (var wingPurple = new SD.SolidBrush(wpColor))
+                using (var wingPlum = new SD.SolidBrush(wplColor))
+                using (var bodyPath = new SD.Drawing2D.GraphicsPath())
+                using (var mantle = new SD.Drawing2D.GraphicsPath())
+                {
+                    bodyPath.AddBezier(-12F, -14F, -22F, -4F, -20F, 16F, -6F, 29F);
+                    bodyPath.AddBezier(-6F, 29F, -2F, 33F, 2F, 33F, 5F, 29F);
+                    bodyPath.AddBezier(5F, 29F, 18F, 16F, 20F, -2F, 12F, -10F);
+                    bodyPath.AddBezier(12F, -10F, 4F, -12F, -4F, -12F, -12F, -14F);
+                    bodyPath.CloseFigure();
+                    g.FillPath(wingPurple, bodyPath);
+
+                    // Upper mantle (dark crimson-plum V-shape under neck)
+                    mantle.AddBezier(-12F, -14F, -4F, -12F, 4F, -12F, 12F, -10F);
+                    mantle.AddBezier(12F, -10F, 6F, -3F, 2F, -1F, 0F, 2F);
+                    mantle.AddBezier(0F, 2F, -3F, -1F, -7F, -4F, -12F, -14F);
+                    mantle.CloseFigure();
+                    g.FillPath(wingPlum, mantle);
+                    g.DrawPath(leadPen, mantle);
+
+                    // Wing feather scallops (stained-glass lead lines)
+                    g.DrawPath(leadPen, bodyPath);
+                    g.DrawBezier(leadPen, 0F, 2F, -2F, 14F, -1F, 22F, 2F, 31F);
+                    g.DrawBezier(leadPen, -15F, -2F, -10F, 6F, -4F, 8F, -1F, 4F);
+                    g.DrawBezier(leadPen, 15F, 0F, 10F, 7F, 4F, 9F, 0F, 4F);
+                    g.DrawBezier(leadPen, -14F, 10F, -9F, 17F, -4F, 18F, -1F, 13F);
+                    g.DrawBezier(leadPen, 14F, 11F, 9F, 18F, 4F, 19F, 0F, 14F);
+                }
+            }
+            g.Restore(state);
+        }
+
+        static ImageSource RenderMedallionBitmap(int px, bool active, bool warn, bool iconMode)
+        {
+            using (var bmp = new SD.Bitmap(px, px))
+            using (SD.Graphics g = SD.Graphics.FromImage(bmp))
+            {
+                g.SmoothingMode = SD.Drawing2D.SmoothingMode.AntiAlias;
+                float half = px / 2F;
+                DrawMedallion(g, half, half, half, active, warn, iconMode);
+                using (var ms = new MemoryStream())
+                {
+                    bmp.Save(ms, SD.Imaging.ImageFormat.Png);
+                    ms.Position = 0;
+                    var bi = new BitmapImage();
+                    bi.BeginInit();
+                    bi.CacheOption = BitmapCacheOption.OnLoad;
+                    bi.StreamSource = ms;
+                    bi.EndInit();
+                    bi.Freeze();
+                    return bi;
+                }
+            }
+        }
+
+        static ImageSource RenderRaysBitmap(int px)
+        {
+            using (var bmp = new SD.Bitmap(px, px))
+            using (SD.Graphics g = SD.Graphics.FromImage(bmp))
+            using (var rayPen = new SD.Pen(SD.Color.FromArgb(26, 45, 75, 165), 1.5F))
+            {
+                g.SmoothingMode = SD.Drawing2D.SmoothingMode.AntiAlias;
+                float c = px / 2F;
+                for (double a = 0; a < 360.0; a += 22.5)
+                {
+                    double rad = a * Math.PI / 180.0;
+                    g.DrawLine(rayPen, c, c, c + (float)(Math.Cos(rad) * c), c + (float)(Math.Sin(rad) * c));
+                }
+                using (var ms = new MemoryStream())
+                {
+                    bmp.Save(ms, SD.Imaging.ImageFormat.Png);
+                    ms.Position = 0;
+                    var bi = new BitmapImage();
+                    bi.BeginInit();
+                    bi.CacheOption = BitmapCacheOption.OnLoad;
+                    bi.StreamSource = ms;
+                    bi.EndInit();
+                    bi.Freeze();
+                    return bi;
+                }
+            }
+        }
+
+        // Stained-glass medallion at the tray's icon size
+        static SD.Icon TrayIcon(bool active, bool warn)
         {
             SD.Size size = WF.SystemInformation.SmallIconSize;
             using (var bmp = new SD.Bitmap(size.Width, size.Height))
             {
                 using (SD.Graphics g = SD.Graphics.FromImage(bmp))
-                using (var brush = new SD.SolidBrush(disc))
-                using (var pen = new SD.Pen(SD.Color.White, 1.85F))
-                using (var path = new SD.Drawing2D.GraphicsPath())
-                using (var beakBase = new SD.Drawing2D.GraphicsPath())
-                using (var beakMid = new SD.Drawing2D.GraphicsPath())
-                using (var eye = new SD.Drawing2D.GraphicsPath())
                 {
                     g.SmoothingMode = SD.Drawing2D.SmoothingMode.AntiAlias;
-                    g.ScaleTransform(size.Width / 32F, size.Height / 32F);
-                    g.FillEllipse(brush, 0.5F, 0.5F, 31, 31);
-                    pen.StartCap = SD.Drawing2D.LineCap.Round;
-                    pen.EndCap = SD.Drawing2D.LineCap.Round;
-                    pen.LineJoin = SD.Drawing2D.LineJoin.Round;
-                    path.AddBezier(5.8F, 15.8F, 7.2F, 9.2F, 12.8F, 7.2F, 18.0F, 9.6F);
-                    path.AddBezier(18.0F, 9.6F, 21.8F, 9.8F, 25.4F, 11.0F, 27.2F, 13.6F);
-                    path.AddBezier(27.2F, 13.6F, 24.2F, 14.8F, 21.0F, 15.4F, 18.2F, 15.6F);
-                    path.AddBezier(18.2F, 15.6F, 18.0F, 18.8F, 16.4F, 21.8F, 13.8F, 24.2F);
-                    path.AddLine(13.8F, 24.2F, 12.2F, 20.2F);
-                    path.AddLine(12.2F, 20.2F, 7.6F, 21.2F);
-                    path.AddLine(7.6F, 21.2F, 9.8F, 16.8F);
-                    path.AddLine(9.8F, 16.8F, 5.8F, 15.8F);
-                    path.CloseFigure();
-                    g.DrawPath(pen, path);
-                    beakBase.AddLines(new[]
-                    {
-                        new SD.PointF(18.0F, 9.6F),
-                        new SD.PointF(16.4F, 12.8F),
-                        new SD.PointF(18.2F, 15.6F)
-                    });
-                    g.DrawPath(pen, beakBase);
-                    beakMid.AddBezier(16.4F, 12.8F, 20.0F, 12.5F, 23.5F, 12.8F, 26.6F, 13.4F);
-                    g.DrawPath(pen, beakMid);
-                    eye.AddPolygon(new[]
-                    {
-                        new SD.PointF(11.4F, 12.0F),
-                        new SD.PointF(14.4F, 11.2F),
-                        new SD.PointF(13.8F, 13.2F),
-                        new SD.PointF(11.8F, 13.2F)
-                    });
-                    g.FillPath(SD.Brushes.White, eye);
+                    DrawMedallion(g, size.Width / 2F, size.Height / 2F, Math.Min(size.Width, size.Height) / 2F, active, warn, true);
                 }
                 IntPtr hIcon = bmp.GetHicon();
                 try { return (SD.Icon)SD.Icon.FromHandle(hIcon).Clone(); }
@@ -3152,13 +3359,13 @@ namespace VpnPanel
 
             protected override void OnRenderItemText(WF.ToolStripItemTextRenderEventArgs e)
             {
-                e.TextColor = e.Item.Enabled ? SD.Color.FromArgb(233, 236, 241) : SD.Color.FromArgb(138, 147, 163);
+                e.TextColor = e.Item.Enabled ? SD.Color.FromArgb(238, 241, 250) : SD.Color.FromArgb(142, 155, 192);
                 base.OnRenderItemText(e);
             }
 
             protected override void OnRenderArrow(WF.ToolStripArrowRenderEventArgs e)
             {
-                e.ArrowColor = SD.Color.FromArgb(138, 147, 163);
+                e.ArrowColor = SD.Color.FromArgb(142, 155, 192);
                 base.OnRenderArrow(e);
             }
 
@@ -3171,7 +3378,7 @@ namespace VpnPanel
                 var smoothing = g.SmoothingMode;
                 g.SmoothingMode = SD.Drawing2D.SmoothingMode.AntiAlias;
                 float x = r.Left + r.Width / 2F, y = r.Top + r.Height / 2F, u = Math.Min(r.Width, r.Height) / 16F;
-                using (var pen = new SD.Pen(SD.Color.FromArgb(155, 109, 255), 2F * u))
+                using (var pen = new SD.Pen(SD.Color.FromArgb(245, 194, 66), 2F * u))
                     g.DrawLines(pen, new[] { new SD.PointF(x - 5 * u, y), new SD.PointF(x - 1.5F * u, y + 3.5F * u), new SD.PointF(x + 5 * u, y - 4 * u) });
                 g.SmoothingMode = smoothing;
             }
@@ -3179,9 +3386,9 @@ namespace VpnPanel
 
         class DarkMenuColors : WF.ProfessionalColorTable
         {
-            static readonly SD.Color Bg = SD.Color.FromArgb(22, 25, 32);
-            static readonly SD.Color Hover = SD.Color.FromArgb(39, 44, 55);
-            static readonly SD.Color Line = SD.Color.FromArgb(38, 43, 53);
+            static readonly SD.Color Bg = SD.Color.FromArgb(14, 20, 44);
+            static readonly SD.Color Hover = SD.Color.FromArgb(32, 45, 90);
+            static readonly SD.Color Line = SD.Color.FromArgb(38, 52, 98);
             public override SD.Color ToolStripDropDownBackground { get { return Bg; } }
             public override SD.Color ImageMarginGradientBegin { get { return Bg; } }
             public override SD.Color ImageMarginGradientMiddle { get { return Bg; } }

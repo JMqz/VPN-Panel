@@ -4,23 +4,24 @@
   <FontFamily x:Key="Font">Segoe UI Variable Text, Segoe UI</FontFamily>
   <FontFamily x:Key="Icons">Segoe Fluent Icons, Segoe MDL2 Assets</FontFamily>
 
-  <!-- Palette -->
-  <SolidColorBrush x:Key="Bg" Color="#0E1014"/>
-  <SolidColorBrush x:Key="Surface" Color="#161920"/>
-  <SolidColorBrush x:Key="Surface2" Color="#1F232C"/>
-  <SolidColorBrush x:Key="Hover" Color="#272C37"/>
-  <SolidColorBrush x:Key="Line" Color="#262B35"/>
-  <SolidColorBrush x:Key="Text" Color="#E9ECF1"/>
-  <SolidColorBrush x:Key="Muted" Color="#8A93A3"/>
-  <SolidColorBrush x:Key="Accent" Color="#9B6DFF"/>
-  <SolidColorBrush x:Key="AccentHover" Color="#B088FF"/>
-  <SolidColorBrush x:Key="AccentSoft" Color="#249B6DFF"/>
-  <SolidColorBrush x:Key="OnAccent" Color="#FFFFFF"/>
-  <SolidColorBrush x:Key="ActiveCard" Color="#1A1528"/>
+  <!-- Palette: Vitral Noturno (Midnight Sapphire, Solar Gold, Ruby & Amethyst) -->
+  <SolidColorBrush x:Key="Bg" Color="#090D1E"/>
+  <SolidColorBrush x:Key="Surface" Color="#111834"/>
+  <SolidColorBrush x:Key="Surface2" Color="#182246"/>
+  <SolidColorBrush x:Key="Hover" Color="#202D5A"/>
+  <SolidColorBrush x:Key="Line" Color="#263462"/>
+  <SolidColorBrush x:Key="Text" Color="#EEF1FA"/>
+  <SolidColorBrush x:Key="Muted" Color="#8E9BC0"/>
+  <SolidColorBrush x:Key="Accent" Color="#F5C242"/>
+  <SolidColorBrush x:Key="AccentHover" Color="#FAD165"/>
+  <SolidColorBrush x:Key="AccentSoft" Color="#2DF5C242"/>
+  <SolidColorBrush x:Key="RubySoft" Color="#2DD02024"/>
+  <SolidColorBrush x:Key="OnAccent" Color="#090D1E"/>
+  <SolidColorBrush x:Key="ActiveCard" Color="#172044"/>
   <SolidColorBrush x:Key="Danger" Color="#F0565B"/>
   <SolidColorBrush x:Key="DangerSoft" Color="#26F0565B"/>
-  <SolidColorBrush x:Key="Warn" Color="#E3A535"/>
-  <SolidColorBrush x:Key="WarnSoft" Color="#1FE3A535"/>
+  <SolidColorBrush x:Key="Warn" Color="#E8A825"/>
+  <SolidColorBrush x:Key="WarnSoft" Color="#24E8A825"/>
 
   <!-- Buttons -->
   <Style x:Key="BtnBase" TargetType="Button">
@@ -216,7 +217,7 @@
             </Grid.ColumnDefinitions>
             <ContentPresenter VerticalAlignment="Center"/>
             <Border x:Name="track" Grid.Column="1" Width="40" Height="22" CornerRadius="11" Margin="12,0,0,0"
-                    Background="{StaticResource Surface2}" BorderBrush="#3A404C" BorderThickness="1" VerticalAlignment="Center">
+                    Background="{StaticResource Surface2}" BorderBrush="#2E3E72" BorderThickness="1" VerticalAlignment="Center">
               <Ellipse x:Name="knob" Width="12" Height="12" Fill="{StaticResource Muted}" HorizontalAlignment="Left" Margin="4,0,0,0"/>
             </Border>
           </Grid>
@@ -250,7 +251,7 @@
             <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
           </Border>
           <ControlTemplate.Triggers>
-            <Trigger Property="IsChecked" Value="True"><Setter TargetName="b" Property="Background" Value="#2C323E"/></Trigger>
+            <Trigger Property="IsChecked" Value="True"><Setter TargetName="b" Property="Background" Value="#223060"/></Trigger>
           </ControlTemplate.Triggers>
         </ControlTemplate>
       </Setter.Value>
@@ -310,7 +311,7 @@
               <Thumb>
                 <Thumb.Template>
                   <ControlTemplate TargetType="Thumb">
-                    <Border CornerRadius="3" Background="#3A404C" Margin="2,0"/>
+                    <Border CornerRadius="3" Background="#2E3E72" Margin="2,0"/>
                   </ControlTemplate>
                 </Thumb.Template>
               </Thumb>

@@ -27,13 +27,7 @@
       <!-- ===== Início: first-run setup ===== -->
       <ScrollViewer x:Name="PageSetup" VerticalScrollBarVisibility="Auto" Visibility="Collapsed">
         <StackPanel Margin="20,12,20,16">
-          <Border Width="64" Height="64" CornerRadius="32" Background="{StaticResource AccentSoft}" HorizontalAlignment="Center">
-            <Canvas Width="32" Height="32" HorizontalAlignment="Center" VerticalAlignment="Center">
-              <Path Stroke="{StaticResource Accent}" StrokeThickness="1.85" StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"
-                    Data="M 5.8,15.8 C 7.2,9.2 12.8,7.2 18.0,9.6 C 21.8,9.8 25.4,11.0 27.2,13.6 C 24.2,14.8 21.0,15.4 18.2,15.6 C 18.0,18.8 16.4,21.8 13.8,24.2 L 12.2,20.2 L 7.6,21.2 L 9.8,16.8 L 5.8,15.8 Z M 18.0,9.6 L 16.4,12.8 L 18.2,15.6 M 16.4,12.8 C 20.0,12.5 23.5,12.8 26.6,13.4"/>
-              <Path Fill="{StaticResource Accent}" Data="M 11.4,12.0 L 14.4,11.2 L 13.8,13.2 L 11.8,13.2 Z"/>
-            </Canvas>
-          </Border>
+          <Image x:Name="SetupMedallion" Width="72" Height="72" HorizontalAlignment="Center" RenderOptions.BitmapScalingMode="HighQuality"/>
           <TextBlock Text="Vamos deixar tudo pronto" FontSize="21" FontWeight="SemiBold" HorizontalAlignment="Center" Margin="0,16,0,6"/>
           <TextBlock Style="{StaticResource Caption}" TextAlignment="Center" FontSize="13" Margin="10,0"
                      Text="São só dois passos. Depois disso, conectar é um clique."/>
@@ -147,23 +141,23 @@
         </Border>
 
         <Grid Grid.Row="1" Width="176" Height="176" Margin="0,22,0,0" HorizontalAlignment="Center">
-          <Ellipse x:Name="Glow" Width="220" Height="220" Margin="-22" IsHitTestVisible="False" Opacity="0" Visibility="Collapsed">
+          <Image x:Name="RaysImg" Width="340" Height="340" Margin="-82" IsHitTestVisible="False" Opacity="0.95"/>
+          <Ellipse x:Name="Glow" Width="228" Height="228" Margin="-26" IsHitTestVisible="False" Opacity="0" Visibility="Collapsed">
             <Ellipse.Fill>
               <RadialGradientBrush>
-                <GradientStop Color="#FF9B6DFF" Offset="0"/>
-                <GradientStop Color="#889B6DFF" Offset="0.45"/>
-                <GradientStop Color="#009B6DFF" Offset="1"/>
+                <GradientStop Color="#FFD22D23" Offset="0"/>
+                <GradientStop Color="#99D22D23" Offset="0.45"/>
+                <GradientStop Color="#00EBAC22" Offset="1"/>
               </RadialGradientBrush>
             </Ellipse.Fill>
           </Ellipse>
-          <Ellipse x:Name="Ring" Stroke="{StaticResource Line}" StrokeThickness="2" Fill="{StaticResource Surface}"/>
-          <Ellipse x:Name="Spinner" Stroke="{StaticResource Warn}" StrokeThickness="3" StrokeDashArray="28 200"
+          <Ellipse x:Name="Ring" Stroke="{StaticResource Line}" StrokeThickness="1.5" Fill="#0C1126"/>
+          <Ellipse x:Name="Spinner" Stroke="{StaticResource Accent}" StrokeThickness="3" StrokeDashArray="28 200"
                    StrokeDashCap="Round" RenderTransformOrigin="0.5,0.5" Visibility="Collapsed">
             <Ellipse.RenderTransform><RotateTransform/></Ellipse.RenderTransform>
           </Ellipse>
-          <Button x:Name="BtnPower" AutomationProperties.Name="Conectar ou desconectar" Style="{StaticResource PowerButton}" Width="132" Height="132">
-            <TextBlock x:Name="PowerGlyph" Text="&#xE7E8;" FontFamily="{StaticResource Icons}" FontSize="46"
-                       Foreground="{StaticResource Muted}"/>
+          <Button x:Name="BtnPower" AutomationProperties.Name="Conectar ou desconectar" Style="{StaticResource PowerButton}" Width="148" Height="148" Background="Transparent">
+            <Image x:Name="MedallionImg" Width="144" Height="144" RenderOptions.BitmapScalingMode="HighQuality"/>
           </Button>
         </Grid>
 
@@ -198,7 +192,7 @@
               <ColumnDefinition Width="*"/>
               <ColumnDefinition Width="Auto"/>
             </Grid.ColumnDefinitions>
-            <Border Width="40" Height="40" CornerRadius="10" Background="{StaticResource AccentSoft}">
+            <Border Width="40" Height="40" CornerRadius="10" Background="{StaticResource RubySoft}">
               <Grid>
                 <TextBlock x:Name="TxtFlag" Text="" FontWeight="Bold" FontSize="13" Foreground="{StaticResource Accent}"
                            HorizontalAlignment="Center" VerticalAlignment="Center"/>
@@ -524,7 +518,7 @@
     </Grid>
 
     <!-- Bottom navigation -->
-    <Border Grid.Row="2" Background="{StaticResource Surface}" BorderBrush="{StaticResource Line}" BorderThickness="0,1,0,0">
+    <Border Grid.Row="2" Background="#0C1126" BorderBrush="{StaticResource Line}" BorderThickness="0,1,0,0">
       <UniformGrid Columns="4" Margin="8,0">
         <RadioButton x:Name="TabHome" Style="{StaticResource Tab}" GroupName="tabs" Tag="&#xE80F;" Content="Início" IsChecked="True"/>
         <RadioButton x:Name="TabServers" Style="{StaticResource Tab}" GroupName="tabs" Tag="&#xE774;" Content="Servidores"/>

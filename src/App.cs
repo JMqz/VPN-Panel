@@ -34,8 +34,8 @@ using System.Windows.Shell;
 [assembly: AssemblyTrademark("VPN Panel")]
 [assembly: ComVisible(false)]
 [assembly: Guid("b7c93e48-8120-4a87-8d2b-65c71d798a21")]
-[assembly: AssemblyVersion("2.8.4.0")]
-[assembly: AssemblyFileVersion("2.8.4.0")]
+[assembly: AssemblyVersion("2.8.5.0")]
+[assembly: AssemblyFileVersion("2.8.5.0")]
 
 namespace VpnPanel
 {
@@ -44,7 +44,7 @@ namespace VpnPanel
         // Same mutex as the old vpn-panel.ps1, so they never run together
         const string MutexName = @"Global\VpnPanelWireSock";
         public const string ShowEventName = @"Global\VpnPanelWireSockShow";
-        public const string Version = "2.8.4";
+        public const string Version = "2.8.5";
 
         [STAThread]
         static void Main(string[] args)
@@ -2360,7 +2360,7 @@ namespace VpnPanel
             w.SourceInitialized += (s, e) =>
             {
                 IntPtr h = new WindowInteropHelper(w).Handle;
-                int dark = 1, round = 2, border = 0x00352B26; // COLORREF is 0x00BBGGRR
+                int dark = 1, round = 2, border = 0x002284B4; // COLORREF is 0x00BBGGRR (warm gold-amber frame)
                 DwmSetWindowAttribute(h, 20, ref dark, 4);    // DWMWA_USE_IMMERSIVE_DARK_MODE
                 DwmSetWindowAttribute(h, 33, ref round, 4);   // DWMWA_WINDOW_CORNER_PREFERENCE = round
                 DwmSetWindowAttribute(h, 34, ref border, 4);  // DWMWA_BORDER_COLOR
