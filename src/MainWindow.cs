@@ -1739,8 +1739,7 @@ namespace VpnPanel
             if (on)
             {
                 medallionImg.Source = medallionOn;
-                ring.Stroke = B("Accent");
-                txtStatus.Foreground = B("Accent");
+                txtStatus.Foreground = B("Text");
                 status = "Conectado";
                 scope = active == null || active.Mode == AppMode.All ? "Todo o tráfego do PC está protegido"
                       : active.Mode == AppMode.Only ? "Só " + JoinPt(active.Apps) + " passa pela VPN"
@@ -1749,7 +1748,6 @@ namespace VpnPanel
             else
             {
                 medallionImg.Source = medallionOff;
-                ring.Stroke = st == Conn.NoResponse ? B("Warn") : B("Line");
                 txtStatus.Foreground = st == Conn.NoResponse ? B("Warn") : B("Text");
                 switch (st)
                 {
@@ -1853,6 +1851,80 @@ namespace VpnPanel
             return sb.ToString();
         }
 
+        readonly Dictionary<string, Color> appColorCache = new Dictionary<string, Color>(StringComparer.OrdinalIgnoreCase);
+
+        void GetAppBrandColors(string appName, ImageSource ico, out Brush bgBrush, out Brush fgBrush)
+        {
+            Color baseColor;
+            if (!appColorCache.TryGetValue(appName, out baseColor))
+            {
+                baseColor = ExtractDominantAppColor(appName, ico);
+                appColorCache[appName] = baseColor;
+            }
+            byte fgR = (byte)Math.Min(255, baseColor.R + (255 - baseColor.R) * 38 / 100);
+            byte fgG = (byte)Math.Min(255, baseColor.G + (255 - baseColor.G) * 38 / 100);
+            byte fgB = (byte)Math.Min(255, baseColor.B + (255 - baseColor.B) * 38 / 100);
+            var bg = new SolidColorBrush(Color.FromArgb(48, baseColor.R, baseColor.G, baseColor.B));
+            var fg = new SolidColorBrush(Color.FromRgb(fgR, fgG, fgB));
+            bg.Freeze();
+            fg.Freeze();
+            bgBrush = bg;
+            fgBrush = fg;
+        }
+
+        static Color ExtractDominantAppColor(string appName, ImageSource ico)
+        {
+            var bmp = ico as BitmapSource;
+            if (bmp != null)
+            {
+                try
+                {
+                    var conv = new FormatConvertedBitmap(bmp, PixelFormats.Bgra32, null, 0);
+                    int w = conv.PixelWidth, h = conv.PixelHeight;
+                    if (w > 0 && h > 0)
+                    {
+                        byte[] px = new byte[w * h * 4];
+                        conv.CopyPixels(px, w * 4, 0);
+                        double rSum = 0, gSum = 0, bSum = 0, wSum = 0;
+                        for (int i = 0; i < px.Length; i += 4)
+                        {
+                            byte b = px[i], g = px[i + 1], r = px[i + 2], a = px[i + 3];
+                            if (a < 100) continue;
+                            int max = Math.Max(r, Math.Max(g, b));
+                            int min = Math.Min(r, Math.Min(g, b));
+                            int delta = max - min;
+                            if (max < 42) continue;
+                            if (min > 215 && delta < 25) continue;
+                            double weight = (delta + 12.0) * (max / 255.0) * (a / 255.0);
+                            rSum += r * weight;
+                            gSum += g * weight;
+                            bSum += b * weight;
+                            wSum += weight;
+                        }
+                        if (wSum > 0)
+                        {
+                            return Color.FromRgb(
+                                (byte)Math.Max(0, Math.Min(255, (int)Math.Round(rSum / wSum))),
+                                (byte)Math.Max(0, Math.Min(255, (int)Math.Round(gSum / wSum))),
+                                (byte)Math.Max(0, Math.Min(255, (int)Math.Round(bSum / wSum)))
+                            );
+                        }
+                    }
+                }
+                catch { }
+            }
+            string lower = (appName ?? "").ToLowerInvariant();
+            if (lower.Contains("discord")) return Color.FromRgb(88, 101, 242);
+            if (lower.Contains("spotify")) return Color.FromRgb(29, 185, 84);
+            if (lower.Contains("steam")) return Color.FromRgb(59, 156, 255);
+            if (lower.Contains("chrome")) return Color.FromRgb(66, 133, 244);
+            if (lower.Contains("firefox")) return Color.FromRgb(255, 113, 57);
+            if (lower.Contains("brave")) return Color.FromRgb(251, 84, 43);
+            if (lower.Contains("opera")) return Color.FromRgb(255, 27, 45);
+            if (lower.Contains("edge")) return Color.FromRgb(0, 120, 215);
+            return Color.FromRgb(147, 112, 245);
+        }
+
         void RenderHomeApps()
         {
             if (homeAppsPanel == null) return;
@@ -1895,13 +1967,15 @@ namespace VpnPanel
             {
                 string appName = apps[i];
                 bool isRunning = IsAppRunning(appName);
+                ImageSource ico = AppIcon(appName, null);
+                Brush appBg, appFg;
+                GetAppBrandColors(appName, ico, out appBg, out appFg);
                 var pill = new Border
                 {
-                    Background = isRunning ? B("AccentSoft") : B("Surface2"),
-                    BorderBrush = isRunning ? B("Accent") : B("Line"),
-                    BorderThickness = new Thickness(1),
+                    Background = isRunning ? appBg : B("Surface2"),
+                    BorderThickness = new Thickness(0),
                     CornerRadius = new CornerRadius(11),
-                    Padding = new Thickness(9, 3, 10, 3),
+                    Padding = new Thickness(10, 4, 11, 4),
                     Margin = new Thickness(3, 2, 3, 2),
                     Opacity = isRunning ? 1.0 : 0.75,
                     Cursor = Cursors.Hand,
@@ -1910,7 +1984,6 @@ namespace VpnPanel
                         : appName + " está fechado no momento · Assim que abrir, passará pela VPN"
                 };
                 var sp = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
-                ImageSource ico = AppIcon(appName, null);
                 if (ico != null)
                 {
                     sp.Children.Add(new Image
@@ -1929,7 +2002,7 @@ namespace VpnPanel
                         Text = mode == AppMode.Only ? "\uE73E" : "\uE711",
                         FontFamily = (FontFamily)Application.Current.FindResource("Icons"),
                         FontSize = 10,
-                        Foreground = isRunning ? B("Accent") : B("Muted"),
+                        Foreground = isRunning ? appFg : B("Muted"),
                         Margin = new Thickness(0, 0, 5, 0),
                         VerticalAlignment = VerticalAlignment.Center
                     });
@@ -1939,14 +2012,14 @@ namespace VpnPanel
                     Text = mode == AppMode.Except ? "Sem " + appName : appName,
                     FontSize = 11.5,
                     FontWeight = FontWeights.SemiBold,
-                    Foreground = isRunning ? B("Accent") : B("Muted"),
+                    Foreground = isRunning ? appFg : B("Muted"),
                     VerticalAlignment = VerticalAlignment.Center
                 });
                 sp.Children.Add(new Ellipse
                 {
                     Width = 5,
                     Height = 5,
-                    Fill = isRunning ? B("Accent") : B("Muted"),
+                    Fill = isRunning ? appFg : B("Muted"),
                     Margin = new Thickness(6, 1, 0, 0),
                     VerticalAlignment = VerticalAlignment.Center
                 });
@@ -1963,10 +2036,9 @@ namespace VpnPanel
                 var morePill = new Border
                 {
                     Background = B("Surface2"),
-                    BorderBrush = B("Line"),
-                    BorderThickness = new Thickness(1),
+                    BorderThickness = new Thickness(0),
                     CornerRadius = new CornerRadius(11),
-                    Padding = new Thickness(7, 3, 7, 3),
+                    Padding = new Thickness(8, 4, 8, 4),
                     Margin = new Thickness(3, 2, 3, 2),
                     Cursor = Cursors.Hand
                 };

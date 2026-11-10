@@ -151,7 +151,7 @@
               </RadialGradientBrush>
             </Ellipse.Fill>
           </Ellipse>
-          <Ellipse x:Name="Ring" Stroke="{StaticResource Line}" StrokeThickness="1.5" Fill="#0C1126"/>
+          <Ellipse x:Name="Ring" StrokeThickness="0" Fill="Transparent"/>
           <Ellipse x:Name="Spinner" Stroke="{StaticResource Accent}" StrokeThickness="3" StrokeDashArray="28 200"
                    StrokeDashCap="Round" RenderTransformOrigin="0.5,0.5" Visibility="Collapsed">
             <Ellipse.RenderTransform><RotateTransform/></Ellipse.RenderTransform>

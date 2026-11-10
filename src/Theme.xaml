@@ -4,24 +4,24 @@
   <FontFamily x:Key="Font">Segoe UI Variable Text, Segoe UI</FontFamily>
   <FontFamily x:Key="Icons">Segoe Fluent Icons, Segoe MDL2 Assets</FontFamily>
 
-  <!-- Palette: Vitral Noturno (Midnight Sapphire, Solar Gold, Ruby & Amethyst) -->
+  <!-- Palette: Vitral Noturno (Midnight Sapphire, Deep Amethyst & Ruby Medallion) -->
   <SolidColorBrush x:Key="Bg" Color="#090D1E"/>
   <SolidColorBrush x:Key="Surface" Color="#111834"/>
   <SolidColorBrush x:Key="Surface2" Color="#182246"/>
-  <SolidColorBrush x:Key="Hover" Color="#202D5A"/>
-  <SolidColorBrush x:Key="Line" Color="#263462"/>
+  <SolidColorBrush x:Key="Hover" Color="#212E5C"/>
+  <SolidColorBrush x:Key="Line" Color="#1F2C56"/>
   <SolidColorBrush x:Key="Text" Color="#EEF1FA"/>
   <SolidColorBrush x:Key="Muted" Color="#8E9BC0"/>
-  <SolidColorBrush x:Key="Accent" Color="#F5C242"/>
-  <SolidColorBrush x:Key="AccentHover" Color="#FAD165"/>
-  <SolidColorBrush x:Key="AccentSoft" Color="#2DF5C242"/>
-  <SolidColorBrush x:Key="RubySoft" Color="#2DD02024"/>
-  <SolidColorBrush x:Key="OnAccent" Color="#090D1E"/>
-  <SolidColorBrush x:Key="ActiveCard" Color="#172044"/>
+  <SolidColorBrush x:Key="Accent" Color="#9370F5"/>
+  <SolidColorBrush x:Key="AccentHover" Color="#A688FA"/>
+  <SolidColorBrush x:Key="AccentSoft" Color="#269370F5"/>
+  <SolidColorBrush x:Key="RubySoft" Color="#246828A8"/>
+  <SolidColorBrush x:Key="OnAccent" Color="#EEF1FA"/>
+  <SolidColorBrush x:Key="ActiveCard" Color="#162044"/>
   <SolidColorBrush x:Key="Danger" Color="#F0565B"/>
   <SolidColorBrush x:Key="DangerSoft" Color="#26F0565B"/>
-  <SolidColorBrush x:Key="Warn" Color="#E8A825"/>
-  <SolidColorBrush x:Key="WarnSoft" Color="#24E8A825"/>
+  <SolidColorBrush x:Key="Warn" Color="#E09B35"/>
+  <SolidColorBrush x:Key="WarnSoft" Color="#22E09B35"/>
 
   <!-- Buttons -->
   <Style x:Key="BtnBase" TargetType="Button">
@@ -57,11 +57,12 @@
   </Style>
 
   <Style x:Key="PrimaryButton" TargetType="Button" BasedOn="{StaticResource BtnBase}">
-    <Setter Property="Background" Value="{StaticResource Accent}"/>
-    <Setter Property="Foreground" Value="{StaticResource OnAccent}"/>
+    <Setter Property="Background" Value="#2A2056"/>
+    <Setter Property="BorderBrush" Value="#433285"/>
+    <Setter Property="Foreground" Value="{StaticResource Text}"/>
     <Setter Property="FontWeight" Value="SemiBold"/>
     <Style.Triggers>
-      <Trigger Property="IsMouseOver" Value="True"><Setter Property="Background" Value="{StaticResource AccentHover}"/></Trigger>
+      <Trigger Property="IsMouseOver" Value="True"><Setter Property="Background" Value="#36296E"/></Trigger>
       <Trigger Property="IsEnabled" Value="False">
         <Setter Property="Background" Value="{StaticResource Surface2}"/>
         <Setter Property="Foreground" Value="{StaticResource Text}"/>
@@ -223,9 +224,9 @@
           </Grid>
           <ControlTemplate.Triggers>
             <Trigger Property="IsChecked" Value="True">
-              <Setter TargetName="track" Property="Background" Value="{StaticResource Accent}"/>
-              <Setter TargetName="track" Property="BorderBrush" Value="{StaticResource Accent}"/>
-              <Setter TargetName="knob" Property="Fill" Value="{StaticResource OnAccent}"/>
+              <Setter TargetName="track" Property="Background" Value="#382870"/>
+              <Setter TargetName="track" Property="BorderBrush" Value="#5840A8"/>
+              <Setter TargetName="knob" Property="Fill" Value="{StaticResource Text}"/>
               <Setter TargetName="knob" Property="Width" Value="14"/>
               <Setter TargetName="knob" Property="Height" Value="14"/>
               <Setter TargetName="knob" Property="HorizontalAlignment" Value="Right"/>
@@ -286,8 +287,8 @@
           </Border>
           <ControlTemplate.Triggers>
             <Trigger Property="IsChecked" Value="True">
-              <Setter TargetName="pill" Property="Background" Value="{StaticResource AccentSoft}"/>
-              <Setter TargetName="icon" Property="Foreground" Value="{StaticResource Accent}"/>
+              <Setter TargetName="pill" Property="Background" Value="#1B264F"/>
+              <Setter TargetName="icon" Property="Foreground" Value="#B49CFF"/>
             </Trigger>
           </ControlTemplate.Triggers>
         </ControlTemplate>
