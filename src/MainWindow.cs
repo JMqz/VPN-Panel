@@ -49,10 +49,13 @@ namespace VpnPanel
         readonly ImageSource medallionOn, medallionOff;
         readonly Canvas raysCanvas;
         readonly Line[] activeRays = new Line[16];
+        readonly ScaleTransform[] activeRayScales = new ScaleTransform[16];
         readonly System.Windows.Shapes.Path traceRingPath, traceMoonPath, traceRavenPath;
         readonly DispatcherTimer medallionAnimTimer;
         DateTime lastAnimTick;
         double animPhaseTime, animFlowPhase, animSpeed, animLineDraw, animGlassFill;
+        bool pendingIgnite;
+        int connectSeq;
         string animMode = "off";
         readonly TextBlock txtStatus, txtScope, txtUptime, txtDown, txtUp;
         readonly WrapPanel homeAppsPanel;
@@ -206,7 +209,7 @@ namespace VpnPanel
             traceRavenPath = E<System.Windows.Shapes.Path>("TraceRavenPath");
             raysCanvas = E<Canvas>("RaysCanvas");
             InitRaysCanvas();
-            medallionAnimTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(22) };
+            medallionAnimTimer = new DispatcherTimer(DispatcherPriority.Render) { Interval = TimeSpan.FromMilliseconds(16) };
             medallionAnimTimer.Tick += (s, e) => TickMedallionAnim();
             E<Image>("SetupMedallion").Source = medallionOn;
             txtStatus = E<TextBlock>("TxtStatus");
@@ -1126,6 +1129,7 @@ namespace VpnPanel
             foreach (FrameworkElement p in new[] { pageSetup, pageHome, pageServers, pageApps, pageOptions })
                 p.Visibility = p == page ? Visibility.Visible : Visibility.Collapsed;
             page.BeginAnimation(UIElement.OpacityProperty, new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(160)));
+            if (page == pageServers && serversDirty) RenderServerList();
             // pings nobody will see: drop what hasn't started (going back to Servidores queues them again)
             if (page != pageServers) Latency.CancelQueued();
             if (page == pageHome) { UpdateTraffic(); if (shown == Conn.On) UpdateUptimeText(); }
@@ -1202,7 +1206,8 @@ namespace VpnPanel
         void Toggle()
         {
             if (reconnectTimer.IsEnabled) { reconnectTimer.Stop(); UpdateState(); return; }
-            if (wasRunning == true || connecting) Disconnect(true); else Connect();
+            if ((wasRunning == true && !userStopped) || connecting) Disconnect(true);
+            else Connect();
         }
 
         void Connect()
@@ -1215,65 +1220,137 @@ namespace VpnPanel
                 ShowPage(HomePage);
                 return;
             }
-            // WireSock's own app (with UI) may already hold a tunnel through its service
-            if (Paths.WireSockServiceRunning)
-            {
-                ShowWindow();
-                if (!Dialogs.Confirm(w, "O WireSock já está conectado",
-                        "O aplicativo do WireSock está com uma conexão ativa. Para conectar pelo VPN Panel, essa conexão precisa ser desligada.",
-                        "Desligar e conectar", false))
-                    return;
-                try { Paths.StopWireSockService(); }
-                catch (Exception ex)
-                {
-                    Dialogs.Info(w, "Não foi possível desligar", "Desconecte pelo aplicativo do WireSock e tente de novo.\n\n" + ex.Message);
-                    return;
-                }
-            }
+            if (connecting || (wasRunning == true && !userStopped)) return;
+
+            string cfgName = active.Name;
+            string wireSockExe = Paths.WireSock;
+            bool netLock = settings.NetworkLock;
             bool updateApps = settings.SharedApps && !SameApps(active, settings.AppsMode, settings.Apps);
             bool updateMtu = (settings.OptimizeMtu && active.Mtu == 0) || (!settings.OptimizeMtu && active.AutoMtu);
-            if (updateApps || updateMtu)
-            {
-                AppMode m = settings.AppsMode != AppMode.All && settings.Apps.Count == 0 ? AppMode.All : settings.AppsMode;
-                int targetMtu = settings.OptimizeMtu ? 1380 : 0;
-                try
-                {
-                    ConfFile.Rewrite(Paths.Conf(active.Name), updateApps, m, m == AppMode.All ? new List<string>() : settings.Apps, updateMtu, targetMtu);
-                    active = ConfigInfo.Read(active.Name);
-                }
-                catch (Exception ex)
-                {
-                    if (updateApps)
-                    {
-                        Dialogs.Info(w, "Não foi possível aplicar os apps", ex.Message);
-                        return;
-                    }
-                }
-            }
+            AppMode targetMode = settings.AppsMode != AppMode.All && settings.Apps.Count == 0 ? AppMode.All : settings.AppsMode;
+            List<string> targetApps = targetMode == AppMode.All ? new List<string>() : new List<string>(settings.Apps);
+            int targetMtu = settings.OptimizeMtu ? 1380 : 0;
+
             CloseLogStream();
-            try { Tunnel.Start(Paths.WireSock, active.Name, settings.NetworkLock); }
-            catch (Exception ex)
-            {
-                ShowError("Não foi possível iniciar o WireSock", ex.Message);
-                return;
-            }
-            settings.AddRecent(active.Name);
-            SaveSettings();
+            userStopped = false;
             connecting = true;
             connectRequested = DateTime.Now;
             StartMonitoring(true);
             appsNeedReconnect = false;
+            settings.AddRecent(cfgName);
             UpdateAppsSaved();
             UpdateState();
             UpdatePollInterval();
+
+            int seq = ++connectSeq;
+            ThreadPool.QueueUserWorkItem(_ =>
+            {
+                if (Paths.WireSockServiceRunning)
+                {
+                    bool confirmed = false;
+                    Exception stopEx = null;
+                    w.Dispatcher.Invoke(new Action(() =>
+                    {
+                        if (seq != connectSeq) return;
+                        ShowWindow();
+                        confirmed = Dialogs.Confirm(w, "O WireSock já está conectado",
+                            "O aplicativo do WireSock está com uma conexão ativa. Para conectar pelo VPN Panel, essa conexão precisa ser desligada.",
+                            "Desligar e conectar", false);
+                    }));
+                    if (seq != connectSeq) return;
+                    if (!confirmed)
+                    {
+                        w.Dispatcher.BeginInvoke(new Action(() =>
+                        {
+                            if (seq != connectSeq) return;
+                            connecting = false;
+                            StopMonitoring();
+                            UpdateState();
+                            UpdatePollInterval();
+                        }));
+                        return;
+                    }
+                    try { Paths.StopWireSockService(); }
+                    catch (Exception ex) { stopEx = ex; }
+                    if (stopEx != null)
+                    {
+                        w.Dispatcher.BeginInvoke(new Action(() =>
+                        {
+                            if (seq != connectSeq) return;
+                            connecting = false;
+                            StopMonitoring();
+                            UpdateState();
+                            UpdatePollInterval();
+                            Dialogs.Info(w, "Não foi possível desligar", "Desconecte pelo aplicativo do WireSock e tente de novo.\n\n" + stopEx.Message);
+                        }));
+                        return;
+                    }
+                }
+
+                if (seq != connectSeq) return;
+                if (updateApps || updateMtu)
+                {
+                    try
+                    {
+                        ConfFile.Rewrite(Paths.Conf(cfgName), updateApps, targetMode, targetApps, updateMtu, targetMtu);
+                        ConfigInfo updated = ConfigInfo.Read(cfgName);
+                        w.Dispatcher.BeginInvoke(new Action(() =>
+                        {
+                            if (active != null && active.Name.Equals(cfgName, StringComparison.OrdinalIgnoreCase))
+                                active = updated;
+                        }));
+                    }
+                    catch (Exception ex)
+                    {
+                        if (updateApps)
+                        {
+                            Exception appEx = ex;
+                            w.Dispatcher.BeginInvoke(new Action(() =>
+                            {
+                                if (seq != connectSeq) return;
+                                connecting = false;
+                                StopMonitoring();
+                                UpdateState();
+                                UpdatePollInterval();
+                                Dialogs.Info(w, "Não foi possível aplicar os apps", appEx.Message);
+                            }));
+                            return;
+                        }
+                    }
+                }
+
+                if (seq != connectSeq) return;
+                try
+                {
+                    Tunnel.Start(wireSockExe, cfgName, netLock);
+                    settings.Save();
+                }
+                catch (Exception ex)
+                {
+                    Exception startEx = ex;
+                    w.Dispatcher.BeginInvoke(new Action(() =>
+                    {
+                        if (seq != connectSeq) return;
+                        connecting = false;
+                        StopMonitoring();
+                        UpdateState();
+                        UpdatePollInterval();
+                        ShowError("Não foi possível iniciar o WireSock", startEx.Message);
+                    }));
+                }
+            });
         }
 
         // byUser: the user asked for it (resets the auto-reconnect budget)
         void Disconnect(bool byUser)
         {
+            connectSeq++;
             userStopped = true;
             connecting = false;
+            wasRunning = false;
+            runningConfig = null;
             StopMonitoring();
+            Traffic.Stop();
             if (byUser) reconnectAttempts = 0;
             bool netLock = settings.NetworkLock;
             UpdateState();
@@ -1667,6 +1744,7 @@ namespace VpnPanel
                     reconnectPending = false;
                     Connect();
                 }
+                if (running && monitoring) ReadHandshakes();
                 RefreshConfigs();
             }
 
@@ -1819,9 +1897,10 @@ namespace VpnPanel
             bool partial = on && active != null && active.Mode == AppMode.Only;
             txtIpNote.Text = partial ? "Este é o IP dos apps fora da VPN. " + JoinPt(active.Apps) + " usa o IP do servidor." : "";
             txtIpNote.Visibility = partial ? Visibility.Visible : Visibility.Collapsed;
-            RenderHomeApps();
             UpdateAppsSaved();
         }
+
+        static readonly Dictionary<string, KeyValuePair<DateTime, bool>> appRunCache = new Dictionary<string, KeyValuePair<DateTime, bool>>(StringComparer.OrdinalIgnoreCase);
 
         static bool IsAppRunning(string appName)
         {
@@ -1829,6 +1908,10 @@ namespace VpnPanel
             string clean = appName.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)
                 ? appName.Substring(0, appName.Length - 4)
                 : appName;
+            DateTime now = DateTime.UtcNow;
+            KeyValuePair<DateTime, bool> cached;
+            if (appRunCache.TryGetValue(clean, out cached) && (now - cached.Key).TotalSeconds < 2.5)
+                return cached.Value;
             try
             {
                 Process[] procs = Process.GetProcessesByName(clean);
@@ -1840,6 +1923,7 @@ namespace VpnPanel
                         try { procs[i].Dispose(); } catch { }
                     }
                 }
+                appRunCache[clean] = new KeyValuePair<DateTime, bool>(now, any);
                 return any;
             }
             catch
@@ -1966,8 +2050,11 @@ namespace VpnPanel
 
             txtScope.Visibility = Visibility.Collapsed;
             if (!WindowShowing) return;
-            lastHomeAppsRunningKey = GetRunningAppsKey(apps);
+            string runKey = (int)mode + "|" + GetRunningAppsKey(apps);
             lastHomeAppsCheck = DateTime.UtcNow;
+            if (runKey == lastHomeAppsRunningKey && homeAppsPanel.Visibility == Visibility.Visible && homeAppsPanel.Children.Count > 0)
+                return;
+            lastHomeAppsRunningKey = runKey;
             homeAppsPanel.Children.Clear();
             int maxPills = 4;
             int count = Math.Min(apps.Count, maxPills);
@@ -2129,8 +2216,8 @@ namespace VpnPanel
             active = settings.Config != null ? ConfigInfo.Read(names.First(n => n.Equals(settings.Config, StringComparison.OrdinalIgnoreCase))) : null;
             if (active != null && active.Endpoint != null && active.Place == null) Geo.Lookup(active.Endpoint, ScheduleGeoRefresh);
 
-            // the cards are only built while someone can see them; hidden, they wait for OnVisibilityChanged
-            if (WindowShowing) RenderServerList();
+            // the cards are only built while someone can see them; hidden, they wait for OnVisibilityChanged or ShowPage
+            if (ServersShowing) RenderServerList();
             else serversDirty = true;
 
             string code = active != null ? active.CountryCode : null;
@@ -3399,12 +3486,14 @@ namespace VpnPanel
             {
                 double ang = (i * 22.5) * Math.PI / 180.0;
                 double cos = Math.Cos(ang), sin = Math.Sin(ang);
+                double x1 = cx + cos * innerR, y1 = cy + sin * innerR;
+                double x2 = cx + cos * maxOuterR, y2 = cy + sin * maxOuterR;
                 var baseLine = new Line
                 {
-                    X1 = cx + cos * innerR,
-                    Y1 = cy + sin * innerR,
-                    X2 = cx + cos * maxOuterR,
-                    Y2 = cy + sin * maxOuterR,
+                    X1 = x1,
+                    Y1 = y1,
+                    X2 = x2,
+                    Y2 = y2,
                     Stroke = baseBrush,
                     StrokeThickness = 1.2
                 };
@@ -3420,19 +3509,22 @@ namespace VpnPanel
                 grad.GradientStops.Add(new GradientStop(Color.FromArgb(0, 55, 90, 195), 1.0));
                 grad.Freeze();
 
+                var scale = new ScaleTransform(0.0, 0.0, x1, y1);
                 var activeLine = new Line
                 {
-                    X1 = cx + cos * innerR,
-                    Y1 = cy + sin * innerR,
-                    X2 = cx + cos * innerR,
-                    Y2 = cy + sin * innerR,
+                    X1 = x1,
+                    Y1 = y1,
+                    X2 = x2,
+                    Y2 = y2,
                     Stroke = grad,
                     StrokeThickness = 1.8,
                     StrokeStartLineCap = PenLineCap.Round,
                     StrokeEndLineCap = PenLineCap.Round,
+                    RenderTransform = scale,
                     Opacity = 0
                 };
                 activeRays[i] = activeLine;
+                activeRayScales[i] = scale;
                 raysCanvas.Children.Add(activeLine);
             }
         }
@@ -3444,6 +3536,7 @@ namespace VpnPanel
             if (!WindowShowing)
             {
                 medallionAnimTimer.Stop();
+                pendingIgnite = false;
                 if (st == Conn.On)
                 {
                     animMode = "on";
@@ -3470,6 +3563,7 @@ namespace VpnPanel
 
             if (busy)
             {
+                pendingIgnite = false;
                 if (animMode != "connecting")
                 {
                     animMode = "connecting";
@@ -3484,8 +3578,19 @@ namespace VpnPanel
             }
             else if (st == Conn.On)
             {
-                if (animMode != "on" && animMode != "igniting")
+                if (animMode == "connecting" && animPhaseTime < 1.15)
                 {
+                    // Let the accelerating line animation finish its smooth ramp before igniting the glass
+                    pendingIgnite = true;
+                    if (!medallionAnimTimer.IsEnabled)
+                    {
+                        lastAnimTick = DateTime.UtcNow;
+                        medallionAnimTimer.Start();
+                    }
+                }
+                else if (animMode != "on" && animMode != "igniting")
+                {
+                    pendingIgnite = false;
                     animMode = "igniting";
                     animPhaseTime = 0;
                     if (animSpeed < 2.4) animSpeed = 2.8;
@@ -3497,6 +3602,7 @@ namespace VpnPanel
                 }
                 else if (animMode == "on")
                 {
+                    pendingIgnite = false;
                     animGlassFill = 1.0;
                     animLineDraw = 1.0;
                     ApplyMedallionVisuals();
@@ -3504,6 +3610,7 @@ namespace VpnPanel
             }
             else
             {
+                pendingIgnite = false;
                 if (animMode != "off" && animMode != "turning_off")
                 {
                     if (animGlassFill > 0.04 || animLineDraw > 0.04)
@@ -3543,21 +3650,29 @@ namespace VpnPanel
                 return;
             }
             DateTime now = DateTime.UtcNow;
-            double dt = Math.Min(0.05, Math.Max(0.001, (now - lastAnimTick).TotalSeconds));
+            double dt = Math.Min(0.04, Math.Max(0.001, (now - lastAnimTick).TotalSeconds));
             lastAnimTick = now;
             animPhaseTime += dt;
 
             if (animMode == "connecting")
             {
-                double rampT = Math.Min(1.0, animPhaseTime / 2.0);
+                double rampDur = pendingIgnite ? 1.15 : 1.8;
+                double rampT = Math.Min(1.0, animPhaseTime / rampDur);
                 animSpeed = 0.8 + (3.8 - 0.8) * (rampT * rampT);
                 animFlowPhase += dt * animSpeed;
-                animLineDraw = Math.Min(1.0, animPhaseTime / 0.45);
+                animLineDraw = Math.Min(1.0, animPhaseTime / 0.35);
                 animGlassFill = 0.14 + 0.08 * Math.Sin(animFlowPhase * 2.0);
+                if (pendingIgnite && animPhaseTime >= 1.15)
+                {
+                    pendingIgnite = false;
+                    animMode = "igniting";
+                    animPhaseTime = 0;
+                    animSpeed = 3.8;
+                }
             }
             else if (animMode == "igniting")
             {
-                double dur = 0.85;
+                double dur = 0.65;
                 double t = Math.Min(1.0, animPhaseTime / dur);
                 double ease = 1.0 - Math.Pow(1.0 - t, 3.0);
                 animSpeed = 3.8 - 2.6 * ease;
@@ -3574,12 +3689,12 @@ namespace VpnPanel
             }
             else if (animMode == "turning_off")
             {
-                double dur = 0.75;
+                double dur = 0.65;
                 double t = Math.Min(1.0, animPhaseTime / dur);
                 double ease = t < 0.5 ? 4.0 * t * t * t : 1.0 - Math.Pow(-2.0 * t + 2.0, 3.0) / 2.0;
                 animSpeed = 2.4 * (1.0 - t) + 0.3;
                 animFlowPhase -= dt * animSpeed;
-                animGlassFill = Math.Max(0.0, 1.0 - Math.Min(1.0, animPhaseTime / 0.45));
+                animGlassFill = Math.Max(0.0, 1.0 - Math.Min(1.0, animPhaseTime / 0.38));
                 animLineDraw = 1.0 - ease;
                 if (animPhaseTime >= dur)
                 {
@@ -3609,64 +3724,56 @@ namespace VpnPanel
             double glowAlpha = Math.Max(gf * 0.55, conn ? (0.12 + 0.25 * speedNorm) : 0.0);
             if (glowAlpha > 0.01)
             {
-                glow.Visibility = Visibility.Visible;
+                if (glow.Visibility != Visibility.Visible) glow.Visibility = Visibility.Visible;
                 glow.Opacity = glowAlpha;
             }
-            else
+            else if (glow.Visibility == Visibility.Visible)
             {
                 glow.Visibility = Visibility.Collapsed;
                 glow.Opacity = 0;
             }
 
             double lineAlpha = conn
-                ? (0.48 + 0.50 * speedNorm)
+                ? (0.52 + 0.48 * speedNorm) * ld
                 : Math.Max(0.0, Math.Min(1.0, (1.0 - gf) * ld * 1.15));
 
             if (lineAlpha > 0.01)
             {
-                double dash = conn ? (12.0 + 38.0 * speedNorm) : (8.0 + 92.0 * ld);
-                double gap = conn ? (40.0 - 18.0 * speedNorm) : 110.0;
-                double off = -animFlowPhase * 36.0;
-
-                traceRingPath.StrokeDashArray = new DoubleCollection { dash, gap };
+                double off = -animFlowPhase * 18.0;
                 traceRingPath.StrokeDashOffset = off;
                 traceRingPath.Opacity = lineAlpha;
 
-                traceMoonPath.StrokeDashArray = new DoubleCollection { dash * 0.85, gap * 0.85 };
                 traceMoonPath.StrokeDashOffset = off * 1.15;
                 traceMoonPath.Opacity = lineAlpha;
 
-                traceRavenPath.StrokeDashArray = new DoubleCollection { dash * 0.75, gap * 0.75 };
                 traceRavenPath.StrokeDashOffset = off * 1.3;
                 traceRavenPath.Opacity = lineAlpha;
             }
-            else
+            else if (traceRingPath.Opacity > 0)
             {
                 traceRingPath.Opacity = 0;
                 traceMoonPath.Opacity = 0;
                 traceRavenPath.Opacity = 0;
             }
 
-            double cx = 140.0, cy = 140.0, innerR = 68.0, maxOuterR = 136.0;
             for (int i = 0; i < 16; i++)
             {
                 Line line = activeRays[i];
-                if (line == null) continue;
+                ScaleTransform scale = activeRayScales[i];
+                if (line == null || scale == null) continue;
                 if (ld <= 0.01)
                 {
-                    line.Opacity = 0;
+                    if (line.Opacity > 0) line.Opacity = 0;
                     continue;
                 }
-                double ang = (i * 22.5) * Math.PI / 180.0;
                 double wave = conn
                     ? (0.35 + 0.65 * (0.5 + 0.5 * Math.Sin(animFlowPhase * 2.2 - i * 0.45)))
                     : ld;
                 double wClamp = Math.Max(0.0, Math.Min(1.0, wave));
-                double curR = innerR + (maxOuterR - innerR) * wClamp;
-                line.X2 = cx + Math.Cos(ang) * curR;
-                line.Y2 = cy + Math.Sin(ang) * curR;
+                scale.ScaleX = wClamp;
+                scale.ScaleY = wClamp;
                 double rayAlpha = conn
-                    ? (0.25 + 0.55 * speedNorm) * wClamp
+                    ? (0.28 + 0.55 * speedNorm) * wClamp
                     : (0.55 - 0.33 * gf) * ld;
                 line.Opacity = Math.Max(0.0, Math.Min(1.0, rayAlpha));
             }

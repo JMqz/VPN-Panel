@@ -34,8 +34,8 @@ using System.Windows.Shell;
 [assembly: AssemblyTrademark("VPN Panel")]
 [assembly: ComVisible(false)]
 [assembly: Guid("b7c93e48-8120-4a87-8d2b-65c71d798a21")]
-[assembly: AssemblyVersion("2.8.8.0")]
-[assembly: AssemblyFileVersion("2.8.8.0")]
+[assembly: AssemblyVersion("2.8.9.0")]
+[assembly: AssemblyFileVersion("2.8.9.0")]
 
 namespace VpnPanel
 {
@@ -44,7 +44,7 @@ namespace VpnPanel
         // Same mutex as the old vpn-panel.ps1, so they never run together
         const string MutexName = @"Global\VpnPanelWireSock";
         public const string ShowEventName = @"Global\VpnPanelWireSockShow";
-        public const string Version = "2.8.8";
+        public const string Version = "2.8.9";
 
         [STAThread]
         static void Main(string[] args)
@@ -1886,6 +1886,7 @@ namespace VpnPanel
     {
         static readonly object stateLock = new object();
         static readonly object stopLock = new object();
+        static int stoppingCount;
         static int currentPid;
         static IntPtr currentHandle;
         static bool lockHint; // the tracked tunnel runs with -network-lock
@@ -1921,6 +1922,7 @@ namespace VpnPanel
         // Holding currentHandle prevents Windows from reusing the PID while open.
         public static bool Active(bool allowScan)
         {
+            if (Interlocked.CompareExchange(ref stoppingCount, 0, 0) > 0) return false;
             lock (stateLock)
             {
                 if (currentPid != 0)
@@ -1979,47 +1981,58 @@ namespace VpnPanel
 
         public static void Start(string exe, string config, bool networkLock)
         {
-            LastStartedConfig = config;
-            LastStartedAt = DateTime.UtcNow;
-            bool v6Stripped;
-            string confPath = ConfFile.EffectivePath(config, out v6Stripped);
-            Ipv6Isolated = v6Stripped;
-            if (v6Stripped) ConfFile.CleanGhostNetwork();
-            // "info" logs handshakes, which is how the app knows the server really answered
-            string cmdLine = "\"" + exe + "\" run -config \"" + confPath + "\" -log-level info";
-            if (networkLock) cmdLine += " -network-lock enabled";
-            // The client writes straight to the log file it inherits, so it keeps running (and logging)
-            // after the panel exits, and any later instance can follow the same file
-            int pid;
-            IntPtr h = ProcUtil.StartLogged(exe, cmdLine, Paths.Log, out pid);
-            Track(pid, h);
-            lockHint = networkLock;
+            lock (stopLock)
+            {
+                LastStartedConfig = config;
+                LastStartedAt = DateTime.UtcNow;
+                bool v6Stripped;
+                string confPath = ConfFile.EffectivePath(config, out v6Stripped);
+                Ipv6Isolated = v6Stripped;
+                if (v6Stripped && ConfFile.HasGhostIpv6()) ConfFile.CleanGhostNetwork();
+                // "info" logs handshakes, which is how the app knows the server really answered
+                string cmdLine = "\"" + exe + "\" run -config \"" + confPath + "\" -log-level info";
+                if (networkLock) cmdLine += " -network-lock enabled";
+                // The client writes straight to the log file it inherits, so it keeps running (and logging)
+                // after the panel exits, and any later instance can follow the same file
+                int pid;
+                IntPtr h = ProcUtil.StartLogged(exe, cmdLine, Paths.Log, out pid);
+                Track(pid, h);
+                lockHint = networkLock;
+            }
         }
 
         // resetLock: the kill switch may be on. A killed client leaves the driver blocking all traffic,
         // so the lock is reset once every client is gone (harmless when no lock is active).
         public static void Stop(bool resetLock)
         {
-            lock (stopLock)
+            Interlocked.Increment(ref stoppingCount);
+            try
             {
-                LastStartedConfig = null;
-                Ipv6Isolated = false;
-                resetLock |= lockHint;
-                lockHint = false;
-                bool stoppedCleanly = false;
-                int pidToStop;
-                lock (stateLock) pidToStop = currentPid;
-                // Ctrl+C first: WireSock then drops the tunnel and releases the lock by itself
-                if (pidToStop != 0) stoppedCleanly = ProcUtil.Shutdown(pidToStop, 3000);
-                ReleaseCurrent();
-                foreach (Process p in Find())
+                lock (stopLock)
                 {
-                    stoppedCleanly = ProcUtil.Shutdown(p.Id, 3000) && stoppedCleanly;
-                    p.Dispose();
+                    LastStartedConfig = null;
+                    Ipv6Isolated = false;
+                    resetLock |= lockHint;
+                    lockHint = false;
+                    bool stoppedCleanly = false;
+                    int pidToStop;
+                    lock (stateLock) pidToStop = currentPid;
+                    ReleaseCurrent();
+                    // Ctrl+C first: WireSock then drops the tunnel and releases the lock by itself
+                    if (pidToStop != 0) stoppedCleanly = ProcUtil.Shutdown(pidToStop, 3000);
+                    foreach (Process p in Find())
+                    {
+                        stoppedCleanly = ProcUtil.Shutdown(p.Id, 3000) && stoppedCleanly;
+                        p.Dispose();
+                    }
+                    ConfFile.DeleteRuntimeCopies();
+                    if (ConfFile.HasGhostIpv6()) ConfFile.CleanGhostNetwork();
+                    if (resetLock && !stoppedCleanly) ResetNetworkLock();
                 }
-                ConfFile.DeleteRuntimeCopies();
-                ConfFile.CleanGhostNetwork();
-                if (resetLock && !stoppedCleanly) ResetNetworkLock();
+            }
+            finally
+            {
+                Interlocked.Decrement(ref stoppingCount);
             }
         }
 
