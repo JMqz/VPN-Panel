@@ -34,8 +34,8 @@ using System.Windows.Shell;
 [assembly: AssemblyTrademark("VPN Panel")]
 [assembly: ComVisible(false)]
 [assembly: Guid("b7c93e48-8120-4a87-8d2b-65c71d798a21")]
-[assembly: AssemblyVersion("2.8.7.0")]
-[assembly: AssemblyFileVersion("2.8.7.0")]
+[assembly: AssemblyVersion("2.8.8.0")]
+[assembly: AssemblyFileVersion("2.8.8.0")]
 
 namespace VpnPanel
 {
@@ -44,7 +44,7 @@ namespace VpnPanel
         // Same mutex as the old vpn-panel.ps1, so they never run together
         const string MutexName = @"Global\VpnPanelWireSock";
         public const string ShowEventName = @"Global\VpnPanelWireSockShow";
-        public const string Version = "2.8.7";
+        public const string Version = "2.8.8";
 
         [STAThread]
         static void Main(string[] args)
@@ -1434,7 +1434,10 @@ namespace VpnPanel
                 try
                 {
                     ServicePointManager.SecurityProtocol = (SecurityProtocolType)3072; // Tls12
-                    var req = (HttpWebRequest)WebRequest.Create(ApiUrl);
+                    var req = (HttpWebRequest)WebRequest.Create(ApiUrl + "?t=" + DateTime.UtcNow.Ticks);
+                    req.CachePolicy = new System.Net.Cache.RequestCachePolicy(System.Net.Cache.RequestCacheLevel.NoCacheNoStore);
+                    req.Headers["Cache-Control"] = "no-cache, no-store";
+                    req.Headers["Pragma"] = "no-cache";
                     req.UserAgent = "vpn-panel";
                     req.Timeout = 10000;
                     using (var resp = req.GetResponse())

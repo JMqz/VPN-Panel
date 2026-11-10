@@ -129,9 +129,18 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $files = Get-ChildItem out/* | ForEach-Object { $_.FullName }
+          $existingCount = 0
+          try {
+            $existingCount = [int](gh release view $env:TAG --json assets --jq '.assets | length' 2>$null)
+          } catch { $existingCount = 0 }
           gh release view $env:TAG *> $null
           if ($LASTEXITCODE -eq 0) {
-            gh release upload $env:TAG @files --clobber
+            if ($env:SIGN -eq 'true' -or $existingCount -eq 0) {
+              gh release upload $env:TAG @files --clobber
+            } else {
+              $zips = Get-ChildItem out/*.zip | ForEach-Object { $_.FullName }
+              if ($zips) { gh release upload $env:TAG @zips --clobber }
+            }
           } else {
             gh release create $env:TAG @files --title "VPN Panel $($env:TAG.TrimStart('v'))" --generate-notes
           }

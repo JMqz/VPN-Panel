@@ -86,7 +86,8 @@ namespace VpnPanel
         readonly Button btnApplyUpdate, btnCheckUpdate, btnResetLock;
         readonly TextBlock txtUpdateFoundTitle, txtUpdateFoundDetail, txtUpdateBadge;
         Updater.ReleaseInfo availableUpdate;
-        bool pendingUpdatePrompt, updateDialogOpen, firstOpenUpdateChecked;
+        bool pendingUpdatePrompt, updateDialogOpen, checkingForUpdates;
+        DateTime lastUpdateCheck = DateTime.MinValue;
         readonly DispatcherTimer updateCheckTimer;
         // Tabs
         readonly RadioButton tabHome, tabServers, tabApps, tabOptions;
@@ -471,7 +472,7 @@ namespace VpnPanel
                 if (availableUpdate != null && availableUpdate.IsNewer)
                 {
                     pendingUpdatePrompt = false;
-                    PromptUpdate(availableUpdate, false);
+                    PromptUpdate(availableUpdate, true);
                 }
             };
 
@@ -496,10 +497,9 @@ namespace VpnPanel
             updateCheckTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(1200) };
             updateCheckTimer.Tick += (s, e) =>
             {
-                updateCheckTimer.Stop();
-                if (settings.CheckUpdates)
+                updateCheckTimer.Interval = TimeSpan.FromMinutes(3);
+                if (settings.CheckUpdates && !updateDialogOpen)
                 {
-                    firstOpenUpdateChecked = true;
                     CheckForUpdates(false);
                 }
             };
@@ -598,12 +598,10 @@ namespace VpnPanel
                 {
                     pendingUpdatePrompt = false;
                     Updater.ReleaseInfo info = availableUpdate;
-                    w.Dispatcher.BeginInvoke(new Action(() => PromptUpdate(info, false)));
+                    w.Dispatcher.BeginInvoke(new Action(() => PromptUpdate(info, true)));
                 }
-                else if (!firstOpenUpdateChecked && settings.CheckUpdates)
+                else if (settings.CheckUpdates && !updateDialogOpen && (DateTime.UtcNow - lastUpdateCheck).TotalSeconds >= 45)
                 {
-                    firstOpenUpdateChecked = true;
-                    updateCheckTimer.Stop();
                     CheckForUpdates(false);
                 }
             }
@@ -796,6 +794,7 @@ namespace VpnPanel
                 hotkeyRegistered = false;
             }
             pollTimer.Stop();
+            if (updateCheckTimer != null) updateCheckTimer.Stop();
             CloseLogStream();
             Geo.Flush();
             if (showWaitReg != null) { try { showWaitReg.Unregister(null); } catch { } }
@@ -821,6 +820,9 @@ namespace VpnPanel
 
         void CheckForUpdates(bool manual)
         {
+            if (checkingForUpdates && !manual) return;
+            checkingForUpdates = true;
+            lastUpdateCheck = DateTime.UtcNow;
             if (manual)
             {
                 txtUpdateBadge.Text = "...";
@@ -828,6 +830,7 @@ namespace VpnPanel
             }
             Updater.Check((info, err) =>
             {
+                checkingForUpdates = false;
                 if (manual) btnCheckUpdate.IsEnabled = true;
                 if (err != null)
                 {
@@ -840,6 +843,15 @@ namespace VpnPanel
                 }
                 if (info != null && info.IsNewer)
                 {
+                    if (string.IsNullOrEmpty(info.DownloadUrl))
+                    {
+                        // Asset still uploading to GitHub release: retry shortly
+                        updateCheckTimer.Stop();
+                        updateCheckTimer.Interval = TimeSpan.FromSeconds(8);
+                        updateCheckTimer.Start();
+                        if (manual) txtUpdateBadge.Text = "Preparando v" + info.Version + "...";
+                        return;
+                    }
                     availableUpdate = info;
                     txtUpdateBadge.Text = info.SameVersionUpdated ? "Nova build" : "v" + info.Version;
                     txtUpdateFoundTitle.Text = info.SameVersionUpdated
@@ -850,7 +862,7 @@ namespace VpnPanel
                     if (manual || WindowShowing)
                     {
                         pendingUpdatePrompt = false;
-                        PromptUpdate(info, false);
+                        PromptUpdate(info, true);
                     }
                     else
                     {
@@ -1000,7 +1012,9 @@ namespace VpnPanel
                     string tempFile = System.IO.Path.Combine(updateDir, "VPN-Panel-Setup-" + Guid.NewGuid().ToString("N").Substring(0, 8) + ".exe");
                     var wc = new WebClient();
                     activeWc = wc;
+                    wc.CachePolicy = new System.Net.Cache.RequestCachePolicy(System.Net.Cache.RequestCacheLevel.NoCacheNoStore);
                     wc.Headers["User-Agent"] = "vpn-panel";
+                    wc.Headers["Cache-Control"] = "no-cache";
                     int lastPct = -1;
                     wc.DownloadProgressChanged += (s, e) =>
                     {
@@ -1061,6 +1075,7 @@ namespace VpnPanel
                             var psi = new ProcessStartInfo(tempFile, installed ? "--silent" : "") { UseShellExecute = true };
                             Process.Start(psi);
                             d.Close();
+                            Quit();
                         }
                         catch (Exception ex)
                         {
