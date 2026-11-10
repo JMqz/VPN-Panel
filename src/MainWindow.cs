@@ -1780,13 +1780,15 @@ namespace VpnPanel
                 apps = active.Apps;
             }
 
-            if (mode == AppMode.All || apps == null || apps.Count == 0)
+            if (!on || mode == AppMode.All || apps == null || apps.Count == 0)
             {
+                txtScope.Visibility = Visibility.Visible;
                 homeAppsPanel.Visibility = Visibility.Collapsed;
                 homeAppsPanel.Children.Clear();
                 return;
             }
 
+            txtScope.Visibility = Visibility.Collapsed;
             if (!WindowShowing) return;
             homeAppsPanel.Children.Clear();
             int maxPills = 4;
@@ -1796,14 +1798,14 @@ namespace VpnPanel
                 string appName = apps[i];
                 var pill = new Border
                 {
-                    Background = on ? B("AccentSoft") : B("Surface2"),
-                    BorderBrush = on ? B("Accent") : B("Line"),
+                    Background = B("AccentSoft"),
+                    BorderBrush = B("Accent"),
                     BorderThickness = new Thickness(1),
                     CornerRadius = new CornerRadius(11),
-                    Padding = new Thickness(8, 3, 9, 3),
+                    Padding = new Thickness(9, 3, 10, 3),
                     Margin = new Thickness(3, 2, 3, 2),
                     Cursor = Cursors.Hand,
-                    ToolTip = on ? "Clique para conferir o roteamento em tempo real" : "Clique para configurar os apps na VPN"
+                    ToolTip = "Clique para conferir quais programas abertos estão passando pela VPN"
                 };
                 var sp = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
                 ImageSource ico = AppIcon(appName, null);
@@ -1814,7 +1816,7 @@ namespace VpnPanel
                         Source = ico,
                         Width = 14,
                         Height = 14,
-                        Margin = new Thickness(0, 0, 5, 0),
+                        Margin = new Thickness(0, 0, 6, 0),
                         VerticalAlignment = VerticalAlignment.Center
                     });
                 }
@@ -1825,17 +1827,20 @@ namespace VpnPanel
                         Text = mode == AppMode.Only ? "\uE73E" : "\uE711",
                         FontFamily = (FontFamily)Application.Current.FindResource("Icons"),
                         FontSize = 10,
-                        Foreground = on ? B("Accent") : B("Muted"),
+                        Foreground = B("Accent"),
                         Margin = new Thickness(0, 0, 5, 0),
                         VerticalAlignment = VerticalAlignment.Center
                     });
                 }
+                string labelText = apps.Count == 1
+                    ? (mode == AppMode.Only ? "Só " + appName + " na VPN" : "Tudo exceto " + appName)
+                    : (mode == AppMode.Except ? "Sem " : "") + appName;
                 sp.Children.Add(new TextBlock
                 {
-                    Text = (mode == AppMode.Except ? "Sem " : "") + appName,
+                    Text = labelText,
                     FontSize = 11.5,
                     FontWeight = FontWeights.SemiBold,
-                    Foreground = on ? B("Accent") : B("Text"),
+                    Foreground = B("Accent"),
                     VerticalAlignment = VerticalAlignment.Center
                 });
                 pill.Child = sp;
@@ -1843,8 +1848,6 @@ namespace VpnPanel
                 {
                     if (shown == Conn.On && active != null)
                         Dialogs.VerifyRouting(w, active, Tunnel.Ipv6Isolated, AppIcon);
-                    else
-                        tabApps.IsChecked = true;
                 };
                 homeAppsPanel.Children.Add(pill);
             }
