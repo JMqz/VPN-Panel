@@ -166,6 +166,18 @@ namespace VpnPanel
             if (desktopShortcut) Shortcut(DesktopLink);
             else if (File.Exists(DesktopLink)) File.Delete(DesktopLink);
 
+            // Update pinned taskbar shortcut if present
+            try
+            {
+                string taskbarDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), @"Microsoft\Internet Explorer\Quick Launch\User Pinned\TaskBar");
+                string taskbarLink = Path.Combine(taskbarDir, AppName + ".lnk");
+                if (File.Exists(taskbarLink)) Shortcut(taskbarLink);
+            }
+            catch { }
+
+            // Invalidate Windows Shell icon cache so taskbar and start menu refresh immediately
+            try { SHChangeNotify(0x08000000 /* SHCNE_ASSOCCHANGED */, 0 /* SHCNF_IDLIST */, IntPtr.Zero, IntPtr.Zero); } catch { }
+
             using (RegistryKey k = Registry.LocalMachine.CreateSubKey(UninstallKey))
             {
                 k.SetValue("DisplayName", AppName);
@@ -202,6 +214,9 @@ namespace VpnPanel
         [System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true, CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
         static extern bool MoveFileEx(string existing, string newName, int flags);
         const int MOVEFILE_DELAY_UNTIL_REBOOT = 0x4;
+
+        [System.Runtime.InteropServices.DllImport("shell32.dll")]
+        static extern void SHChangeNotify(int wEventId, int uFlags, IntPtr dwItem1, IntPtr dwItem2);
 
         // The running exe can't delete itself: everything else goes now, and Windows removes the exe and
         // the folder on the next restart (the documented way, instead of a hidden cmd loop retrying rmdir)

@@ -177,21 +177,21 @@
                 </Canvas.RenderTransform>
                 <!-- Shield Contour -->
                 <Path x:Name="ShieldBg" Fill="{StaticResource Bg}" Stroke="{StaticResource Line}" StrokeThickness="2.2"
-                      Data="M 64,8 C 100,8 114,18 116,30 C 116,84 90,116 64,130 C 38,116 12,84 12,30 C 14,18 28,8 64,8 Z"/>
+                      Data="M 64,10 C 98,10 112,19 114,30 C 114,80 90,108 64,122 C 38,108 14,80 14,30 C 16,19 30,10 64,10 Z"/>
 
                 <!-- Raven Silhouette Inside Shield -->
+                <!-- Tail Feathers (rendered under body so top edge is seamlessly covered) -->
+                <Path x:Name="RavenTail" Fill="{StaticResource Muted}"
+                      Data="M 53,92 C 50,105 49,114 55,116 C 60,120 67,120 72,116 C 77,114 76,105 73,92 Z"/>
                 <!-- Beak -->
                 <Path x:Name="RavenBeak" Fill="{StaticResource Muted}"
                       Data="M 72,40 C 81,40 88,43 92,48 C 92,48 84,49 78,49 C 72,48 72,40 72,40 Z"/>
                 <!-- Head & Crest -->
                 <Path x:Name="RavenHead" Fill="{StaticResource Muted}"
                       Data="M 50,54 C 52,40 60,35 69,37 C 74,38 75,44 72,47 C 72,47 71,52 73,55 C 75,58 66,60 58,60 C 50,60 50,54 50,54 Z"/>
-                <!-- Body & Wings -->
+                <!-- Body & Wings (curved base covers tail top seamlessly) -->
                 <Path x:Name="RavenBody" Fill="{StaticResource Muted}"
                       Data="M 50,54 C 40,65 42,86 56,100 C 60,104 65,104 68,100 C 82,86 84,67 76,58 C 67,56 59,56 50,54 Z"/>
-                <!-- Tail Feathers -->
-                <Path x:Name="RavenTail" Fill="{StaticResource Surface2}"
-                      Data="M 53,92 C 50,105 49,114 55,116 C 60,120 67,120 72,116 C 77,114 76,105 73,92 Z"/>
                 <!-- Eye -->
                 <Ellipse x:Name="RavenEye" Canvas.Left="68" Canvas.Top="41" Width="3" Height="3" Fill="{StaticResource Bg}"/>
               </Canvas>

@@ -2349,14 +2349,14 @@ namespace VpnPanel
             {
                 Style = Dialogs.S("CardButton"),
                 Margin = new Thickness(0, 0, 0, 8),
-                Padding = new Thickness(12, 12, 6, 12),
+                Padding = new Thickness(12, 12, 10, 12),
             };
             AutomationProperties.SetName(card, "Usar " + c.Name);
             if (isActive) { card.BorderBrush = B("Accent"); card.Background = B("ActiveCard"); }
 
             var g = new Grid();
             g.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-            g.ColumnDefinitions.Add(new ColumnDefinition());
+            g.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
             g.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
 
             string code = c.CountryCode;
@@ -2369,9 +2369,9 @@ namespace VpnPanel
                     : (UIElement)new TextBlock { Text = "\uE774", FontFamily = (FontFamily)Application.Current.FindResource("Icons"), FontSize = 16, Foreground = isActive ? B("Accent") : B("Muted"), HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center });
             g.Children.Add(badge);
 
-            var text = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
+            var text = new StackPanel { VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 10, 0), ClipToBounds = true };
             var titleRow = new StackPanel { Orientation = Orientation.Horizontal };
-            titleRow.Children.Add(new TextBlock { Text = c.Name, FontSize = 14, FontWeight = FontWeights.SemiBold, TextTrimming = TextTrimming.CharacterEllipsis, MaxWidth = 150 });
+            titleRow.Children.Add(new TextBlock { Text = c.Name, FontSize = 14, FontWeight = FontWeights.SemiBold, TextTrimming = TextTrimming.CharacterEllipsis, MaxWidth = 100 });
             if (live || isActive)
             {
                 var pill = new Border { Background = live ? B("AccentSoft") : B("Hover"), CornerRadius = new CornerRadius(9), Padding = new Thickness(8, 1, 8, 2), Margin = new Thickness(8, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center };
@@ -2393,6 +2393,7 @@ namespace VpnPanel
                 if (!pingLabels.TryGetValue(c.Endpoint, out same)) pingLabels[c.Endpoint] = same = new List<PingLabel>();
                 same.Add(ping);
                 UpdatePingLabel(ping);
+                ping.Root.Margin = new Thickness(0, 0, 8, 0);
                 actions.Children.Add(ping.Root);
             }
             var rename = new Button { Style = Dialogs.S("IconButton"), Content = "", ToolTip = "Renomear" };
@@ -3460,7 +3461,7 @@ namespace VpnPanel
                 ravenBeak.Fill = B("SecureText");
                 ravenHead.Fill = B("SecureText");
                 ravenBody.Fill = B("SecureText");
-                ravenTail.Fill = B("Secure");
+                ravenTail.Fill = B("SecureText");
                 glow.Visibility = Visibility.Visible;
                 glow.Opacity = 1.0;
             }
@@ -3473,7 +3474,7 @@ namespace VpnPanel
                 ravenBeak.Fill = B("Muted");
                 ravenHead.Fill = B("Muted");
                 ravenBody.Fill = B("Muted");
-                ravenTail.Fill = B("Surface2");
+                ravenTail.Fill = B("Muted");
                 glow.Visibility = Visibility.Collapsed;
                 glow.Opacity = 0;
             }
