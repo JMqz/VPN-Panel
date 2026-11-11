@@ -19,7 +19,7 @@ $csc = "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
 
 Add-Type -AssemblyName System.Drawing
 
-# App icon: Cyber Shield Raven (Modern VPN emblem)
+# App icon: Solid Accent Medallion with Raven Cutout (Mullvad style for maximum clarity across all sizes)
 function New-IconPng([int]$s) {
     $bmp = New-Object Drawing.Bitmap $s, $s
     $g = [Drawing.Graphics]::FromImage($bmp)
@@ -27,50 +27,18 @@ function New-IconPng([int]$s) {
     $g.PixelOffsetMode = 'HighQuality'
     $g.Clear([Drawing.Color]::Transparent)
 
-    if ($s -le 24) {
-        $bgBrush = New-Object Drawing.SolidBrush ([Drawing.Color]::FromArgb(68, 173, 77))
-        $g.FillEllipse($bgBrush, 0.5, 0.5, $s - 1.0, $s - 1.0)
-        $bgBrush.Dispose()
+    $inset = if ($s -le 20) { 0.5 } else { 1.0 }
+    $bgBrush = New-Object Drawing.SolidBrush ([Drawing.Color]::FromArgb(68, 173, 77))
+    $g.FillEllipse($bgBrush, $inset, $inset, $s - 2 * $inset, $s - 2 * $inset)
+    $bgBrush.Dispose()
 
-        $cx = $s / 2.0; $cy = $s / 2.0
-        $g.TranslateTransform($cx - 0.5, $cy)
-        $scale = $s / 115.0
-        $g.ScaleTransform($scale, $scale)
+    $cx = $s / 2.0; $cy = $s / 2.0
+    $g.TranslateTransform($cx - 0.5, $cy)
+    $scale = $s / 115.0
+    $g.ScaleTransform($scale, $scale)
 
-        $ravenBrush = New-Object Drawing.SolidBrush ([Drawing.Color]::FromArgb(16, 28, 44))
-        $tailBrush = $ravenBrush
-    } else {
-        $cx = $s / 2.0
-        $g.TranslateTransform($cx, $cx)
-        $scale = $s / 160.0
-        $g.ScaleTransform($scale, $scale)
-
-        $bgBrush = New-Object Drawing.SolidBrush ([Drawing.Color]::FromArgb(16, 28, 44))
-        $g.FillEllipse($bgBrush, -76, -76, 152, 152)
-
-        $ringWidth = if ($s -le 32) { 5.0 } else { 3.8 }
-        $ringPen = New-Object Drawing.Pen ([Drawing.Color]::FromArgb(68, 173, 77), $ringWidth)
-        $g.DrawEllipse($ringPen, -74, -74, 148, 148)
-
-        # Cyber Shield
-        $shieldBrush = New-Object Drawing.SolidBrush ([Drawing.Color]::FromArgb(23, 38, 56))
-        $shieldPenWidth = if ($s -le 32) { 3.2 } else { 2.4 }
-        $shieldPen = New-Object Drawing.Pen ([Drawing.Color]::FromArgb(68, 173, 77), $shieldPenWidth)
-        $sp = New-Object Drawing.Drawing2D.GraphicsPath
-        $sp.AddBezier(0, -60, 40, -60, 56, -48, 58, -34)
-        $sp.AddBezier(58, -34, 58, 20, 32, 54, 0, 70)
-        $sp.AddBezier(0, 70, -32, 54, -58, 20, -58, -34)
-        $sp.AddBezier(-58, -34, -56, -48, -40, -60, 0, -60)
-        $sp.CloseFigure()
-        $g.FillPath($shieldBrush, $sp)
-        $g.DrawPath($shieldPen, $sp)
-
-        # Raven Silhouette
-        $ravenBrush = New-Object Drawing.SolidBrush ([Drawing.Color]::FromArgb(91, 208, 104))
-        $tailBrush = New-Object Drawing.SolidBrush ([Drawing.Color]::FromArgb(59, 163, 69))
-
-        $bgBrush.Dispose(); $ringPen.Dispose(); $shieldBrush.Dispose(); $shieldPen.Dispose(); $sp.Dispose()
-    }
+    $ravenBrush = New-Object Drawing.SolidBrush ([Drawing.Color]::FromArgb(16, 28, 44))
+    $tailBrush = $ravenBrush
 
     # Beak
     $bp = New-Object Drawing.Drawing2D.GraphicsPath
@@ -104,13 +72,6 @@ function New-IconPng([int]$s) {
     $tp.AddBezier(9, 60, 15, 57, 14, 47, 10, 33)
     $tp.CloseFigure()
     $g.FillPath($tailBrush, $tp)
-
-    # Eye
-    if ($s -ge 32) {
-        $eyeBrush = New-Object Drawing.SolidBrush ([Drawing.Color]::FromArgb(16, 28, 44))
-        $g.FillEllipse($eyeBrush, 4, -24, 4, 4)
-        $eyeBrush.Dispose()
-    }
 
     $ravenBrush.Dispose(); $tailBrush.Dispose()
     $bp.Dispose(); $hp.Dispose(); $wp.Dispose(); $tp.Dispose()

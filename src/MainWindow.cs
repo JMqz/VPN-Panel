@@ -3698,7 +3698,7 @@ namespace VpnPanel
             }
         }
 
-        // Cyber Shield Raven tray icon (matching central emblem with dynamic accent color)
+        // Cyber Shield Raven icon (Mullvad style: solid accent circle with dark navy raven cutout for maximum clarity)
         static SD.Icon TrayIcon(bool active, bool warn, SD.Color? customAccent = null, int? targetSize = null)
         {
             int s = targetSize.HasValue ? targetSize.Value : Math.Max(16, WF.SystemInformation.SmallIconSize.Width);
@@ -3710,106 +3710,41 @@ namespace VpnPanel
                     g.PixelOffsetMode = SD.Drawing2D.PixelOffsetMode.HighQuality;
                     g.Clear(SD.Color.Transparent);
 
-                    if (s <= 24)
+                    float inset = s <= 20 ? 0.5f : 1.0f;
+                    if (warn)
                     {
-                        // Small icon (taskbar tray): Mullvad style for maximum clarity and contrast
-                        if (warn)
-                        {
-                            using (var bg = new SD.SolidBrush(SD.Color.FromArgb(255, 213, 36)))
-                                g.FillEllipse(bg, 0.5f, 0.5f, s - 1f, s - 1f);
+                        using (var bg = new SD.SolidBrush(SD.Color.FromArgb(255, 213, 36)))
+                            g.FillEllipse(bg, inset, inset, s - 2 * inset, s - 2 * inset);
 
-                            float cx = s / 2.0F, cy = s / 2.0F;
-                            g.TranslateTransform(cx - 0.5f, cy);
-                            using (var dark = new SD.SolidBrush(SD.Color.FromArgb(16, 28, 44)))
-                                DrawRavenShape(g, dark, dark, s / 115.0F);
-                        }
-                        else if (active)
-                        {
-                            SD.Color baseCol = customAccent ?? SD.Color.FromArgb(68, 173, 77);
-                            using (var bg = new SD.SolidBrush(baseCol))
-                                g.FillEllipse(bg, 0.5f, 0.5f, s - 1f, s - 1f);
+                        float cx = s / 2.0F, cy = s / 2.0F;
+                        g.TranslateTransform(cx - 0.5f, cy);
+                        using (var dark = new SD.SolidBrush(SD.Color.FromArgb(16, 28, 44)))
+                            DrawRavenShape(g, dark, dark, s / 115.0F);
+                    }
+                    else if (active)
+                    {
+                        SD.Color baseCol = customAccent ?? SD.Color.FromArgb(68, 173, 77);
+                        using (var bg = new SD.SolidBrush(baseCol))
+                            g.FillEllipse(bg, inset, inset, s - 2 * inset, s - 2 * inset);
 
-                            float cx = s / 2.0F, cy = s / 2.0F;
-                            g.TranslateTransform(cx - 0.5f, cy);
-                            using (var dark = new SD.SolidBrush(SD.Color.FromArgb(16, 28, 44)))
-                                DrawRavenShape(g, dark, dark, s / 115.0F);
-                        }
-                        else
-                        {
-                            using (var bg = new SD.SolidBrush(SD.Color.FromArgb(20, 30, 46)))
-                                g.FillEllipse(bg, 0.5f, 0.5f, s - 1f, s - 1f);
-
-                            using (var ringPen = new SD.Pen(SD.Color.FromArgb(60, 75, 96), 1.2f))
-                                g.DrawEllipse(ringPen, 1f, 1f, s - 2f, s - 2f);
-
-                            float cx = s / 2.0F, cy = s / 2.0F;
-                            g.TranslateTransform(cx - 0.5f, cy);
-                            using (var muted = new SD.SolidBrush(SD.Color.FromArgb(120, 138, 162)))
-                                DrawRavenShape(g, muted, muted, s / 125.0F);
-                        }
+                        float cx = s / 2.0F, cy = s / 2.0F;
+                        g.TranslateTransform(cx - 0.5f, cy);
+                        using (var dark = new SD.SolidBrush(SD.Color.FromArgb(16, 28, 44)))
+                            DrawRavenShape(g, dark, dark, s / 115.0F);
                     }
                     else
                     {
-                        // High-res icon (32px, 48px, etc.): Full Cyber Shield Raven Emblem
-                        float cx = s / 2.0F;
-                        g.TranslateTransform(cx, cx);
-                        float scale = s / 160.0F;
-                        g.ScaleTransform(scale, scale);
+                        using (var bg = new SD.SolidBrush(SD.Color.FromArgb(20, 30, 46)))
+                            g.FillEllipse(bg, inset, inset, s - 2 * inset, s - 2 * inset);
 
-                        using (var bgBrush = new SD.SolidBrush(SD.Color.FromArgb(16, 28, 44)))
-                            g.FillEllipse(bgBrush, -76, -76, 152, 152);
+                        float penWidth = s <= 20 ? 1.2f : Math.Max(1.5f, s / 20.0f);
+                        using (var ringPen = new SD.Pen(SD.Color.FromArgb(60, 75, 96), penWidth))
+                            g.DrawEllipse(ringPen, inset, inset, s - 2 * inset, s - 2 * inset);
 
-                        SD.Color ringCol, ravenCol, tailCol;
-                        if (warn)
-                        {
-                            ringCol = SD.Color.FromArgb(255, 213, 36);
-                            ravenCol = SD.Color.FromArgb(255, 225, 80);
-                            tailCol = SD.Color.FromArgb(220, 180, 20);
-                        }
-                        else if (active)
-                        {
-                            SD.Color baseCol = customAccent ?? SD.Color.FromArgb(68, 173, 77);
-                            ringCol = baseCol;
-                            ravenCol = SD.Color.FromArgb(
-                                Math.Min(255, baseCol.R + 25),
-                                Math.Min(255, baseCol.G + 35),
-                                Math.Min(255, baseCol.B + 25)
-                            );
-                            tailCol = SD.Color.FromArgb(
-                                Math.Max(0, baseCol.R - 10),
-                                Math.Max(0, baseCol.G - 10),
-                                Math.Max(0, baseCol.B - 10)
-                            );
-                        }
-                        else
-                        {
-                            ringCol = SD.Color.FromArgb(70, 85, 105);
-                            ravenCol = SD.Color.FromArgb(138, 155, 176);
-                            tailCol = SD.Color.FromArgb(90, 105, 125);
-                        }
-
-                        using (var ringPen = new SD.Pen(ringCol, 4.0F))
-                            g.DrawEllipse(ringPen, -73, -73, 146, 146);
-
-                        // Shield
-                        using (var shieldBrush = new SD.SolidBrush(SD.Color.FromArgb(23, 38, 56)))
-                        using (var shieldPen = new SD.Pen(ringCol, 3.0F))
-                        using (var sp = new SD.Drawing2D.GraphicsPath())
-                        {
-                            sp.AddBezier(0, -60, 40, -60, 56, -48, 58, -34);
-                            sp.AddBezier(58, -34, 58, 20, 32, 54, 0, 70);
-                            sp.AddBezier(0, 70, -32, 54, -58, 20, -58, -34);
-                            sp.AddBezier(-58, -34, -56, -48, -40, -60, 0, -60);
-                            sp.CloseFigure();
-                            g.FillPath(shieldBrush, sp);
-                            g.DrawPath(shieldPen, sp);
-                        }
-
-                        using (var ravenBrush = new SD.SolidBrush(ravenCol))
-                        using (var tailBrush = new SD.SolidBrush(tailCol))
-                        {
-                            DrawRavenShape(g, ravenBrush, tailBrush, 1.0F);
-                        }
+                        float cx = s / 2.0F, cy = s / 2.0F;
+                        g.TranslateTransform(cx - 0.5f, cy);
+                        using (var muted = new SD.SolidBrush(SD.Color.FromArgb(120, 138, 162)))
+                            DrawRavenShape(g, muted, muted, s / 125.0F);
                     }
                 }
                 IntPtr hIcon = bmp.GetHicon();
