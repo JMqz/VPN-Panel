@@ -3709,100 +3709,105 @@ namespace VpnPanel
                     g.PixelOffsetMode = SD.Drawing2D.PixelOffsetMode.HighQuality;
                     g.Clear(SD.Color.Transparent);
 
-                    float cx = s / 2.0F;
-                    g.TranslateTransform(cx, cx);
-                    float scale = s / 160.0F;
-                    g.ScaleTransform(scale, scale);
-
-                    using (var bgBrush = new SD.SolidBrush(SD.Color.FromArgb(16, 28, 44)))
-                        g.FillEllipse(bgBrush, -76, -76, 152, 152);
-
-                    SD.Color ringCol, ravenCol, tailCol;
-                    if (warn)
+                    if (s <= 24)
                     {
-                        ringCol = SD.Color.FromArgb(255, 213, 36);
-                        ravenCol = SD.Color.FromArgb(255, 225, 80);
-                        tailCol = SD.Color.FromArgb(220, 180, 20);
-                    }
-                    else if (active)
-                    {
-                        SD.Color baseCol = customAccent ?? SD.Color.FromArgb(68, 173, 77);
-                        ringCol = baseCol;
-                        ravenCol = SD.Color.FromArgb(
-                            Math.Min(255, baseCol.R + 25),
-                            Math.Min(255, baseCol.G + 35),
-                            Math.Min(255, baseCol.B + 25)
-                        );
-                        tailCol = SD.Color.FromArgb(
-                            Math.Max(0, baseCol.R - 10),
-                            Math.Max(0, baseCol.G - 10),
-                            Math.Max(0, baseCol.B - 10)
-                        );
+                        // Small icon (taskbar tray): Mullvad style for maximum clarity and contrast
+                        if (warn)
+                        {
+                            using (var bg = new SD.SolidBrush(SD.Color.FromArgb(255, 213, 36)))
+                                g.FillEllipse(bg, 0.5f, 0.5f, s - 1f, s - 1f);
+
+                            float cx = s / 2.0F, cy = s / 2.0F;
+                            g.TranslateTransform(cx - 0.5f, cy);
+                            using (var dark = new SD.SolidBrush(SD.Color.FromArgb(16, 28, 44)))
+                                DrawRavenShape(g, dark, dark, s / 115.0F);
+                        }
+                        else if (active)
+                        {
+                            SD.Color baseCol = customAccent ?? SD.Color.FromArgb(68, 173, 77);
+                            using (var bg = new SD.SolidBrush(baseCol))
+                                g.FillEllipse(bg, 0.5f, 0.5f, s - 1f, s - 1f);
+
+                            float cx = s / 2.0F, cy = s / 2.0F;
+                            g.TranslateTransform(cx - 0.5f, cy);
+                            using (var dark = new SD.SolidBrush(SD.Color.FromArgb(16, 28, 44)))
+                                DrawRavenShape(g, dark, dark, s / 115.0F);
+                        }
+                        else
+                        {
+                            using (var bg = new SD.SolidBrush(SD.Color.FromArgb(20, 30, 46)))
+                                g.FillEllipse(bg, 0.5f, 0.5f, s - 1f, s - 1f);
+
+                            using (var ringPen = new SD.Pen(SD.Color.FromArgb(60, 75, 96), 1.2f))
+                                g.DrawEllipse(ringPen, 1f, 1f, s - 2f, s - 2f);
+
+                            float cx = s / 2.0F, cy = s / 2.0F;
+                            g.TranslateTransform(cx - 0.5f, cy);
+                            using (var muted = new SD.SolidBrush(SD.Color.FromArgb(120, 138, 162)))
+                                DrawRavenShape(g, muted, muted, s / 125.0F);
+                        }
                     }
                     else
                     {
-                        ringCol = SD.Color.FromArgb(70, 85, 105);
-                        ravenCol = SD.Color.FromArgb(138, 155, 176);
-                        tailCol = SD.Color.FromArgb(90, 105, 125);
-                    }
+                        // High-res icon (32px, 48px, etc.): Full Cyber Shield Raven Emblem
+                        float cx = s / 2.0F;
+                        g.TranslateTransform(cx, cx);
+                        float scale = s / 160.0F;
+                        g.ScaleTransform(scale, scale);
 
-                    float ringWidth = s <= 32 ? 6.0F : 4.0F;
-                    using (var ringPen = new SD.Pen(ringCol, ringWidth))
-                        g.DrawEllipse(ringPen, -73, -73, 146, 146);
+                        using (var bgBrush = new SD.SolidBrush(SD.Color.FromArgb(16, 28, 44)))
+                            g.FillEllipse(bgBrush, -76, -76, 152, 152);
 
-                    // Shield
-                    using (var shieldBrush = new SD.SolidBrush(SD.Color.FromArgb(23, 38, 56)))
-                    using (var shieldPen = new SD.Pen(ringCol, 3.0F))
-                    using (var sp = new SD.Drawing2D.GraphicsPath())
-                    {
-                        sp.AddBezier(0, -60, 40, -60, 56, -48, 58, -34);
-                        sp.AddBezier(58, -34, 58, 20, 32, 54, 0, 70);
-                        sp.AddBezier(0, 70, -32, 54, -58, 20, -58, -34);
-                        sp.AddBezier(-58, -34, -56, -48, -40, -60, 0, -60);
-                        sp.CloseFigure();
-                        g.FillPath(shieldBrush, sp);
-                        g.DrawPath(shieldPen, sp);
-                    }
-
-                    // Raven
-                    using (var ravenBrush = new SD.SolidBrush(ravenCol))
-                    using (var tailBrush = new SD.SolidBrush(tailCol))
-                    {
-                        using (var bp = new SD.Drawing2D.GraphicsPath())
+                        SD.Color ringCol, ravenCol, tailCol;
+                        if (warn)
                         {
-                            bp.AddBezier(9, -24, 19, -24, 27, -21, 31, -15);
-                            bp.AddBezier(31, -15, 22, -14, 15, -14, 9, -15);
-                            bp.CloseFigure();
-                            g.FillPath(ravenBrush, bp);
+                            ringCol = SD.Color.FromArgb(255, 213, 36);
+                            ravenCol = SD.Color.FromArgb(255, 225, 80);
+                            tailCol = SD.Color.FromArgb(220, 180, 20);
+                        }
+                        else if (active)
+                        {
+                            SD.Color baseCol = customAccent ?? SD.Color.FromArgb(68, 173, 77);
+                            ringCol = baseCol;
+                            ravenCol = SD.Color.FromArgb(
+                                Math.Min(255, baseCol.R + 25),
+                                Math.Min(255, baseCol.G + 35),
+                                Math.Min(255, baseCol.B + 25)
+                            );
+                            tailCol = SD.Color.FromArgb(
+                                Math.Max(0, baseCol.R - 10),
+                                Math.Max(0, baseCol.G - 10),
+                                Math.Max(0, baseCol.B - 10)
+                            );
+                        }
+                        else
+                        {
+                            ringCol = SD.Color.FromArgb(70, 85, 105);
+                            ravenCol = SD.Color.FromArgb(138, 155, 176);
+                            tailCol = SD.Color.FromArgb(90, 105, 125);
                         }
 
-                        using (var hp = new SD.Drawing2D.GraphicsPath())
+                        using (var ringPen = new SD.Pen(ringCol, 4.0F))
+                            g.DrawEllipse(ringPen, -73, -73, 146, 146);
+
+                        // Shield
+                        using (var shieldBrush = new SD.SolidBrush(SD.Color.FromArgb(23, 38, 56)))
+                        using (var shieldPen = new SD.Pen(ringCol, 3.0F))
+                        using (var sp = new SD.Drawing2D.GraphicsPath())
                         {
-                            hp.AddBezier(-16, -10, -14, -26, -5, -31, 5, -29);
-                            hp.AddBezier(5, -29, 11, -28, 12, -21, 9, -17);
-                            hp.AddBezier(9, -17, 8, -12, 10, -8, 12, -5);
-                            hp.AddBezier(12, -5, 2, -4, -7, -4, -16, -10);
-                            hp.CloseFigure();
-                            g.FillPath(ravenBrush, hp);
+                            sp.AddBezier(0, -60, 40, -60, 56, -48, 58, -34);
+                            sp.AddBezier(58, -34, 58, 20, 32, 54, 0, 70);
+                            sp.AddBezier(0, 70, -32, 54, -58, 20, -58, -34);
+                            sp.AddBezier(-58, -34, -56, -48, -40, -60, 0, -60);
+                            sp.CloseFigure();
+                            g.FillPath(shieldBrush, sp);
+                            g.DrawPath(shieldPen, sp);
                         }
 
-                        using (var wp = new SD.Drawing2D.GraphicsPath())
+                        using (var ravenBrush = new SD.SolidBrush(ravenCol))
+                        using (var tailBrush = new SD.SolidBrush(tailCol))
                         {
-                            wp.AddBezier(-16, -10, -28, 2, -26, 26, -9, 41);
-                            wp.AddBezier(-9, 41, -4, 46, 1, 46, 5, 41);
-                            wp.AddBezier(5, 41, 22, 26, 25, 4, 15, -5);
-                            wp.AddBezier(15, -5, 5, -8, -5, -8, -16, -10);
-                            wp.CloseFigure();
-                            g.FillPath(ravenBrush, wp);
-                        }
-
-                        using (var tp = new SD.Drawing2D.GraphicsPath())
-                        {
-                            tp.AddBezier(-12, 33, -15, 47, -17, 57, -10, 60);
-                            tp.AddBezier(-10, 60, -4, 64, 3, 64, 9, 60);
-                            tp.AddBezier(9, 60, 15, 57, 14, 47, 10, 33);
-                            tp.CloseFigure();
-                            g.FillPath(tailBrush, tp);
+                            DrawRavenShape(g, ravenBrush, tailBrush, 1.0F);
                         }
                     }
                 }
@@ -3810,6 +3815,51 @@ namespace VpnPanel
                 try { return (SD.Icon)SD.Icon.FromHandle(hIcon).Clone(); }
                 finally { DestroyIcon(hIcon); }
             }
+        }
+
+        static void DrawRavenShape(SD.Graphics g, SD.Brush bHead, SD.Brush bTail, float scale)
+        {
+            var st = g.Save();
+            if (Math.Abs(scale - 1.0F) > 0.001F)
+                g.ScaleTransform(scale, scale);
+
+            using (var bp = new SD.Drawing2D.GraphicsPath())
+            {
+                bp.AddBezier(9, -24, 19, -24, 27, -21, 31, -15);
+                bp.AddBezier(31, -15, 22, -14, 15, -14, 9, -15);
+                bp.CloseFigure();
+                g.FillPath(bHead, bp);
+            }
+
+            using (var hp = new SD.Drawing2D.GraphicsPath())
+            {
+                hp.AddBezier(-16, -10, -14, -26, -5, -31, 5, -29);
+                hp.AddBezier(5, -29, 11, -28, 12, -21, 9, -17);
+                hp.AddBezier(9, -17, 8, -12, 10, -8, 12, -5);
+                hp.AddBezier(12, -5, 2, -4, -7, -4, -16, -10);
+                hp.CloseFigure();
+                g.FillPath(bHead, hp);
+            }
+
+            using (var wp = new SD.Drawing2D.GraphicsPath())
+            {
+                wp.AddBezier(-16, -10, -28, 2, -26, 26, -9, 41);
+                wp.AddBezier(-9, 41, -4, 46, 1, 46, 5, 41);
+                wp.AddBezier(5, 41, 22, 26, 25, 4, 15, -5);
+                wp.AddBezier(15, -5, 5, -8, -5, -8, -16, -10);
+                wp.CloseFigure();
+                g.FillPath(bHead, wp);
+            }
+
+            using (var tp = new SD.Drawing2D.GraphicsPath())
+            {
+                tp.AddBezier(-12, 33, -15, 47, -17, 57, -10, 60);
+                tp.AddBezier(-10, 60, -4, 64, 3, 64, 9, 60);
+                tp.AddBezier(9, 60, 15, 57, 14, 47, 10, 33);
+                tp.CloseFigure();
+                g.FillPath(bTail, tp);
+            }
+            g.Restore(st);
         }
 
         class DarkMenuRenderer : WF.ToolStripProfessionalRenderer
