@@ -2,25 +2,42 @@
                     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
 
   <FontFamily x:Key="Font">Segoe UI Variable Text, Segoe UI</FontFamily>
+  <FontFamily x:Key="Display">Segoe UI Variable Display, Segoe UI</FontFamily>
+  <FontFamily x:Key="Mono">Cascadia Mono, Consolas, Courier New</FontFamily>
   <FontFamily x:Key="Icons">Segoe Fluent Icons, Segoe MDL2 Assets</FontFamily>
 
-  <!-- Palette: Vitral Noturno (Midnight Sapphire, Deep Amethyst & Ruby Medallion) -->
-  <SolidColorBrush x:Key="Bg" Color="#090D1E"/>
-  <SolidColorBrush x:Key="Surface" Color="#111834"/>
-  <SolidColorBrush x:Key="Surface2" Color="#182246"/>
-  <SolidColorBrush x:Key="Hover" Color="#212E5C"/>
-  <SolidColorBrush x:Key="Line" Color="#1F2C56"/>
-  <SolidColorBrush x:Key="Text" Color="#EEF1FA"/>
-  <SolidColorBrush x:Key="Muted" Color="#8E9BC0"/>
-  <SolidColorBrush x:Key="Accent" Color="#9370F5"/>
-  <SolidColorBrush x:Key="AccentSoft" Color="#269370F5"/>
-  <SolidColorBrush x:Key="RubySoft" Color="#246828A8"/>
-  <SolidColorBrush x:Key="OnAccent" Color="#EEF1FA"/>
-  <SolidColorBrush x:Key="ActiveCard" Color="#162044"/>
-  <SolidColorBrush x:Key="Danger" Color="#F0565B"/>
-  <SolidColorBrush x:Key="DangerSoft" Color="#26F0565B"/>
-  <SolidColorBrush x:Key="Warn" Color="#E09B35"/>
-  <SolidColorBrush x:Key="WarnSoft" Color="#22E09B35"/>
+  <!-- Semantic Status Colors (Mullvad-inspired) -->
+  <Color x:Key="SecureColor">#44AD4D</Color>
+  <Color x:Key="SecureTextColor">#5BD068</Color>
+  <Color x:Key="DangerColor">#E34039</Color>
+  <Color x:Key="WarnColor">#FFD524</Color>
+  <Color x:Key="SecureTint">#1F44AD4D</Color>
+  <Color x:Key="DangerTint">#1AE34039</Color>
+  <Color x:Key="WarnTint">#14FFD524</Color>
+
+  <!-- Palette: Secure Navy -->
+  <SolidColorBrush x:Key="Bg" Color="#101C2C"/>
+  <SolidColorBrush x:Key="NavBg" Color="#0C1724"/>
+  <SolidColorBrush x:Key="Surface" Color="#172638"/>
+  <SolidColorBrush x:Key="Surface2" Color="#1E3047"/>
+  <SolidColorBrush x:Key="Hover" Color="#263B56"/>
+  <SolidColorBrush x:Key="Line" Color="#22364F"/>
+  <SolidColorBrush x:Key="Text" Color="#F2F5F9"/>
+  <SolidColorBrush x:Key="Muted" Color="#8A9BB0"/>
+  <SolidColorBrush x:Key="Primary" Color="#294D73"/>
+  <SolidColorBrush x:Key="PrimaryHover" Color="#31598A"/>
+  <SolidColorBrush x:Key="Focus" Color="#6FA8FF"/>
+  <SolidColorBrush x:Key="Accent" Color="#44AD4D"/>
+  <SolidColorBrush x:Key="AccentSoft" Color="#2444AD4D"/>
+  <SolidColorBrush x:Key="OnAccent" Color="#FFFFFF"/>
+  <SolidColorBrush x:Key="ActiveCard" Color="#172A40"/>
+  <SolidColorBrush x:Key="Secure" Color="#44AD4D"/>
+  <SolidColorBrush x:Key="SecureText" Color="#5BD068"/>
+  <SolidColorBrush x:Key="SecureSoft" Color="#2444AD4D"/>
+  <SolidColorBrush x:Key="Danger" Color="#E34039"/>
+  <SolidColorBrush x:Key="DangerSoft" Color="#26E34039"/>
+  <SolidColorBrush x:Key="Warn" Color="#FFD524"/>
+  <SolidColorBrush x:Key="WarnSoft" Color="#22FFD524"/>
 
   <!-- Buttons -->
   <Style x:Key="BtnBase" TargetType="Button">
@@ -40,7 +57,7 @@
             <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}" VerticalAlignment="Center"/>
           </Border>
           <ControlTemplate.Triggers>
-            <Trigger Property="IsKeyboardFocused" Value="True"><Setter TargetName="b" Property="BorderBrush" Value="{StaticResource Accent}"/></Trigger>
+            <Trigger Property="IsKeyboardFocused" Value="True"><Setter TargetName="b" Property="BorderBrush" Value="{DynamicResource Accent}"/></Trigger>
             <Trigger Property="IsPressed" Value="True"><Setter TargetName="b" Property="Opacity" Value="0.75"/></Trigger>
             <Trigger Property="IsEnabled" Value="False"><Setter TargetName="b" Property="Opacity" Value="0.4"/></Trigger>
           </ControlTemplate.Triggers>
@@ -56,15 +73,15 @@
   </Style>
 
   <Style x:Key="PrimaryButton" TargetType="Button" BasedOn="{StaticResource BtnBase}">
-    <Setter Property="Background" Value="#2A2056"/>
-    <Setter Property="BorderBrush" Value="#433285"/>
+    <Setter Property="Background" Value="{StaticResource Primary}"/>
+    <Setter Property="BorderBrush" Value="#385F8C"/>
     <Setter Property="Foreground" Value="{StaticResource Text}"/>
     <Setter Property="FontWeight" Value="SemiBold"/>
     <Style.Triggers>
-      <Trigger Property="IsMouseOver" Value="True"><Setter Property="Background" Value="#36296E"/></Trigger>
+      <Trigger Property="IsMouseOver" Value="True"><Setter Property="Background" Value="{StaticResource PrimaryHover}"/></Trigger>
       <Trigger Property="IsEnabled" Value="False">
         <Setter Property="Background" Value="{StaticResource Surface2}"/>
-        <Setter Property="Foreground" Value="{StaticResource Text}"/>
+        <Setter Property="Foreground" Value="{StaticResource Muted}"/>
       </Trigger>
     </Style.Triggers>
   </Style>
@@ -118,7 +135,7 @@
             <ContentPresenter HorizontalAlignment="Stretch" VerticalAlignment="Center"/>
           </Border>
           <ControlTemplate.Triggers>
-            <Trigger Property="IsKeyboardFocused" Value="True"><Setter TargetName="b" Property="BorderBrush" Value="{StaticResource Accent}"/></Trigger>
+            <Trigger Property="IsKeyboardFocused" Value="True"><Setter TargetName="b" Property="BorderBrush" Value="{DynamicResource Accent}"/></Trigger>
           </ControlTemplate.Triggers>
         </ControlTemplate>
       </Setter.Value>
@@ -139,7 +156,7 @@
           <Grid>
             <Ellipse Fill="{TemplateBinding Background}"/>
             <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
-            <Ellipse x:Name="h" Width="140" Height="140" Fill="White" Opacity="0" IsHitTestVisible="False"/>
+            <Ellipse x:Name="h" Width="156" Height="156" Fill="White" Opacity="0" IsHitTestVisible="False"/>
           </Grid>
           <ControlTemplate.Triggers>
             <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="h" Property="Opacity" Value="0.05"/></Trigger>
@@ -175,7 +192,7 @@
     <Setter Property="Background" Value="{StaticResource Surface2}"/>
     <Setter Property="BorderBrush" Value="{StaticResource Line}"/>
     <Setter Property="CaretBrush" Value="{StaticResource Text}"/>
-    <Setter Property="SelectionBrush" Value="{StaticResource Accent}"/>
+    <Setter Property="SelectionBrush" Value="{DynamicResource Accent}"/>
     <Setter Property="Padding" Value="10,8"/>
     <Setter Property="FontSize" Value="13"/>
     <Setter Property="Template">
@@ -191,7 +208,7 @@
           </Border>
           <ControlTemplate.Triggers>
             <Trigger Property="Text" Value=""><Setter TargetName="ph" Property="Visibility" Value="Visible"/></Trigger>
-            <Trigger Property="IsKeyboardFocused" Value="True"><Setter TargetName="b" Property="BorderBrush" Value="{StaticResource Accent}"/></Trigger>
+            <Trigger Property="IsKeyboardFocused" Value="True"><Setter TargetName="b" Property="BorderBrush" Value="{DynamicResource Accent}"/></Trigger>
             <Trigger Property="IsEnabled" Value="False"><Setter TargetName="b" Property="Opacity" Value="0.5"/></Trigger>
           </ControlTemplate.Triggers>
         </ControlTemplate>
@@ -214,15 +231,15 @@
             </Grid.ColumnDefinitions>
             <ContentPresenter VerticalAlignment="Center"/>
             <Border x:Name="track" Grid.Column="1" Width="40" Height="22" CornerRadius="11" Margin="12,0,0,0"
-                    Background="{StaticResource Surface2}" BorderBrush="#2E3E72" BorderThickness="1" VerticalAlignment="Center">
+                    Background="{StaticResource Surface2}" BorderBrush="{StaticResource Line}" BorderThickness="1" VerticalAlignment="Center">
               <Ellipse x:Name="knob" Width="12" Height="12" Fill="{StaticResource Muted}" HorizontalAlignment="Left" Margin="4,0,0,0"/>
             </Border>
           </Grid>
           <ControlTemplate.Triggers>
             <Trigger Property="IsChecked" Value="True">
-              <Setter TargetName="track" Property="Background" Value="#382870"/>
-              <Setter TargetName="track" Property="BorderBrush" Value="#5840A8"/>
-              <Setter TargetName="knob" Property="Fill" Value="{StaticResource Text}"/>
+              <Setter TargetName="track" Property="Background" Value="{DynamicResource SecureSoft}"/>
+              <Setter TargetName="track" Property="BorderBrush" Value="{DynamicResource Secure}"/>
+              <Setter TargetName="knob" Property="Fill" Value="{DynamicResource Secure}"/>
               <Setter TargetName="knob" Property="Width" Value="14"/>
               <Setter TargetName="knob" Property="Height" Value="14"/>
               <Setter TargetName="knob" Property="HorizontalAlignment" Value="Right"/>
@@ -248,7 +265,7 @@
             <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
           </Border>
           <ControlTemplate.Triggers>
-            <Trigger Property="IsChecked" Value="True"><Setter TargetName="b" Property="Background" Value="#223060"/></Trigger>
+            <Trigger Property="IsChecked" Value="True"><Setter TargetName="b" Property="Background" Value="{DynamicResource AccentSoft}"/></Trigger>
           </ControlTemplate.Triggers>
         </ControlTemplate>
       </Setter.Value>
@@ -256,7 +273,7 @@
     <Style.Triggers>
       <Trigger Property="IsMouseOver" Value="True"><Setter Property="Foreground" Value="{StaticResource Text}"/></Trigger>
       <Trigger Property="IsChecked" Value="True">
-        <Setter Property="Foreground" Value="{StaticResource Text}"/>
+        <Setter Property="Foreground" Value="{DynamicResource SecureText}"/>
         <Setter Property="FontWeight" Value="SemiBold"/>
       </Trigger>
     </Style.Triggers>
@@ -283,8 +300,8 @@
           </Border>
           <ControlTemplate.Triggers>
             <Trigger Property="IsChecked" Value="True">
-              <Setter TargetName="pill" Property="Background" Value="#1B264F"/>
-              <Setter TargetName="icon" Property="Foreground" Value="#B49CFF"/>
+              <Setter TargetName="pill" Property="Background" Value="{DynamicResource AccentSoft}"/>
+              <Setter TargetName="icon" Property="Foreground" Value="{DynamicResource SecureText}"/>
             </Trigger>
           </ControlTemplate.Triggers>
         </ControlTemplate>
@@ -292,7 +309,7 @@
     </Setter>
     <Style.Triggers>
       <Trigger Property="IsMouseOver" Value="True"><Setter Property="Foreground" Value="{StaticResource Text}"/></Trigger>
-      <Trigger Property="IsChecked" Value="True"><Setter Property="Foreground" Value="{StaticResource Text}"/></Trigger>
+      <Trigger Property="IsChecked" Value="True"><Setter Property="Foreground" Value="{DynamicResource SecureText}"/></Trigger>
     </Style.Triggers>
   </Style>
 
@@ -308,7 +325,7 @@
               <Thumb>
                 <Thumb.Template>
                   <ControlTemplate TargetType="Thumb">
-                    <Border CornerRadius="3" Background="#2E3E72" Margin="2,0"/>
+                    <Border CornerRadius="3" Background="{StaticResource Hover}" Margin="2,0"/>
                   </ControlTemplate>
                 </Thumb.Template>
               </Thumb>

@@ -385,6 +385,7 @@ namespace VpnPanel
         public bool HasSharedAppsKey;
         public bool Hotkey = false;
         public bool CheckUpdates = true;
+        public string AccentColor = "green";
         public string InstalledDigest = "";
         public double WindowLeft = double.NaN;
         public double WindowTop = double.NaN;
@@ -423,6 +424,7 @@ namespace VpnPanel
                 if (d.TryGetValue("skipUac", out v) && v is bool) s.SkipUac = (bool)v;
                 if (d.TryGetValue("hotkey", out v) && v is bool) s.Hotkey = (bool)v;
                 if (d.TryGetValue("checkUpdates", out v) && v is bool) s.CheckUpdates = (bool)v;
+                if (d.TryGetValue("accentColor", out v) && v is string) s.AccentColor = (string)v;
                 if (d.TryGetValue("installedDigest", out v) && v is string) s.InstalledDigest = (string)v;
                 if (d.TryGetValue("windowLeft", out v) && (v is int || v is decimal || v is double)) s.WindowLeft = Convert.ToDouble(v);
                 if (d.TryGetValue("windowTop", out v) && (v is int || v is decimal || v is double)) s.WindowTop = Convert.ToDouble(v);
@@ -466,6 +468,7 @@ namespace VpnPanel
                     { "autoReconnect", AutoReconnect }, { "optimizeMtu", OptimizeMtu }, { "skipUac", SkipUac },
                     { "recent", Recent }, { "sharedApps", SharedApps }, { "appsMode", AppsMode.ToString() },
                     { "apps", Apps }, { "hotkey", Hotkey }, { "checkUpdates", CheckUpdates },
+                    { "accentColor", AccentColor ?? "green" },
                     { "installedDigest", InstalledDigest ?? "" },
                 };
                 if (!double.IsNaN(WindowLeft) && !double.IsNaN(WindowTop))

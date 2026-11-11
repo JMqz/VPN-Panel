@@ -1,4 +1,4 @@
-// Main window (MainWindow.xaml) and tray icon: connection state, the four tabs and their actions.
+﻿// Main window (MainWindow.xaml) and tray icon: connection state, the four tabs and their actions.
 
 using System;
 using System.Collections.Generic;
@@ -11,6 +11,7 @@ using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Web.Script.Serialization;
+using Microsoft.Win32;
 using System.Windows;
 using System.Windows.Automation;
 using System.Windows.Controls;
@@ -45,19 +46,12 @@ namespace VpnPanel
         readonly Border errorBanner;
         readonly TextBlock txtErrTitle, txtErrDetail;
         readonly Button btnPower;
-        readonly Image medallionImg, medallionOffImg;
-        readonly ImageSource medallionOn, medallionOff;
-        readonly Canvas raysCanvas;
-        readonly Line[] activeRays = new Line[16];
-        readonly ScaleTransform[] activeRayScales = new ScaleTransform[16];
-        readonly System.Windows.Shapes.Path traceRingPath, traceMoonPath, traceRavenPath;
-        readonly DispatcherTimer medallionAnimTimer;
-        DateTime lastAnimTick;
-        double animPhaseTime, animFlowPhase, animSpeed, animLineDraw, animGlassFill;
-        bool pendingIgnite;
+        readonly Ellipse statusRing, statusSpinner;
+        readonly RotateTransform spinnerRotate;
+        readonly System.Windows.Shapes.Path shieldBg, ravenBeak, ravenHead, ravenBody, ravenTail;
+        readonly Ellipse ravenEye;
         int connectSeq;
-        string animMode = "off";
-        readonly TextBlock txtStatus, txtScope, txtUptime, txtDown, txtUp;
+        readonly TextBlock txtStatus, txtScope, txtUptime, txtDown, txtUp, txtDownIcon;
         readonly WrapPanel homeAppsPanel;
         readonly FrameworkElement trafficRow;
         int downKey = -1, upKey = -1, totalKey = -1; // what the traffic labels show now (see SpeedKey)
@@ -65,6 +59,7 @@ namespace VpnPanel
         readonly TextBlock txtFlag, txtFlagGlobe, txtSrvName, txtSrvDetail, txtSrvPing;
         readonly TextBlock txtIp, txtLoc, txtOrg, txtIpNote;
         readonly Ellipse glow;
+        readonly Image titleIcon;
         // Servidores
         readonly StackPanel serverList, emptyServers;
         readonly TextBox txtServerSearch;
@@ -101,7 +96,10 @@ namespace VpnPanel
         readonly WF.ToolStripSeparator miServersEnd;
         readonly List<WF.ToolStripItem> miRecent = new List<WF.ToolStripItem>();
         string trayMenuKey; // what the server items were built from (see UpdateTrayServers)
-        readonly SD.Icon trayOn, trayOff, trayWarn;
+        SD.Icon trayOn, trayOff, trayWarn;
+        readonly WrapPanel panelColorPresets;
+        ColorThemePreset activePreset;
+        static SD.Color activeGdiAccent = SD.Color.FromArgb(68, 173, 77);
         readonly DispatcherTimer pollTimer, ipTimer, reconnectTimer, geoDebounce;
         readonly Dictionary<string, ImageSource> iconCache = new Dictionary<string, ImageSource>(StringComparer.OrdinalIgnoreCase);
         readonly Dictionary<string, DateTime> iconMisses = new Dictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
@@ -178,7 +176,8 @@ namespace VpnPanel
             Chrome.Apply(w, 44);
             var frames = new IconBitmapDecoder(Res.Open("vpn.ico"), BitmapCreateOptions.None, BitmapCacheOption.OnLoad).Frames;
             w.Icon = frames.First(f => f.PixelWidth == 32);
-            E<Image>("TitleIcon").Source = frames.First(f => f.PixelWidth == 32);
+            titleIcon = E<Image>("TitleIcon");
+            titleIcon.Source = frames.First(f => f.PixelWidth == 32);
 
             pageSetup = E<FrameworkElement>("PageSetup");
             step1Actions = E<FrameworkElement>("Step1Actions");
@@ -196,26 +195,22 @@ namespace VpnPanel
             txtErrTitle = E<TextBlock>("TxtErrTitle");
             txtErrDetail = E<TextBlock>("TxtErrDetail");
             btnPower = E<Button>("BtnPower");
-            medallionOn = RenderMedallionBitmap(288, true, false, false);
-            medallionOff = RenderMedallionBitmap(288, false, false, false);
-            medallionOffImg = E<Image>("MedallionOffImg");
-            medallionOffImg.Source = medallionOff;
-            medallionImg = E<Image>("MedallionImg");
-            medallionImg.Source = medallionOn;
-            medallionImg.Opacity = 0;
-            traceRingPath = E<System.Windows.Shapes.Path>("TraceRingPath");
-            traceMoonPath = E<System.Windows.Shapes.Path>("TraceMoonPath");
-            traceRavenPath = E<System.Windows.Shapes.Path>("TraceRavenPath");
-            raysCanvas = E<Canvas>("RaysCanvas");
-            InitRaysCanvas();
-            medallionAnimTimer = new DispatcherTimer(DispatcherPriority.Render) { Interval = TimeSpan.FromMilliseconds(16) };
-            medallionAnimTimer.Tick += (s, e) => TickMedallionAnim();
-            E<Image>("SetupMedallion").Source = medallionOn;
+            statusRing = E<Ellipse>("StatusRing");
+            statusSpinner = E<Ellipse>("StatusSpinner");
+            spinnerRotate = (RotateTransform)statusSpinner.RenderTransform;
+            shieldBg = E<System.Windows.Shapes.Path>("ShieldBg");
+            ravenBeak = E<System.Windows.Shapes.Path>("RavenBeak");
+            ravenHead = E<System.Windows.Shapes.Path>("RavenHead");
+            ravenBody = E<System.Windows.Shapes.Path>("RavenBody");
+            ravenTail = E<System.Windows.Shapes.Path>("RavenTail");
+            ravenEye = E<Ellipse>("RavenEye");
+            E<Image>("SetupMedallion").Source = w.Icon;
             txtStatus = E<TextBlock>("TxtStatus");
             txtScope = E<TextBlock>("TxtScope");
             homeAppsPanel = E<WrapPanel>("HomeAppsPanel");
             txtUptime = E<TextBlock>("TxtUptime");
             txtDown = E<TextBlock>("TxtDown");
+            txtDownIcon = E<TextBlock>("TxtDownIcon");
             txtUp = E<TextBlock>("TxtUp");
             trafficRow = E<FrameworkElement>("TrafficRow");
             trafficRow.ToolTipOpening += (s, e) =>
@@ -267,6 +262,7 @@ namespace VpnPanel
             txtUpdateFoundTitle = E<TextBlock>("TxtUpdateFoundTitle");
             txtUpdateFoundDetail = E<TextBlock>("TxtUpdateFoundDetail");
             txtUpdateBadge = E<TextBlock>("TxtUpdateBadge");
+            panelColorPresets = E<WrapPanel>("PanelColorPresets");
             tabHome = E<RadioButton>("TabHome");
             tabServers = E<RadioButton>("TabServers");
             tabApps = E<RadioButton>("TabApps");
@@ -436,10 +432,9 @@ namespace VpnPanel
             E<Button>("BtnDataDir").Click += (s, e) => Process.Start("explorer.exe", "\"" + Paths.Data + "\"");
             E<Button>("BtnQuit").Click += (s, e) => Quit();
 
-            // tray
-            trayOn = TrayIcon(true, false);
-            trayOff = TrayIcon(false, false);
-            trayWarn = TrayIcon(true, true);
+            // theme & tray
+            InitColorSwatches();
+            ApplyAccentColor(settings.AccentColor ?? "green", false);
             var renderer = new DarkMenuRenderer();
             var menu = trayMenu = new WF.ContextMenuStrip { Renderer = renderer, ShowImageMargin = false, ShowCheckMargin = true, Font = new SD.Font("Segoe UI", 9.5F) };
             miStatus = (WF.ToolStripMenuItem)menu.Items.Add("Desconectado");
@@ -592,7 +587,7 @@ namespace VpnPanel
                 if (wasRunning == true) UpdateUptimeText();
                 if (ipDirty) CheckIp();
                 MeasureLatency(false);
-                SyncMedallionAnimState(shown);
+                ApplyPowerButtonVisuals(shown, false);
                 if (pendingUpdatePrompt && availableUpdate != null && availableUpdate.IsNewer)
                 {
                     pendingUpdatePrompt = false;
@@ -606,7 +601,6 @@ namespace VpnPanel
             }
             else
             {
-                if (medallionAnimTimer != null) medallionAnimTimer.Stop();
                 if (glow.Visibility == Visibility.Visible)
                 {
                     glow.BeginAnimation(UIElement.OpacityProperty, null);
@@ -1859,8 +1853,8 @@ namespace VpnPanel
             string status, scope;
             if (on)
             {
-                txtStatus.Foreground = B("Text");
-                status = "Conectado";
+                txtStatus.Foreground = B("SecureText");
+                status = "CONECTADO";
                 scope = active == null || active.Mode == AppMode.All ? "Todo o tráfego do PC está protegido"
                       : active.Mode == AppMode.Only ? "Só " + JoinPt(active.Apps) + " passa pela VPN"
                       : "Tudo passa pela VPN, exceto " + JoinPt(active.Apps);
@@ -1905,7 +1899,7 @@ namespace VpnPanel
             miStatus.Text = on && active != null ? "Conectado · " + active.Name : status;
             miToggle.Text = stoppable ? "Desconectar" : "Conectar";
 
-            SyncMedallionAnimState(st);
+            ApplyPowerButtonVisuals(st, busy);
             bool partial = on && active != null && active.Mode == AppMode.Only;
             txtIpNote.Text = partial ? "Este é o IP dos apps fora da VPN. " + JoinPt(active.Apps) + " usa o IP do servidor." : "";
             txtIpNote.Visibility = partial ? Visibility.Visible : Visibility.Collapsed;
@@ -1957,7 +1951,7 @@ namespace VpnPanel
         void GetAppBrandColors(string appName, ImageSource ico, out Brush bgBrush, out Brush fgBrush)
         {
             Color baseColor;
-            if (!appColorCache.TryGetValue(appName, out baseColor))
+            if (!appColorCache.TryGetValue(appName, out baseColor) || (baseColor.R == 147 && baseColor.G == 112 && baseColor.B == 245 && ico != null))
             {
                 baseColor = ExtractDominantAppColor(appName, ico);
                 appColorCache[appName] = baseColor;
@@ -1965,7 +1959,7 @@ namespace VpnPanel
             byte fgR = (byte)Math.Min(255, baseColor.R + (255 - baseColor.R) * 38 / 100);
             byte fgG = (byte)Math.Min(255, baseColor.G + (255 - baseColor.G) * 38 / 100);
             byte fgB = (byte)Math.Min(255, baseColor.B + (255 - baseColor.B) * 38 / 100);
-            var bg = new SolidColorBrush(Color.FromArgb(48, baseColor.R, baseColor.G, baseColor.B));
+            var bg = new SolidColorBrush(Color.FromArgb(50, baseColor.R, baseColor.G, baseColor.B));
             var fg = new SolidColorBrush(Color.FromRgb(fgR, fgG, fgB));
             bg.Freeze();
             fg.Freeze();
@@ -2076,12 +2070,12 @@ namespace VpnPanel
                 GetAppBrandColors(appName, ico, out appBg, out appFg);
                 var pill = new Border
                 {
-                    Background = isRunning ? appBg : B("Surface2"),
+                    Background = appBg,
                     BorderThickness = new Thickness(0),
                     CornerRadius = new CornerRadius(11),
                     Padding = new Thickness(10, 4, 11, 4),
                     Margin = new Thickness(3, 2, 3, 2),
-                    Opacity = isRunning ? 1.0 : 0.75,
+                    Opacity = isRunning ? 1.0 : 0.88,
                     Cursor = Cursors.Hand,
                     ToolTip = isRunning
                         ? appName + " está aberto e ativo · Clique para conferir o roteamento em tempo real"
@@ -2101,29 +2095,45 @@ namespace VpnPanel
                 }
                 else
                 {
-                    sp.Children.Add(new TextBlock
+                    var avatar = new Border
                     {
-                        Text = mode == AppMode.Only ? "\uE73E" : "\uE711",
-                        FontFamily = (FontFamily)Application.Current.FindResource("Icons"),
-                        FontSize = 10,
-                        Foreground = isRunning ? appFg : B("Muted"),
-                        Margin = new Thickness(0, 0, 5, 0),
+                        Width = 14,
+                        Height = 14,
+                        CornerRadius = new CornerRadius(7),
+                        Background = appFg,
+                        Margin = new Thickness(0, 0, 6, 0),
                         VerticalAlignment = VerticalAlignment.Center
-                    });
+                    };
+                    string letter = string.IsNullOrEmpty(appName) ? "A" : appName.Substring(0, 1).ToUpperInvariant();
+                    avatar.Child = new TextBlock
+                    {
+                        Text = letter,
+                        FontSize = 9,
+                        FontWeight = FontWeights.Bold,
+                        Foreground = B("Bg"),
+                        HorizontalAlignment = HorizontalAlignment.Center,
+                        VerticalAlignment = VerticalAlignment.Center
+                    };
+                    sp.Children.Add(avatar);
                 }
                 sp.Children.Add(new TextBlock
                 {
                     Text = mode == AppMode.Except ? "Sem " + appName : appName,
                     FontSize = 11.5,
                     FontWeight = FontWeights.SemiBold,
-                    Foreground = isRunning ? appFg : B("Muted"),
+                    Foreground = appFg,
                     VerticalAlignment = VerticalAlignment.Center
                 });
+                var fgColor = ((SolidColorBrush)appFg).Color;
+                var dotBrush = isRunning
+                    ? appFg
+                    : new SolidColorBrush(Color.FromArgb(130, fgColor.R, fgColor.G, fgColor.B));
+                if (!isRunning) dotBrush.Freeze();
                 sp.Children.Add(new Ellipse
                 {
                     Width = 5,
                     Height = 5,
-                    Fill = isRunning ? appFg : B("Muted"),
+                    Fill = dotBrush,
                     Margin = new Thickness(6, 1, 0, 0),
                     VerticalAlignment = VerticalAlignment.Center
                 });
@@ -2230,8 +2240,9 @@ namespace VpnPanel
             else serversDirty = true;
 
             string code = active != null ? active.CountryCode : null;
-            txtFlag.Text = code ?? "";
-            txtFlagGlobe.Visibility = code != null ? Visibility.Collapsed : Visibility.Visible;
+            string flag = CountryFlag(code);
+            txtFlag.Text = flag ?? (code ?? "");
+            txtFlagGlobe.Visibility = (code != null || flag != null) ? Visibility.Collapsed : Visibility.Visible;
             txtSrvName.Text = active != null ? active.Name : "—";
             txtSrvDetail.Text = active == null ? "" : ServerDetail(active);
             txtSrvDetail.ToolTip = active == null ? null : active.Detail;
@@ -2349,10 +2360,13 @@ namespace VpnPanel
             g.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
 
             string code = c.CountryCode;
+            string flag = CountryFlag(code);
             var badge = new Border { Width = 40, Height = 40, CornerRadius = new CornerRadius(10), Background = isActive ? B("AccentSoft") : B("Surface2"), VerticalAlignment = VerticalAlignment.Top, Margin = new Thickness(0, 0, 12, 0) };
-            badge.Child = code != null
-                ? new TextBlock { Text = code, FontWeight = FontWeights.Bold, Foreground = isActive ? B("Accent") : B("Text"), HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center }
-                : new TextBlock { Text = "", FontFamily = (FontFamily)Application.Current.FindResource("Icons"), FontSize = 16, Foreground = isActive ? B("Accent") : B("Muted"), HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
+            badge.Child = flag != null
+                ? (UIElement)new TextBlock { Text = flag, FontSize = 17, FontFamily = new FontFamily("Segoe UI Emoji, Segoe UI"), HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center }
+                : (code != null
+                    ? (UIElement)new TextBlock { Text = code, FontWeight = FontWeights.Bold, Foreground = isActive ? B("Accent") : B("Text"), HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center }
+                    : (UIElement)new TextBlock { Text = "\uE774", FontFamily = (FontFamily)Application.Current.FindResource("Icons"), FontSize = 16, Foreground = isActive ? B("Accent") : B("Muted"), HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center });
             g.Children.Add(badge);
 
             var text = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
@@ -3115,7 +3129,156 @@ namespace VpnPanel
             AddApps(ofd.FileNames.Select(f => System.IO.Path.GetFileNameWithoutExtension(f)));
         }
 
-        // Icon of a program, from the given path or from a running process with that name
+        static readonly Dictionary<string, string> appPathCache = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+        static string FindAppExeOrLnk(string name)
+        {
+            if (string.IsNullOrEmpty(name)) return null;
+            string cached;
+            if (appPathCache.TryGetValue(name, out cached))
+            {
+                if (cached != null && File.Exists(cached)) return cached;
+                if (cached == null) return null;
+            }
+
+            string exeName = name.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) ? name : name + ".exe";
+            string nameOnly = System.IO.Path.GetFileNameWithoutExtension(name);
+
+            // 1. Check running processes
+            try
+            {
+                foreach (Process p in Process.GetProcessesByName(nameOnly))
+                {
+                    try
+                    {
+                        string pPath = ProcUtil.ExePath(p.Id);
+                        if (!string.IsNullOrEmpty(pPath) && File.Exists(pPath))
+                        {
+                            appPathCache[name] = pPath;
+                            return pPath;
+                        }
+                    }
+                    catch { }
+                    finally { p.Dispose(); }
+                }
+            }
+            catch { }
+
+            // 2. Registry App Paths (HKCU & HKLM, 64-bit and 32-bit views)
+            try
+            {
+                string[] regTargets = { exeName, nameOnly };
+                foreach (var view in new[] { RegistryView.Registry64, RegistryView.Registry32 })
+                {
+                    foreach (var hive in new[] { RegistryHive.CurrentUser, RegistryHive.LocalMachine })
+                    {
+                        try
+                        {
+                            using (var baseKey = RegistryKey.OpenBaseKey(hive, view))
+                            {
+                                foreach (var target in regTargets)
+                                {
+                                    using (var key = baseKey.OpenSubKey(@"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\" + target))
+                                    {
+                                        if (key != null)
+                                        {
+                                            object val = key.GetValue(null);
+                                            if (val != null)
+                                            {
+                                                string p = val.ToString().Trim('\"');
+                                                if (File.Exists(p))
+                                                {
+                                                    appPathCache[name] = p;
+                                                    return p;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        catch { }
+                    }
+                }
+            }
+            catch { }
+
+            // 3. Known folder locations
+            try
+            {
+                string localApp = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+                string progFiles = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
+                string progFilesX86 = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86);
+                string roaming = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+
+                string[] directChecks = {
+                    System.IO.Path.Combine(localApp, nameOnly, exeName),
+                    System.IO.Path.Combine(localApp, "Programs", nameOnly, exeName),
+                    System.IO.Path.Combine(progFiles, nameOnly, exeName),
+                    System.IO.Path.Combine(progFilesX86, nameOnly, exeName),
+                    System.IO.Path.Combine(roaming, nameOnly, exeName),
+                    System.IO.Path.Combine(progFiles, "Google", "Chrome", "Application", "chrome.exe"),
+                    System.IO.Path.Combine(progFilesX86, "Google", "Chrome", "Application", "chrome.exe"),
+                    System.IO.Path.Combine(progFiles, "BraveSoftware", "Brave-Browser", "Application", "brave.exe"),
+                    System.IO.Path.Combine(progFiles, "Mozilla Firefox", "firefox.exe"),
+                    System.IO.Path.Combine(progFilesX86, "Steam", "steam.exe")
+                };
+                foreach (string p in directChecks)
+                {
+                    if (File.Exists(p))
+                    {
+                        if (System.IO.Path.GetFileNameWithoutExtension(p).Equals(nameOnly, StringComparison.OrdinalIgnoreCase))
+                        {
+                            appPathCache[name] = p;
+                            return p;
+                        }
+                    }
+                }
+
+                // Squirrel / Electron app-* directories (Discord, Slack, Teams, etc.)
+                string appDir = System.IO.Path.Combine(localApp, nameOnly);
+                if (Directory.Exists(appDir))
+                {
+                    foreach (string sub in Directory.GetDirectories(appDir, "app-*"))
+                    {
+                        string candidate = System.IO.Path.Combine(sub, exeName);
+                        if (File.Exists(candidate))
+                        {
+                            appPathCache[name] = candidate;
+                            return candidate;
+                        }
+                    }
+                }
+            }
+            catch { }
+
+            // 4. Start Menu shortcuts (.lnk files)
+            try
+            {
+                string[] startMenuDirs = {
+                    Environment.GetFolderPath(Environment.SpecialFolder.Programs),
+                    Environment.GetFolderPath(Environment.SpecialFolder.CommonPrograms)
+                };
+                foreach (string smDir in startMenuDirs)
+                {
+                    if (Directory.Exists(smDir))
+                    {
+                        string[] lnks = Directory.GetFiles(smDir, nameOnly + "*.lnk", SearchOption.AllDirectories);
+                        if (lnks.Length > 0 && File.Exists(lnks[0]))
+                        {
+                            appPathCache[name] = lnks[0];
+                            return lnks[0];
+                        }
+                    }
+                }
+            }
+            catch { }
+
+            appPathCache[name] = null;
+            return null;
+        }
+
+        // Icon of a program, from the given path or from a running process or on-disk executable
         ImageSource AppIcon(string name, string path)
         {
             ImageSource cached;
@@ -3123,20 +3286,16 @@ namespace VpnPanel
             if (path == null)
             {
                 DateTime miss;
-                if (iconMisses.TryGetValue(name, out miss) && (DateTime.UtcNow - miss).TotalSeconds < 60) return null;
+                if (iconMisses.TryGetValue(name, out miss) && (DateTime.UtcNow - miss).TotalSeconds < 30) return null;
             }
             ImageSource img = null;
             try
             {
                 if (path == null)
                 {
-                    foreach (Process p in Process.GetProcessesByName(name))
-                    {
-                        try { if (path == null) path = ProcUtil.ExePath(p.Id); } catch { }
-                        p.Dispose();
-                    }
+                    path = FindAppExeOrLnk(name);
                 }
-                if (path != null)
+                if (path != null && File.Exists(path))
                 {
                     using (SD.Icon icon = SD.Icon.ExtractAssociatedIcon(path))
                     {
@@ -3273,531 +3432,379 @@ namespace VpnPanel
             return item;
         }
 
-        static void DrawMedallion(SD.Graphics g, float cx, float cy, float radius, bool active, bool warn, bool iconMode)
+        void ApplyPowerButtonVisuals(Conn st, bool isBusy)
         {
-            SD.Drawing2D.GraphicsState state = g.Save();
-            g.TranslateTransform(cx, cy);
-            float scale = radius / 64F;
-            g.ScaleTransform(scale, scale);
+            if (statusRing == null || shieldBg == null) return;
 
-            float leadWidth = iconMode ? 2.2F : 1.8F;
-            using (var leadPen = new SD.Pen(SD.Color.FromArgb(10, 10, 14), leadWidth))
+            if (isBusy || st == Conn.Connecting)
             {
-                leadPen.StartCap = SD.Drawing2D.LineCap.Round;
-                leadPen.EndCap = SD.Drawing2D.LineCap.Round;
-                leadPen.LineJoin = SD.Drawing2D.LineJoin.Round;
-
-                // 1. Outer Gold Frame Ring (-62 to +62)
-                SD.Color gold1 = active ? SD.Color.FromArgb(235, 172, 34) : SD.Color.FromArgb(52, 62, 92);
-                SD.Color gold2 = active ? SD.Color.FromArgb(247, 212, 104) : SD.Color.FromArgb(68, 80, 115);
-                using (var ringBrush = new SD.Drawing2D.LinearGradientBrush(new SD.PointF(-62F, -62F), new SD.PointF(62F, 62F), gold2, gold1))
-                {
-                    g.FillEllipse(ringBrush, -62F, -62F, 124F, 124F);
-                    g.DrawEllipse(leadPen, -62F, -62F, 124F, 124F);
-                }
-
-                // Stained-glass segment lines on the gold ring
-                if (!iconMode)
-                {
-                    int[] angles = new[] { 25, 70, 115, 155, 205, 250, 295, 335 };
-                    for (int i = 0; i < angles.Length; i++)
-                    {
-                        double rad = angles[i] * Math.PI / 180.0;
-                        float x1 = (float)(Math.Cos(rad) * 51.0);
-                        float y1 = (float)(Math.Sin(rad) * 51.0);
-                        float x2 = (float)(Math.Cos(rad) * 62.0);
-                        float y2 = (float)(Math.Sin(rad) * 62.0);
-                        g.DrawLine(leadPen, x1, y1, x2, y2);
-                    }
-                }
-
-                // 2. Inner Crimson / Ruby Core (-51 to +51)
-                SD.Color rubyLight = warn ? SD.Color.FromArgb(215, 140, 28)
-                                   : active ? SD.Color.FromArgb(208, 32, 36) : SD.Color.FromArgb(24, 31, 56);
-                SD.Color rubyDark = warn ? SD.Color.FromArgb(135, 75, 14)
-                                  : active ? SD.Color.FromArgb(115, 12, 18) : SD.Color.FromArgb(15, 20, 38);
-                using (var coreBrush = new SD.Drawing2D.LinearGradientBrush(new SD.PointF(-40F, -51F), new SD.PointF(40F, 51F), rubyLight, rubyDark))
-                {
-                    g.FillEllipse(coreBrush, -51F, -51F, 102F, 102F);
-                }
-
-                // Subtle stained glass facet arcs inside ruby core
-                if (!iconMode)
-                {
-                    SD.Color facetColor = active ? SD.Color.FromArgb(70, 80, 5, 10) : SD.Color.FromArgb(50, 10, 14, 28);
-                    using (var facetBrush = new SD.SolidBrush(facetColor))
-                    {
-                        g.FillPie(facetBrush, -51F, -51F, 102F, 102F, -30F, 50F);
-                        g.FillPie(facetBrush, -51F, -51F, 102F, 102F, 110F, 55F);
-                        g.FillPie(facetBrush, -51F, -51F, 102F, 102F, 215F, 45F);
-                    }
-                    g.DrawLine(leadPen, -49F, -12F, 49F, 15F);
-                    g.DrawLine(leadPen, -36F, 36F, 38F, -34F);
-                }
-                g.DrawEllipse(leadPen, -51F, -51F, 102F, 102F);
-
-                // 3. Pale Gold Crescent Moon behind the Raven
-                SD.Color moonColor = active ? SD.Color.FromArgb(250, 238, 145) : SD.Color.FromArgb(95, 108, 142);
-                using (var moonBrush = new SD.SolidBrush(moonColor))
-                using (var moonPath = new SD.Drawing2D.GraphicsPath())
-                {
-                    moonPath.AddBezier(4F, -38F, -38F, -34F, -44F, 22F, 6F, 26F);
-                    moonPath.AddBezier(6F, 26F, 22F, 26F, 34F, 16F, 40F, 4F);
-                    moonPath.AddBezier(40F, 4F, 26F, 14F, 4F, 14F, -12F, 2F);
-                    moonPath.AddBezier(-12F, 2F, -26F, -10F, -18F, -30F, 4F, -38F);
-                    moonPath.CloseFigure();
-                    g.FillPath(moonBrush, moonPath);
-                    g.DrawPath(leadPen, moonPath);
-
-                    // 5. Small 4-pointed diamond star at bottom-left (-29, 19)
-                    if (!iconMode)
-                    {
-                        var dPts = new[]
-                        {
-                            new SD.PointF(-29F, 11F),
-                            new SD.PointF(-26F, 17F),
-                            new SD.PointF(-21F, 19F),
-                            new SD.PointF(-26F, 21F),
-                            new SD.PointF(-29F, 27F),
-                            new SD.PointF(-32F, 21F),
-                            new SD.PointF(-37F, 19F),
-                            new SD.PointF(-32F, 17F)
-                        };
-                        g.FillPolygon(moonBrush, dPts);
-                        g.DrawPolygon(leadPen, dPts);
-                    }
-                }
-
-                // 4. 8-Pointed Gold Star near beak (around x=29, y=-11)
-                SD.Color starColor = active ? SD.Color.FromArgb(255, 234, 90) : SD.Color.FromArgb(110, 122, 155);
-                using (var starBrush = new SD.SolidBrush(starColor))
-                {
-                    var starPts = new SD.PointF[16];
-                    float sx = 29F, sy = -11F;
-                    for (int i = 0; i < 16; i++)
-                    {
-                        double a = (i * 22.5 - 90.0) * Math.PI / 180.0;
-                        double r = (i % 2 == 0) ? ((i % 4 == 0) ? 11.5 : 8.0) : 3.4;
-                        starPts[i] = new SD.PointF(sx + (float)(Math.Cos(a) * r), sy + (float)(Math.Sin(a) * r));
-                    }
-                    g.FillPolygon(starBrush, starPts);
-                    g.DrawPolygon(leadPen, starPts);
-                }
-
-                // 6. The Raven (Back view with head turned in right profile)
-                // 6a. Tail feathers at bottom (dark teal + black)
-                SD.Color tailColor = active ? SD.Color.FromArgb(18, 92, 104) : SD.Color.FromArgb(28, 45, 62);
-                using (var tailBrush = new SD.SolidBrush(tailColor))
-                using (var tailPath = new SD.Drawing2D.GraphicsPath())
-                {
-                    tailPath.AddBezier(-10F, 22F, -13F, 34F, -14F, 43F, -8F, 45F);
-                    tailPath.AddBezier(-8F, 45F, -3F, 49F, 3F, 49F, 8F, 45F);
-                    tailPath.AddBezier(8F, 45F, 13F, 43F, 12F, 34F, 9F, 22F);
-                    tailPath.CloseFigure();
-                    g.FillPath(tailBrush, tailPath);
-                    g.DrawPath(leadPen, tailPath);
-                    g.DrawLine(leadPen, -4F, 25F, -5F, 46F);
-                    g.DrawLine(leadPen, 0F, 26F, 0F, 48F);
-                    g.DrawLine(leadPen, 4F, 25F, 5F, 46F);
-                }
-
-                // 6b. Beak (slate gray, pointing right above the star)
-                SD.Color beakColor = active ? SD.Color.FromArgb(68, 72, 84) : SD.Color.FromArgb(65, 72, 92);
-                using (var beakBrush = new SD.SolidBrush(beakColor))
-                using (var beakPath = new SD.Drawing2D.GraphicsPath())
-                {
-                    beakPath.AddBezier(9F, -28F, 17F, -28F, 23F, -25F, 26F, -21F);
-                    beakPath.AddBezier(26F, -21F, 19F, -20F, 14F, -20F, 9F, -21F);
-                    beakPath.CloseFigure();
-                    g.FillPath(beakBrush, beakPath);
-                    g.DrawPath(leadPen, beakPath);
-                }
-
-                // 6c. Head & Neck (deep obsidian black)
-                using (var headBrush = new SD.SolidBrush(SD.Color.FromArgb(14, 14, 20)))
-                using (var headPath = new SD.Drawing2D.GraphicsPath())
-                {
-                    headPath.AddBezier(-12F, -14F, -10F, -27F, -2F, -32F, 6F, -30F);
-                    headPath.AddBezier(6F, -30F, 11F, -29F, 12F, -23F, 9F, -20F);
-                    headPath.AddBezier(9F, -20F, 8F, -16F, 10F, -13F, 12F, -10F);
-                    headPath.AddBezier(12F, -10F, 4F, -8F, -4F, -8F, -12F, -14F);
-                    headPath.CloseFigure();
-                    g.FillPath(headBrush, headPath);
-                    g.DrawPath(leadPen, headPath);
-                }
-
-                // 6d. Back & Folded Wings (deep amethyst purple + dark plum feathers)
-                SD.Color wpColor = active ? SD.Color.FromArgb(74, 22, 118) : SD.Color.FromArgb(36, 30, 64);
-                SD.Color wplColor = active ? SD.Color.FromArgb(104, 20, 64) : SD.Color.FromArgb(44, 32, 58);
-                using (var wingPurple = new SD.SolidBrush(wpColor))
-                using (var wingPlum = new SD.SolidBrush(wplColor))
-                using (var bodyPath = new SD.Drawing2D.GraphicsPath())
-                using (var mantle = new SD.Drawing2D.GraphicsPath())
-                {
-                    bodyPath.AddBezier(-12F, -14F, -22F, -4F, -20F, 16F, -6F, 29F);
-                    bodyPath.AddBezier(-6F, 29F, -2F, 33F, 2F, 33F, 5F, 29F);
-                    bodyPath.AddBezier(5F, 29F, 18F, 16F, 20F, -2F, 12F, -10F);
-                    bodyPath.AddBezier(12F, -10F, 4F, -12F, -4F, -12F, -12F, -14F);
-                    bodyPath.CloseFigure();
-                    g.FillPath(wingPurple, bodyPath);
-
-                    // Upper mantle (dark crimson-plum V-shape under neck)
-                    mantle.AddBezier(-12F, -14F, -4F, -12F, 4F, -12F, 12F, -10F);
-                    mantle.AddBezier(12F, -10F, 6F, -3F, 2F, -1F, 0F, 2F);
-                    mantle.AddBezier(0F, 2F, -3F, -1F, -7F, -4F, -12F, -14F);
-                    mantle.CloseFigure();
-                    g.FillPath(wingPlum, mantle);
-                    g.DrawPath(leadPen, mantle);
-
-                    // Wing feather scallops (stained-glass lead lines)
-                    g.DrawPath(leadPen, bodyPath);
-                    g.DrawBezier(leadPen, 0F, 2F, -2F, 14F, -1F, 22F, 2F, 31F);
-                    g.DrawBezier(leadPen, -15F, -2F, -10F, 6F, -4F, 8F, -1F, 4F);
-                    g.DrawBezier(leadPen, 15F, 0F, 10F, 7F, 4F, 9F, 0F, 4F);
-                    g.DrawBezier(leadPen, -14F, 10F, -9F, 17F, -4F, 18F, -1F, 13F);
-                    g.DrawBezier(leadPen, 14F, 11F, 9F, 18F, 4F, 19F, 0F, 14F);
-                }
-            }
-            g.Restore(state);
-        }
-
-        static ImageSource RenderMedallionBitmap(int px, bool active, bool warn, bool iconMode)
-        {
-            using (var bmp = new SD.Bitmap(px, px))
-            using (SD.Graphics g = SD.Graphics.FromImage(bmp))
-            {
-                g.SmoothingMode = SD.Drawing2D.SmoothingMode.AntiAlias;
-                float half = px / 2F;
-                DrawMedallion(g, half, half, half, active, warn, iconMode);
-                using (var ms = new MemoryStream())
-                {
-                    bmp.Save(ms, SD.Imaging.ImageFormat.Png);
-                    ms.Position = 0;
-                    var bi = new BitmapImage();
-                    bi.BeginInit();
-                    bi.CacheOption = BitmapCacheOption.OnLoad;
-                    bi.StreamSource = ms;
-                    bi.EndInit();
-                    bi.Freeze();
-                    return bi;
-                }
-            }
-        }
-
-        void InitRaysCanvas()
-        {
-            if (raysCanvas == null) return;
-            raysCanvas.Children.Clear();
-            var baseBrush = new SolidColorBrush(Color.FromArgb(64, 38, 56, 115));
-            baseBrush.Freeze();
-            double cx = 140.0, cy = 140.0, innerR = 68.0, maxOuterR = 136.0;
-            var grad = new LinearGradientBrush
-            {
-                StartPoint = new Point(0, 0),
-                EndPoint = new Point(1, 1)
-            };
-            grad.GradientStops.Add(new GradientStop(Color.FromArgb(235, 247, 212, 104), 0.0));
-            grad.GradientStops.Add(new GradientStop(Color.FromArgb(180, 208, 32, 36), 0.55));
-            grad.GradientStops.Add(new GradientStop(Color.FromArgb(0, 55, 90, 195), 1.0));
-            grad.Freeze();
-
-            for (int i = 0; i < 16; i++)
-            {
-                double ang = (i * 22.5) * Math.PI / 180.0;
-                double cos = Math.Cos(ang), sin = Math.Sin(ang);
-                double x1 = cx + cos * innerR, y1 = cy + sin * innerR;
-                double x2 = cx + cos * maxOuterR, y2 = cy + sin * maxOuterR;
-                var baseLine = new Line
-                {
-                    X1 = x1,
-                    Y1 = y1,
-                    X2 = x2,
-                    Y2 = y2,
-                    Stroke = baseBrush,
-                    StrokeThickness = 1.2
-                };
-                raysCanvas.Children.Add(baseLine);
-
-                var scale = new ScaleTransform(0.0, 0.0, x1, y1);
-                var activeLine = new Line
-                {
-                    X1 = x1,
-                    Y1 = y1,
-                    X2 = x2,
-                    Y2 = y2,
-                    Stroke = grad,
-                    StrokeThickness = 1.8,
-                    StrokeStartLineCap = PenLineCap.Round,
-                    StrokeEndLineCap = PenLineCap.Round,
-                    RenderTransform = scale,
-                    Opacity = 0
-                };
-                activeRays[i] = activeLine;
-                activeRayScales[i] = scale;
-                raysCanvas.Children.Add(activeLine);
-            }
-        }
-
-        void SyncMedallionAnimState(Conn st)
-        {
-            if (medallionImg == null || medallionAnimTimer == null) return;
-            bool busy = st == Conn.Connecting || st == Conn.Retrying || st == Conn.NoResponse;
-            if (!WindowShowing)
-            {
-                medallionAnimTimer.Stop();
-                pendingIgnite = false;
-                if (st == Conn.On)
-                {
-                    animMode = "on";
-                    animGlassFill = 1.0;
-                    animLineDraw = 1.0;
-                    animSpeed = 1.0;
-                }
-                else if (busy)
-                {
-                    animMode = "connecting";
-                    animGlassFill = 0.15;
-                    animLineDraw = 1.0;
-                }
-                else
-                {
-                    animMode = "off";
-                    animGlassFill = 0.0;
-                    animLineDraw = 0.0;
-                    animSpeed = 0.0;
-                }
-                ApplyMedallionVisuals();
-                return;
-            }
-
-            if (busy)
-            {
-                pendingIgnite = false;
-                if (animMode != "connecting")
-                {
-                    animMode = "connecting";
-                    animPhaseTime = 0;
-                    animSpeed = 0.8;
-                }
-                if (!medallionAnimTimer.IsEnabled)
-                {
-                    lastAnimTick = DateTime.UtcNow;
-                    medallionAnimTimer.Start();
-                }
+                statusRing.Stroke = B("Line");
+                statusSpinner.Visibility = Visibility.Visible;
+                shieldBg.Stroke = B("Warn");
+                ravenBeak.Fill = B("Warn");
+                ravenHead.Fill = B("Warn");
+                ravenBody.Fill = B("Warn");
+                ravenTail.Fill = B("Warn");
+                glow.Visibility = Visibility.Visible;
+                glow.Opacity = 0.5;
+                if (spinnerRotate != null)
+                    spinnerRotate.BeginAnimation(RotateTransform.AngleProperty,
+                        new DoubleAnimation(0, 360, TimeSpan.FromMilliseconds(1100)) { RepeatBehavior = RepeatBehavior.Forever });
             }
             else if (st == Conn.On)
             {
-                if (animMode == "connecting" && animPhaseTime < 1.15)
-                {
-                    // Let the accelerating line animation finish its smooth ramp before igniting the glass
-                    pendingIgnite = true;
-                    if (!medallionAnimTimer.IsEnabled)
-                    {
-                        lastAnimTick = DateTime.UtcNow;
-                        medallionAnimTimer.Start();
-                    }
-                }
-                else if (animMode != "on" && animMode != "igniting")
-                {
-                    pendingIgnite = false;
-                    animMode = "igniting";
-                    animPhaseTime = 0;
-                    if (animSpeed < 2.4) animSpeed = 2.8;
-                    if (!medallionAnimTimer.IsEnabled)
-                    {
-                        lastAnimTick = DateTime.UtcNow;
-                        medallionAnimTimer.Start();
-                    }
-                }
-                else if (animMode == "on")
-                {
-                    pendingIgnite = false;
-                    animGlassFill = 1.0;
-                    animLineDraw = 1.0;
-                    ApplyMedallionVisuals();
-                }
+                if (spinnerRotate != null) spinnerRotate.BeginAnimation(RotateTransform.AngleProperty, null);
+                statusSpinner.Visibility = Visibility.Collapsed;
+                statusRing.Stroke = B("Secure");
+                shieldBg.Stroke = B("Secure");
+                ravenBeak.Fill = B("SecureText");
+                ravenHead.Fill = B("SecureText");
+                ravenBody.Fill = B("SecureText");
+                ravenTail.Fill = B("Secure");
+                glow.Visibility = Visibility.Visible;
+                glow.Opacity = 1.0;
             }
             else
             {
-                pendingIgnite = false;
-                if (animMode != "off" && animMode != "turning_off")
-                {
-                    if (animGlassFill > 0.04 || animLineDraw > 0.04)
-                    {
-                        animMode = "turning_off";
-                        animPhaseTime = 0;
-                        if (!medallionAnimTimer.IsEnabled)
-                        {
-                            lastAnimTick = DateTime.UtcNow;
-                            medallionAnimTimer.Start();
-                        }
-                    }
-                    else
-                    {
-                        animMode = "off";
-                        animGlassFill = 0.0;
-                        animLineDraw = 0.0;
-                        animSpeed = 0.0;
-                        medallionAnimTimer.Stop();
-                        ApplyMedallionVisuals();
-                    }
-                }
-                else if (animMode == "off")
-                {
-                    animGlassFill = 0.0;
-                    animLineDraw = 0.0;
-                    ApplyMedallionVisuals();
-                }
-            }
-        }
-
-        void TickMedallionAnim()
-        {
-            if (!WindowShowing)
-            {
-                medallionAnimTimer.Stop();
-                return;
-            }
-            DateTime now = DateTime.UtcNow;
-            double dt = Math.Min(0.04, Math.Max(0.001, (now - lastAnimTick).TotalSeconds));
-            lastAnimTick = now;
-            animPhaseTime += dt;
-
-            if (animMode == "connecting")
-            {
-                double rampDur = pendingIgnite ? 1.15 : 1.8;
-                double rampT = Math.Min(1.0, animPhaseTime / rampDur);
-                animSpeed = 0.8 + (3.8 - 0.8) * (rampT * rampT);
-                animFlowPhase += dt * animSpeed;
-                animLineDraw = Math.Min(1.0, animPhaseTime / 0.35);
-                animGlassFill = 0.14 + 0.08 * Math.Sin(animFlowPhase * 2.0);
-                if (pendingIgnite && animPhaseTime >= 1.15)
-                {
-                    pendingIgnite = false;
-                    animMode = "igniting";
-                    animPhaseTime = 0;
-                    animSpeed = 3.8;
-                }
-            }
-            else if (animMode == "igniting")
-            {
-                double dur = 0.65;
-                double t = Math.Min(1.0, animPhaseTime / dur);
-                double ease = 1.0 - Math.Pow(1.0 - t, 3.0);
-                animSpeed = 3.8 - 2.6 * ease;
-                animFlowPhase += dt * animSpeed;
-                animLineDraw = 1.0;
-                animGlassFill = 0.18 + (1.0 - 0.18) * ease;
-                if (animPhaseTime >= dur)
-                {
-                    animMode = "on";
-                    animGlassFill = 1.0;
-                    animLineDraw = 1.0;
-                    medallionAnimTimer.Stop();
-                }
-            }
-            else if (animMode == "turning_off")
-            {
-                double dur = 0.65;
-                double t = Math.Min(1.0, animPhaseTime / dur);
-                double ease = t < 0.5 ? 4.0 * t * t * t : 1.0 - Math.Pow(-2.0 * t + 2.0, 3.0) / 2.0;
-                animSpeed = 2.4 * (1.0 - t) + 0.3;
-                animFlowPhase -= dt * animSpeed;
-                animGlassFill = Math.Max(0.0, 1.0 - Math.Min(1.0, animPhaseTime / 0.38));
-                animLineDraw = 1.0 - ease;
-                if (animPhaseTime >= dur)
-                {
-                    animMode = "off";
-                    animGlassFill = 0.0;
-                    animLineDraw = 0.0;
-                    animSpeed = 0.0;
-                    medallionAnimTimer.Stop();
-                }
-            }
-            else
-            {
-                medallionAnimTimer.Stop();
-            }
-
-            ApplyMedallionVisuals();
-        }
-
-        void ApplyMedallionVisuals()
-        {
-            double gf = Math.Max(0.0, Math.Min(1.0, animGlassFill));
-            double ld = Math.Max(0.0, Math.Min(1.0, animLineDraw));
-            medallionImg.Opacity = gf;
-
-            bool conn = animMode == "connecting";
-            double speedNorm = Math.Max(0.0, Math.Min(1.0, (animSpeed - 0.8) / 3.0));
-            double glowAlpha = Math.Max(gf * 0.55, conn ? (0.12 + 0.25 * speedNorm) : 0.0);
-            if (glowAlpha > 0.01)
-            {
-                if (glow.Visibility != Visibility.Visible) glow.Visibility = Visibility.Visible;
-                glow.Opacity = glowAlpha;
-            }
-            else if (glow.Visibility == Visibility.Visible)
-            {
+                if (spinnerRotate != null) spinnerRotate.BeginAnimation(RotateTransform.AngleProperty, null);
+                statusSpinner.Visibility = Visibility.Collapsed;
+                statusRing.Stroke = B("Line");
+                shieldBg.Stroke = B("Line");
+                ravenBeak.Fill = B("Muted");
+                ravenHead.Fill = B("Muted");
+                ravenBody.Fill = B("Muted");
+                ravenTail.Fill = B("Surface2");
                 glow.Visibility = Visibility.Collapsed;
                 glow.Opacity = 0;
             }
+        }
 
-            double lineAlpha = conn
-                ? (0.52 + 0.48 * speedNorm) * ld
-                : Math.Max(0.0, Math.Min(1.0, (1.0 - gf) * ld * 1.15));
+        static string CountryFlag(string code)
+        {
+            if (string.IsNullOrEmpty(code) || code.Length != 2) return null;
+            int c1 = char.ToUpperInvariant(code[0]);
+            int c2 = char.ToUpperInvariant(code[1]);
+            if (c1 < 'A' || c1 > 'Z' || c2 < 'A' || c2 > 'Z') return null;
+            return char.ConvertFromUtf32(0x1F1E6 + (c1 - 'A')) + char.ConvertFromUtf32(0x1F1E6 + (c2 - 'A'));
+        }
 
-            if (lineAlpha > 0.01)
-            {
-                double off = -animFlowPhase * 18.0;
-                traceRingPath.StrokeDashOffset = off;
-                traceRingPath.Opacity = lineAlpha;
+        class ColorThemePreset
+        {
+            public string Id;
+            public string Name;
+            public System.Windows.Media.Color Primary;
+            public System.Windows.Media.Color Text;
+            public System.Windows.Media.Color Soft;
+            public SD.Color GdiPrimary;
+        }
 
-                traceMoonPath.StrokeDashOffset = off * 1.15;
-                traceMoonPath.Opacity = lineAlpha;
-
-                traceRavenPath.StrokeDashOffset = off * 1.3;
-                traceRavenPath.Opacity = lineAlpha;
+        static readonly ColorThemePreset[] ColorPresets = new ColorThemePreset[]
+        {
+            new ColorThemePreset {
+                Id = "green",
+                Name = "Verde Esmeralda",
+                Primary = System.Windows.Media.Color.FromRgb(68, 173, 77),
+                Text = System.Windows.Media.Color.FromRgb(91, 208, 104),
+                Soft = System.Windows.Media.Color.FromArgb(36, 68, 173, 77),
+                GdiPrimary = SD.Color.FromArgb(68, 173, 77)
+            },
+            new ColorThemePreset {
+                Id = "cyan",
+                Name = "Ciano Neon",
+                Primary = System.Windows.Media.Color.FromRgb(6, 182, 212),
+                Text = System.Windows.Media.Color.FromRgb(34, 211, 238),
+                Soft = System.Windows.Media.Color.FromArgb(36, 6, 182, 212),
+                GdiPrimary = SD.Color.FromArgb(6, 182, 212)
+            },
+            new ColorThemePreset {
+                Id = "blue",
+                Name = "Azul Elétrico",
+                Primary = System.Windows.Media.Color.FromRgb(59, 130, 246),
+                Text = System.Windows.Media.Color.FromRgb(96, 165, 250),
+                Soft = System.Windows.Media.Color.FromArgb(36, 59, 130, 246),
+                GdiPrimary = SD.Color.FromArgb(59, 130, 246)
+            },
+            new ColorThemePreset {
+                Id = "purple",
+                Name = "Violeta",
+                Primary = System.Windows.Media.Color.FromRgb(139, 92, 246),
+                Text = System.Windows.Media.Color.FromRgb(167, 139, 250),
+                Soft = System.Windows.Media.Color.FromArgb(36, 139, 92, 246),
+                GdiPrimary = SD.Color.FromArgb(139, 92, 246)
+            },
+            new ColorThemePreset {
+                Id = "amber",
+                Name = "Laranja Âmbar",
+                Primary = System.Windows.Media.Color.FromRgb(245, 158, 11),
+                Text = System.Windows.Media.Color.FromRgb(251, 191, 36),
+                Soft = System.Windows.Media.Color.FromArgb(36, 245, 158, 11),
+                GdiPrimary = SD.Color.FromArgb(245, 158, 11)
+            },
+            new ColorThemePreset {
+                Id = "rose",
+                Name = "Rosa Choque",
+                Primary = System.Windows.Media.Color.FromRgb(236, 72, 153),
+                Text = System.Windows.Media.Color.FromRgb(244, 114, 182),
+                Soft = System.Windows.Media.Color.FromArgb(36, 236, 72, 153),
+                GdiPrimary = SD.Color.FromArgb(236, 72, 153)
             }
-            else if (traceRingPath.Opacity > 0)
-            {
-                traceRingPath.Opacity = 0;
-                traceMoonPath.Opacity = 0;
-                traceRavenPath.Opacity = 0;
-            }
+        };
 
-            for (int i = 0; i < 16; i++)
+        void ApplyAccentColor(string presetId, bool saveSettings = true)
+        {
+            ColorThemePreset preset = null;
+            if (!string.IsNullOrEmpty(presetId))
             {
-                Line line = activeRays[i];
-                ScaleTransform scale = activeRayScales[i];
-                if (line == null || scale == null) continue;
-                if (ld <= 0.01)
+                foreach (var p in ColorPresets)
                 {
-                    if (line.Opacity > 0) line.Opacity = 0;
-                    continue;
+                    if (p.Id.Equals(presetId, StringComparison.OrdinalIgnoreCase)) { preset = p; break; }
                 }
-                double wave = conn
-                    ? (0.35 + 0.65 * (0.5 + 0.5 * Math.Sin(animFlowPhase * 2.2 - i * 0.45)))
-                    : ld;
-                double wClamp = Math.Max(0.0, Math.Min(1.0, wave));
-                scale.ScaleX = wClamp;
-                scale.ScaleY = wClamp;
-                double rayAlpha = conn
-                    ? (0.28 + 0.55 * speedNorm) * wClamp
-                    : (0.55 - 0.33 * gf) * ld;
-                line.Opacity = Math.Max(0.0, Math.Min(1.0, rayAlpha));
+            }
+            if (preset == null) preset = ColorPresets[0];
+            activePreset = preset;
+            activeGdiAccent = preset.GdiPrimary;
+
+            var primaryBrush = new SolidColorBrush(preset.Primary); primaryBrush.Freeze();
+            var textBrush = new SolidColorBrush(preset.Text); textBrush.Freeze();
+            var softBrush = new SolidColorBrush(preset.Soft); softBrush.Freeze();
+
+            Application.Current.Resources["Accent"] = primaryBrush;
+            Application.Current.Resources["AccentSoft"] = softBrush;
+            Application.Current.Resources["Secure"] = primaryBrush;
+            Application.Current.Resources["SecureText"] = textBrush;
+            Application.Current.Resources["SecureSoft"] = softBrush;
+
+            if (glow != null)
+            {
+                var glowBrush = new RadialGradientBrush();
+                glowBrush.GradientStops.Add(new GradientStop(Color.FromArgb(0x35, preset.Primary.R, preset.Primary.G, preset.Primary.B), 0.0));
+                glowBrush.GradientStops.Add(new GradientStop(Color.FromArgb(0x12, preset.Primary.R, preset.Primary.G, preset.Primary.B), 0.6));
+                glowBrush.GradientStops.Add(new GradientStop(Color.FromArgb(0x00, 16, 28, 44), 1.0));
+                glowBrush.Freeze();
+                glow.Fill = glowBrush;
+            }
+
+            var oldOn = trayOn;
+            var oldOff = trayOff;
+            var oldWarn = trayWarn;
+
+            trayOn = TrayIcon(true, false, preset.GdiPrimary);
+            trayOff = TrayIcon(false, false, preset.GdiPrimary);
+            trayWarn = TrayIcon(true, true, preset.GdiPrimary);
+
+            if (tray != null)
+            {
+                tray.Icon = shown == Conn.On ? trayOn : (shown == Conn.Connecting || shown == Conn.Retrying || shown == Conn.NoResponse) ? trayWarn : trayOff;
+            }
+
+            if (oldOn != null) { try { oldOn.Dispose(); } catch { } }
+            if (oldOff != null) { try { oldOff.Dispose(); } catch { } }
+            if (oldWarn != null) { try { oldWarn.Dispose(); } catch { } }
+
+            bool isBusy = shown == Conn.Connecting || shown == Conn.Retrying || shown == Conn.NoResponse;
+            ApplyPowerButtonVisuals(shown, isBusy);
+            if (shown == Conn.On) txtStatus.Foreground = textBrush;
+            if (txtDownIcon != null) txtDownIcon.Foreground = textBrush;
+            if (titleIcon != null)
+            {
+                try
+                {
+                    using (var icon32 = TrayIcon(true, false, preset.GdiPrimary, 32))
+                    {
+                        var icoSource = Imaging.CreateBitmapSourceFromHIcon(icon32.Handle, Int32Rect.Empty, BitmapSizeOptions.FromEmptyOptions());
+                        icoSource.Freeze();
+                        titleIcon.Source = icoSource;
+                        w.Icon = icoSource;
+                    }
+                }
+                catch { }
+            }
+            UpdateTraffic();
+
+            if (ServersShowing) RenderServerList();
+            else serversDirty = true;
+            RenderHomeApps();
+
+            if (saveSettings && !string.Equals(settings.AccentColor, preset.Id, StringComparison.OrdinalIgnoreCase))
+            {
+                settings.AccentColor = preset.Id;
+                settings.Save();
+            }
+
+            UpdateColorSwatches();
+        }
+
+        void InitColorSwatches()
+        {
+            if (panelColorPresets == null) return;
+            panelColorPresets.Children.Clear();
+            string currentId = activePreset != null ? activePreset.Id : (settings.AccentColor ?? "green");
+
+            foreach (var preset in ColorPresets)
+            {
+                var p = preset;
+                bool isSelected = string.Equals(p.Id, currentId, StringComparison.OrdinalIgnoreCase);
+
+                var swatch = new Border
+                {
+                    Width = 34,
+                    Height = 34,
+                    CornerRadius = new CornerRadius(17),
+                    Background = new SolidColorBrush(p.Primary),
+                    Margin = new Thickness(0, 0, 12, 8),
+                    Cursor = Cursors.Hand,
+                    ToolTip = p.Name,
+                    BorderThickness = new Thickness(isSelected ? 2.5 : 1),
+                    BorderBrush = isSelected ? Brushes.White : new SolidColorBrush(System.Windows.Media.Color.FromArgb(40, 255, 255, 255)),
+                    Tag = p.Id
+                };
+
+                var check = new TextBlock
+                {
+                    Text = "\uE73E",
+                    FontFamily = (FontFamily)Application.Current.FindResource("Icons"),
+                    FontSize = 13,
+                    FontWeight = FontWeights.Bold,
+                    Foreground = Brushes.White,
+                    HorizontalAlignment = HorizontalAlignment.Center,
+                    VerticalAlignment = VerticalAlignment.Center,
+                    Visibility = isSelected ? Visibility.Visible : Visibility.Collapsed
+                };
+                swatch.Child = check;
+
+                swatch.MouseLeftButtonUp += (s, e) => ApplyAccentColor(p.Id, true);
+                panelColorPresets.Children.Add(swatch);
             }
         }
 
-        // Stained-glass medallion at the tray's icon size
-        static SD.Icon TrayIcon(bool active, bool warn)
+        void UpdateColorSwatches()
         {
-            SD.Size size = WF.SystemInformation.SmallIconSize;
-            using (var bmp = new SD.Bitmap(size.Width, size.Height))
+            if (panelColorPresets == null) return;
+            string currentId = activePreset != null ? activePreset.Id : (settings.AccentColor ?? "green");
+            foreach (UIElement child in panelColorPresets.Children)
+            {
+                var border = child as Border;
+                if (border == null) continue;
+                string id = border.Tag as string;
+                bool selected = string.Equals(id, currentId, StringComparison.OrdinalIgnoreCase);
+                border.BorderThickness = new Thickness(selected ? 2.5 : 1);
+                border.BorderBrush = selected ? Brushes.White : new SolidColorBrush(System.Windows.Media.Color.FromArgb(40, 255, 255, 255));
+                var check = border.Child as TextBlock;
+                if (check != null)
+                {
+                    check.Visibility = selected ? Visibility.Visible : Visibility.Collapsed;
+                }
+            }
+        }
+
+        // Cyber Shield Raven tray icon (matching central emblem with dynamic accent color)
+        static SD.Icon TrayIcon(bool active, bool warn, SD.Color? customAccent = null, int? targetSize = null)
+        {
+            int s = targetSize.HasValue ? targetSize.Value : Math.Max(16, WF.SystemInformation.SmallIconSize.Width);
+            using (var bmp = new SD.Bitmap(s, s))
             {
                 using (SD.Graphics g = SD.Graphics.FromImage(bmp))
                 {
                     g.SmoothingMode = SD.Drawing2D.SmoothingMode.AntiAlias;
-                    DrawMedallion(g, size.Width / 2F, size.Height / 2F, Math.Min(size.Width, size.Height) / 2F, active, warn, true);
+                    g.PixelOffsetMode = SD.Drawing2D.PixelOffsetMode.HighQuality;
+                    g.Clear(SD.Color.Transparent);
+
+                    float cx = s / 2.0F;
+                    g.TranslateTransform(cx, cx);
+                    float scale = s / 160.0F;
+                    g.ScaleTransform(scale, scale);
+
+                    using (var bgBrush = new SD.SolidBrush(SD.Color.FromArgb(16, 28, 44)))
+                        g.FillEllipse(bgBrush, -76, -76, 152, 152);
+
+                    SD.Color ringCol, ravenCol, tailCol;
+                    if (warn)
+                    {
+                        ringCol = SD.Color.FromArgb(255, 213, 36);
+                        ravenCol = SD.Color.FromArgb(255, 225, 80);
+                        tailCol = SD.Color.FromArgb(220, 180, 20);
+                    }
+                    else if (active)
+                    {
+                        SD.Color baseCol = customAccent ?? SD.Color.FromArgb(68, 173, 77);
+                        ringCol = baseCol;
+                        ravenCol = SD.Color.FromArgb(
+                            Math.Min(255, baseCol.R + 25),
+                            Math.Min(255, baseCol.G + 35),
+                            Math.Min(255, baseCol.B + 25)
+                        );
+                        tailCol = SD.Color.FromArgb(
+                            Math.Max(0, baseCol.R - 10),
+                            Math.Max(0, baseCol.G - 10),
+                            Math.Max(0, baseCol.B - 10)
+                        );
+                    }
+                    else
+                    {
+                        ringCol = SD.Color.FromArgb(70, 85, 105);
+                        ravenCol = SD.Color.FromArgb(138, 155, 176);
+                        tailCol = SD.Color.FromArgb(90, 105, 125);
+                    }
+
+                    float ringWidth = s <= 32 ? 6.0F : 4.0F;
+                    using (var ringPen = new SD.Pen(ringCol, ringWidth))
+                        g.DrawEllipse(ringPen, -73, -73, 146, 146);
+
+                    // Shield
+                    using (var shieldBrush = new SD.SolidBrush(SD.Color.FromArgb(23, 38, 56)))
+                    using (var shieldPen = new SD.Pen(ringCol, 3.0F))
+                    using (var sp = new SD.Drawing2D.GraphicsPath())
+                    {
+                        sp.AddBezier(0, -60, 40, -60, 56, -48, 58, -34);
+                        sp.AddBezier(58, -34, 58, 20, 32, 54, 0, 70);
+                        sp.AddBezier(0, 70, -32, 54, -58, 20, -58, -34);
+                        sp.AddBezier(-58, -34, -56, -48, -40, -60, 0, -60);
+                        sp.CloseFigure();
+                        g.FillPath(shieldBrush, sp);
+                        g.DrawPath(shieldPen, sp);
+                    }
+
+                    // Raven
+                    using (var ravenBrush = new SD.SolidBrush(ravenCol))
+                    using (var tailBrush = new SD.SolidBrush(tailCol))
+                    {
+                        using (var bp = new SD.Drawing2D.GraphicsPath())
+                        {
+                            bp.AddBezier(9, -24, 19, -24, 27, -21, 31, -15);
+                            bp.AddBezier(31, -15, 22, -14, 15, -14, 9, -15);
+                            bp.CloseFigure();
+                            g.FillPath(ravenBrush, bp);
+                        }
+
+                        using (var hp = new SD.Drawing2D.GraphicsPath())
+                        {
+                            hp.AddBezier(-16, -10, -14, -26, -5, -31, 5, -29);
+                            hp.AddBezier(5, -29, 11, -28, 12, -21, 9, -17);
+                            hp.AddBezier(9, -17, 8, -12, 10, -8, 12, -5);
+                            hp.AddBezier(12, -5, 2, -4, -7, -4, -16, -10);
+                            hp.CloseFigure();
+                            g.FillPath(ravenBrush, hp);
+                        }
+
+                        using (var wp = new SD.Drawing2D.GraphicsPath())
+                        {
+                            wp.AddBezier(-16, -10, -28, 2, -26, 26, -9, 41);
+                            wp.AddBezier(-9, 41, -4, 46, 1, 46, 5, 41);
+                            wp.AddBezier(5, 41, 22, 26, 25, 4, 15, -5);
+                            wp.AddBezier(15, -5, 5, -8, -5, -8, -16, -10);
+                            wp.CloseFigure();
+                            g.FillPath(ravenBrush, wp);
+                        }
+
+                        using (var tp = new SD.Drawing2D.GraphicsPath())
+                        {
+                            tp.AddBezier(-12, 33, -15, 47, -17, 57, -10, 60);
+                            tp.AddBezier(-10, 60, -4, 64, 3, 64, 9, 60);
+                            tp.AddBezier(9, 60, 15, 57, 14, 47, 10, 33);
+                            tp.CloseFigure();
+                            g.FillPath(tailBrush, tp);
+                        }
+                    }
                 }
                 IntPtr hIcon = bmp.GetHicon();
                 try { return (SD.Icon)SD.Icon.FromHandle(hIcon).Clone(); }
@@ -3830,7 +3837,7 @@ namespace VpnPanel
                 var smoothing = g.SmoothingMode;
                 g.SmoothingMode = SD.Drawing2D.SmoothingMode.AntiAlias;
                 float x = r.Left + r.Width / 2F, y = r.Top + r.Height / 2F, u = Math.Min(r.Width, r.Height) / 16F;
-                using (var pen = new SD.Pen(SD.Color.FromArgb(245, 194, 66), 2F * u))
+                using (var pen = new SD.Pen(activeGdiAccent, 2F * u))
                     g.DrawLines(pen, new[] { new SD.PointF(x - 5 * u, y), new SD.PointF(x - 1.5F * u, y + 3.5F * u), new SD.PointF(x + 5 * u, y - 4 * u) });
                 g.SmoothingMode = smoothing;
             }
@@ -3838,9 +3845,9 @@ namespace VpnPanel
 
         class DarkMenuColors : WF.ProfessionalColorTable
         {
-            static readonly SD.Color Bg = SD.Color.FromArgb(14, 20, 44);
-            static readonly SD.Color Hover = SD.Color.FromArgb(32, 45, 90);
-            static readonly SD.Color Line = SD.Color.FromArgb(38, 52, 98);
+            static readonly SD.Color Bg = SD.Color.FromArgb(16, 28, 44);
+            static readonly SD.Color Hover = SD.Color.FromArgb(38, 59, 86);
+            static readonly SD.Color Line = SD.Color.FromArgb(34, 54, 79);
             public override SD.Color ToolStripDropDownBackground { get { return Bg; } }
             public override SD.Color ImageMarginGradientBegin { get { return Bg; } }
             public override SD.Color ImageMarginGradientMiddle { get { return Bg; } }
