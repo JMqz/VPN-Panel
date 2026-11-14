@@ -34,8 +34,8 @@ using System.Windows.Shell;
 [assembly: AssemblyTrademark("VPN Panel")]
 [assembly: ComVisible(false)]
 [assembly: Guid("b7c93e48-8120-4a87-8d2b-65c71d798a21")]
-[assembly: AssemblyVersion("3.0.3.0")]
-[assembly: AssemblyFileVersion("3.0.3.0")]
+[assembly: AssemblyVersion("3.0.4.0")]
+[assembly: AssemblyFileVersion("3.0.4.0")]
 
 namespace VpnPanel
 {
@@ -44,7 +44,7 @@ namespace VpnPanel
         // Same mutex as the old vpn-panel.ps1, so they never run together
         const string MutexName = @"Global\VpnPanelWireSock";
         public const string ShowEventName = @"Global\VpnPanelWireSockShow";
-        public const string Version = "3.0.3";
+        public const string Version = "3.0.4";
 
         [STAThread]
         static void Main(string[] args)
@@ -919,7 +919,7 @@ namespace VpnPanel
             if (ni == null) return false;
             string d = (ni.Description ?? "") + " " + (ni.Name ?? "");
             return d.IndexOf("WireSock", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                   d.IndexOf("Wintun", StringComparison.OrdinalIgnoreCase) >= 0;
+                   d.IndexOf("wg_tunnel", StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
         static void CollectVpnIpv6(out HashSet<string> addrs, out HashSet<string> gws, out HashSet<string> prefixes)
@@ -980,29 +980,36 @@ namespace VpnPanel
         {
             try
             {
+                bool tunnelUp = Tunnel.Active(true);
+                if (tunnelUp && !Tunnel.Ipv6Isolated) return false;
                 HashSet<string> addrs, gws, prefixes;
                 CollectVpnIpv6(out addrs, out gws, out prefixes);
-                bool tunnelUp = Tunnel.Active(false);
                 foreach (NetworkInterface ni in NetworkInterface.GetAllNetworkInterfaces())
                 {
-                    if (ni.NetworkInterfaceType == NetworkInterfaceType.Loopback) continue;
-                    if (!tunnelUp && IsWireSockAdapter(ni) && ni.OperationalStatus == OperationalStatus.Up)
-                        return true;
-                    IPInterfaceProperties props = ni.GetIPProperties();
-                    foreach (UnicastIPAddressInformation ua in props.UnicastAddresses)
+                    try
                     {
-                        if (ua.Address.AddressFamily != AddressFamily.InterNetworkV6) continue;
-                        if (addrs.Contains(ua.Address.ToString())) return true;
-                        string p64 = Prefix64(ua.Address);
-                        if (p64 != null && prefixes.Contains(p64)) return true;
+                        if (ni.NetworkInterfaceType == NetworkInterfaceType.Loopback) continue;
+                        bool isWs = IsWireSockAdapter(ni);
+                        if (tunnelUp && isWs) continue;
+                        if (!tunnelUp && isWs && ni.OperationalStatus == OperationalStatus.Up)
+                            return true;
+                        IPInterfaceProperties props = ni.GetIPProperties();
+                        foreach (UnicastIPAddressInformation ua in props.UnicastAddresses)
+                        {
+                            if (ua.Address.AddressFamily != AddressFamily.InterNetworkV6) continue;
+                            if (addrs.Contains(ua.Address.ToString())) return true;
+                            string p64 = Prefix64(ua.Address);
+                            if (p64 != null && prefixes.Contains(p64)) return true;
+                        }
+                        foreach (GatewayIPAddressInformation gw in props.GatewayAddresses)
+                        {
+                            if (gw.Address == null || gw.Address.AddressFamily != AddressFamily.InterNetworkV6) continue;
+                            if (gws.Contains(gw.Address.ToString())) return true;
+                            string p64 = Prefix64(gw.Address);
+                            if (p64 != null && prefixes.Contains(p64)) return true;
+                        }
                     }
-                    foreach (GatewayIPAddressInformation gw in props.GatewayAddresses)
-                    {
-                        if (gw.Address == null || gw.Address.AddressFamily != AddressFamily.InterNetworkV6) continue;
-                        if (gws.Contains(gw.Address.ToString())) return true;
-                        string p64 = Prefix64(gw.Address);
-                        if (p64 != null && prefixes.Contains(p64)) return true;
-                    }
+                    catch { }
                 }
             }
             catch { }
@@ -1012,10 +1019,18 @@ namespace VpnPanel
         static readonly Regex DefaultV6RouteLine = new Regex(@"(?:^|\s)::/0\s+(\d+)\s+(\S+)", RegexOptions.Compiled);
 
         // Purges any lingering VPN IPv6 addresses/routes stuck on physical NICs (from v2.6 or full-tunnel runs)
-        // and flushes the Windows DNS resolver cache so negative cache entries (0.0.0.0) don't stall Steam/games.
+        // and flushes the Windows DNS resolver cache only when tainted state is purged or forceFlush is requested.
         public static void CleanGhostNetwork()
         {
-            try { DnsFlushResolverCache(); } catch { }
+            CleanGhostNetwork(false);
+        }
+
+        public static void CleanGhostNetwork(bool forceFlush)
+        {
+            if (forceFlush)
+            {
+                try { DnsFlushResolverCache(); } catch { }
+            }
             try
             {
                 HashSet<string> addrs, gws, prefixes;
@@ -1023,11 +1038,13 @@ namespace VpnPanel
                 var netshCmds = new List<string>();
                 var taintedIfs = new HashSet<int>();
                 var wireSockIfs = new HashSet<int>();
-                bool tunnelUp = Tunnel.Active(false);
+                bool tunnelUp = Tunnel.Active(true);
 
                 foreach (NetworkInterface ni in NetworkInterface.GetAllNetworkInterfaces())
                 {
                     if (ni.NetworkInterfaceType == NetworkInterfaceType.Loopback) continue;
+                    bool isWsAdapter = IsWireSockAdapter(ni);
+                    if (tunnelUp && isWsAdapter) continue;
                     IPInterfaceProperties props;
                     int ifIdx;
                     try
@@ -1039,7 +1056,7 @@ namespace VpnPanel
                     }
                     catch { continue; }
 
-                    bool isWs = !tunnelUp && IsWireSockAdapter(ni);
+                    bool isWs = !tunnelUp && isWsAdapter;
                     if (isWs) wireSockIfs.Add(ifIdx);
 
                     bool foundOnNic = false;
@@ -1098,46 +1115,49 @@ namespace VpnPanel
                     }
                 }
 
-                // Inspect active IPv6 routing table so ghost ::/0 routes with non-:1 gateways are also purged
-                try
+                // Only query netsh route table when a NIC was tainted, a ghost WireSock adapter appeared, or explicit reset was requested
+                if (forceFlush || taintedIfs.Count > 0 || wireSockIfs.Count > 0)
                 {
-                    var showPsi = new ProcessStartInfo("netsh.exe", "interface ipv6 show route")
+                    try
                     {
-                        UseShellExecute = false,
-                        CreateNoWindow = true,
-                        RedirectStandardOutput = true,
-                        RedirectStandardError = true,
-                    };
-                    using (Process sp = Process.Start(showPsi))
-                    {
-                        string routeOut = sp.StandardOutput.ReadToEnd();
-                        sp.WaitForExit(3000);
-                        foreach (string rline in routeOut.Split('\n'))
+                        var showPsi = new ProcessStartInfo("netsh.exe", "interface ipv6 show route")
                         {
-                            Match rm = DefaultV6RouteLine.Match(rline);
-                            if (!rm.Success) continue;
-                            int rIfIdx;
-                            if (!int.TryParse(rm.Groups[1].Value, out rIfIdx)) continue;
-                            string nextHopRaw = rm.Groups[2].Value.Trim();
-                            IPAddress nh;
-                            bool isIp = IPAddress.TryParse(nextHopRaw, out nh) && nh.AddressFamily == AddressFamily.InterNetworkV6;
-                            string nhNorm = isIp ? nh.ToString() : nextHopRaw;
-                            string nhPrefix = isIp ? Prefix64(nh) : null;
-                            bool match = wireSockIfs.Contains(rIfIdx) ||
-                                         (isIp && (gws.Contains(nhNorm) || addrs.Contains(nhNorm) || (nhPrefix != null && prefixes.Contains(nhPrefix)))) ||
-                                         (taintedIfs.Contains(rIfIdx) && (!isIp || !nh.IsIPv6LinkLocal));
-                            if (match)
+                            UseShellExecute = false,
+                            CreateNoWindow = true,
+                            RedirectStandardOutput = true,
+                            RedirectStandardError = true,
+                        };
+                        using (Process sp = Process.Start(showPsi))
+                        {
+                            string routeOut = sp.StandardOutput.ReadToEnd();
+                            sp.WaitForExit(3000);
+                            foreach (string rline in routeOut.Split('\n'))
                             {
-                                string cmd = isIp
-                                    ? "interface ipv6 delete route ::/0 interface=" + rIfIdx + " " + nhNorm
-                                    : "interface ipv6 delete route ::/0 interface=" + rIfIdx;
-                                if (!netshCmds.Contains(cmd + " store=active")) netshCmds.Add(cmd + " store=active");
-                                if (!netshCmds.Contains(cmd + " store=persistent")) netshCmds.Add(cmd + " store=persistent");
+                                Match rm = DefaultV6RouteLine.Match(rline);
+                                if (!rm.Success) continue;
+                                int rIfIdx;
+                                if (!int.TryParse(rm.Groups[1].Value, out rIfIdx)) continue;
+                                string nextHopRaw = rm.Groups[2].Value.Trim();
+                                IPAddress nh;
+                                bool isIp = IPAddress.TryParse(nextHopRaw, out nh) && nh.AddressFamily == AddressFamily.InterNetworkV6;
+                                string nhNorm = isIp ? nh.ToString() : nextHopRaw;
+                                string nhPrefix = isIp ? Prefix64(nh) : null;
+                                bool match = wireSockIfs.Contains(rIfIdx) ||
+                                             (isIp && (gws.Contains(nhNorm) || addrs.Contains(nhNorm) || (nhPrefix != null && prefixes.Contains(nhPrefix)))) ||
+                                             (taintedIfs.Contains(rIfIdx) && (!isIp || !nh.IsIPv6LinkLocal));
+                                if (match)
+                                {
+                                    string cmd = isIp
+                                        ? "interface ipv6 delete route ::/0 interface=" + rIfIdx + " " + nhNorm
+                                        : "interface ipv6 delete route ::/0 interface=" + rIfIdx;
+                                    if (!netshCmds.Contains(cmd + " store=active")) netshCmds.Add(cmd + " store=active");
+                                    if (!netshCmds.Contains(cmd + " store=persistent")) netshCmds.Add(cmd + " store=persistent");
+                                }
                             }
                         }
                     }
+                    catch { }
                 }
-                catch { }
 
                 if (netshCmds.Count > 0)
                 {
@@ -2096,6 +2116,7 @@ namespace VpnPanel
         public static string LastStartedConfig { get; private set; }
         public static DateTime LastStartedAt { get; private set; }
         public static bool Ipv6Isolated { get; private set; }
+        public static int LastExitCode { get; private set; }
         public static int Pid { get { lock (stateLock) return currentPid; } }
         public static DateTime StartTime { get; private set; }
         public static bool IsStopping { get { return Interlocked.CompareExchange(ref stoppingCount, 0, 0) > 0; } }
@@ -2152,6 +2173,7 @@ namespace VpnPanel
                 if (currentPid != 0)
                 {
                     if (ProcUtil.IsAlive(currentHandle)) return true;
+                    LastExitCode = ProcUtil.ExitCode(currentHandle);
                     ProcUtil.Close(ref currentHandle);
                     currentPid = 0;
                 }
@@ -2224,6 +2246,7 @@ namespace VpnPanel
 
                 LastStartedConfig = config;
                 LastStartedAt = DateTime.UtcNow;
+                LastExitCode = 0;
                 bool v6Stripped;
                 string confPath = ConfFile.EffectivePath(config, out v6Stripped);
                 Ipv6Isolated = v6Stripped;
@@ -2269,16 +2292,16 @@ namespace VpnPanel
                     bool anyFound = pidToStop != 0;
                     bool stoppedCleanly = true;
                     // Ctrl+C first: WireSock then drops the tunnel and releases the lock by itself
-                    if (pidToStop != 0) stoppedCleanly = ProcUtil.Shutdown(pidToStop, 3000);
+                    if (pidToStop != 0) stoppedCleanly = ProcUtil.Shutdown(pidToStop, 5000);
                     foreach (Process p in Find())
                     {
                         anyFound = true;
-                        stoppedCleanly = ProcUtil.Shutdown(p.Id, 3000) && stoppedCleanly;
+                        stoppedCleanly = ProcUtil.Shutdown(p.Id, 5000) && stoppedCleanly;
                         p.Dispose();
                     }
                     if (!anyFound) stoppedCleanly = false;
                     ConfFile.DeleteRuntimeCopies();
-                    if (ConfFile.HasGhostIpv6()) ConfFile.CleanGhostNetwork();
+                    if (ConfFile.HasGhostIpv6()) ConfFile.CleanGhostNetwork(false);
                     if (resetLock && !stoppedCleanly) ResetNetworkLock();
                     else if (stoppedCleanly) ClearNetworkLockFlag();
                 }
@@ -2293,7 +2316,7 @@ namespace VpnPanel
         {
             lock (stopLock)
             {
-                ConfFile.CleanGhostNetwork();
+                ConfFile.CleanGhostNetwork(true);
                 string exe = Paths.WireSock;
                 if (exe != null)
                 {
@@ -2782,6 +2805,555 @@ namespace VpnPanel
 
             return items;
         }
+
+        [DllImport("iphlpapi.dll")]
+        static extern int GetBestInterface(uint destAddr, out uint bestIfIndex);
+
+        [DllImport("iphlpapi.dll")]
+        static extern int GetIpInterfaceEntry(ref MIB_IPINTERFACE_ROW row);
+
+        [StructLayout(LayoutKind.Sequential)]
+        struct MIB_IPINTERFACE_ROW
+        {
+            public ushort Family;
+            public ulong InterfaceLuid;
+            public uint InterfaceIndex;
+            public uint MaxReassemblySize;
+            public ulong InterfaceIdentifier;
+            public uint MinRouterAdvertisementInterval;
+            public uint MaxRouterAdvertisementInterval;
+            public byte AdvertisingEnabled;
+            public byte ForwardingEnabled;
+            public byte WeakHostSend;
+            public byte WeakHostReceive;
+            public byte UseAutomaticMetric;
+            public byte UseNeighborUnreachabilityDetection;
+            public byte ManagedAddressConfigurationSupported;
+            public byte OtherStatefulConfigurationSupported;
+            public byte AdvertiseDefaultRoute;
+            public int RouterDiscoveryBehavior;
+            public uint DadTransmits;
+            public uint BaseReachableTime;
+            public uint RetransmitTime;
+            public uint PathMtuDiscoveryTimeout;
+            public int LinkLocalAddressBehavior;
+            public uint LinkLocalAddressTimeout;
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 16)]
+            public uint[] ZoneIndices;
+            public uint SitePrefixLength;
+            public uint Metric;
+            public uint NlMtu;
+            public byte Connected;
+            public byte SupportsWakeUpPatterns;
+            public byte SupportsNeighborDiscovery;
+            public byte SupportsRouterDiscovery;
+            public uint ReachableTime;
+            public byte TransmitOffload;
+            public byte ReceiveOffload;
+            public byte DisableDefaultRoutes;
+        }
+
+        static bool TryGetIpv4InterfaceMetric(int ifIdx, out uint metric)
+        {
+            metric = 0;
+            if (ifIdx <= 0) return false;
+            try
+            {
+                var row = new MIB_IPINTERFACE_ROW
+                {
+                    Family = 2, // AF_INET
+                    InterfaceIndex = (uint)ifIdx,
+                    ZoneIndices = new uint[16]
+                };
+                if (GetIpInterfaceEntry(ref row) == 0)
+                {
+                    metric = row.Metric;
+                    return true;
+                }
+            }
+            catch { }
+            return false;
+        }
+
+        static bool IsVirtualOrTunnelAdapter(NetworkInterface ni)
+        {
+            if (ni == null) return false;
+            if (ni.NetworkInterfaceType == NetworkInterfaceType.Tunnel ||
+                ni.NetworkInterfaceType == NetworkInterfaceType.Loopback)
+                return true;
+            string d = ((ni.Description ?? "") + " " + (ni.Name ?? "")).ToLowerInvariant();
+            string[] tokens = new[]
+            {
+                "wiresock", "wintun", "wireguard", "tap-windows", "openvpn", "tailscale",
+                "proton", "cloudflare", "warp", "mullvad", "exitlag", "radmin", "hamachi",
+                "zerotier", "hyper-v", "vethernet", "virtualbox", "vmware", "bluetooth", "npcap"
+            };
+            for (int i = 0; i < tokens.Length; i++)
+                if (d.Contains(tokens[i])) return true;
+            return false;
+        }
+
+        static int dnsQueryId;
+        static readonly byte[] DnsQueryTail = new byte[]
+        {
+            0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x03, (byte)'o', (byte)'n', (byte)'e',
+            0x03, (byte)'o', (byte)'n', (byte)'e',
+            0x03, (byte)'o', (byte)'n', (byte)'e',
+            0x03, (byte)'o', (byte)'n', (byte)'e',
+            0x00,
+            0x00, 0x01, // QTYPE = A
+            0x00, 0x01  // QCLASS = IN
+        };
+
+        public static ProbeResult ProbeUdpDns(string serverIp, int port, int timeoutMs, CancellationToken ct)
+        {
+            string host = string.IsNullOrEmpty(serverIp) ? "1.1.1.1" : serverIp.Trim();
+            int targetPort = port > 0 ? port : 53;
+            string targetLabel = host + ":" + targetPort;
+            if (ct.IsCancellationRequested)
+                return new ProbeResult { Ok = false, LatencyMs = -1, Target = targetLabel, Detail = "Cancelado" };
+
+            IPAddress ip;
+            if (!IPAddress.TryParse(host, out ip))
+            {
+                ProbeResult dns = ProbeDns(host, ct);
+                if (!dns.Ok || !IPAddress.TryParse(dns.Detail, out ip))
+                    return new ProbeResult { Ok = false, LatencyMs = -1, Target = targetLabel, Detail = "DNS falhou: " + dns.Detail };
+            }
+
+            int timeout = Math.Max(200, timeoutMs);
+            int idNum = Interlocked.Increment(ref dnsQueryId) & 0xFFFF;
+            if (idNum == 0) idNum = 1;
+            byte idHi = (byte)((idNum >> 8) & 0xFF);
+            byte idLo = (byte)(idNum & 0xFF);
+            byte[] pkt = new byte[2 + DnsQueryTail.Length];
+            pkt[0] = idHi;
+            pkt[1] = idLo;
+            Buffer.BlockCopy(DnsQueryTail, 0, pkt, 2, DnsQueryTail.Length);
+
+            var sw = Stopwatch.StartNew();
+            Socket sock = null;
+            try
+            {
+                sock = new Socket(ip.AddressFamily, SocketType.Dgram, ProtocolType.Udp);
+                sock.SendTimeout = timeout;
+                sock.ReceiveTimeout = timeout;
+                using (ct.Register(() => { try { if (sock != null) sock.Close(); } catch { } }))
+                {
+                    sock.Connect(new IPEndPoint(ip, targetPort));
+                    sock.Send(pkt);
+                    byte[] resp = new byte[512];
+                    while (true)
+                    {
+                        int n = sock.Receive(resp);
+                        if (n >= 12 && resp[0] == idHi && resp[1] == idLo && (resp[2] & 0x80) != 0)
+                        {
+                            sw.Stop();
+                            int rcode = resp[3] & 0x0F;
+                            if (rcode == 0)
+                            {
+                                return new ProbeResult
+                                {
+                                    Ok = true,
+                                    LatencyMs = Math.Max(1, (int)sw.ElapsedMilliseconds),
+                                    Target = targetLabel,
+                                    Detail = "UDP DNS OK"
+                                };
+                            }
+                            return new ProbeResult
+                            {
+                                Ok = false,
+                                LatencyMs = -1,
+                                Target = targetLabel,
+                                Detail = "DNS RCODE " + rcode
+                            };
+                        }
+                        if (sw.ElapsedMilliseconds >= timeout)
+                            return new ProbeResult { Ok = false, LatencyMs = -1, Target = targetLabel, Detail = "Tempo esgotado" };
+                    }
+                }
+            }
+            catch (SocketException sex)
+            {
+                if (ct.IsCancellationRequested)
+                    return new ProbeResult { Ok = false, LatencyMs = -1, Target = targetLabel, Detail = "Cancelado" };
+                string msg = sex.SocketErrorCode == SocketError.TimedOut ? "Tempo esgotado" : ShortErr(sex.Message);
+                return new ProbeResult { Ok = false, LatencyMs = -1, Target = targetLabel, Detail = msg };
+            }
+            catch (ObjectDisposedException)
+            {
+                return new ProbeResult { Ok = false, LatencyMs = -1, Target = targetLabel, Detail = ct.IsCancellationRequested ? "Cancelado" : "Socket fechado" };
+            }
+            catch (Exception ex)
+            {
+                if (ct.IsCancellationRequested)
+                    return new ProbeResult { Ok = false, LatencyMs = -1, Target = targetLabel, Detail = "Cancelado" };
+                return new ProbeResult { Ok = false, LatencyMs = -1, Target = targetLabel, Detail = ShortErr(ex.Message) };
+            }
+            finally
+            {
+                if (sock != null) { try { sock.Close(); } catch { } }
+            }
+        }
+
+        public static IPAddress GetPhysicalGateway()
+        {
+            try
+            {
+                uint bestIdx = 0;
+                GetBestInterface(0x01010101, out bestIdx);
+                IPAddress bestGw = null;
+                IPAddress lowestMetricGw = null;
+                uint lowestMetric = uint.MaxValue;
+
+                foreach (NetworkInterface ni in NetworkInterface.GetAllNetworkInterfaces())
+                {
+                    if (ni.OperationalStatus != OperationalStatus.Up) continue;
+                    if (IsVirtualOrTunnelAdapter(ni)) continue;
+                    IPInterfaceProperties props;
+                    IPv4InterfaceProperties v4;
+                    try
+                    {
+                        props = ni.GetIPProperties();
+                        v4 = props.GetIPv4Properties();
+                        if (v4 == null) continue;
+                    }
+                    catch { continue; }
+
+                    IPAddress gwAddr = null;
+                    foreach (GatewayIPAddressInformation gw in props.GatewayAddresses)
+                    {
+                        if (gw.Address != null && gw.Address.AddressFamily == AddressFamily.InterNetwork && !IPAddress.Any.Equals(gw.Address))
+                        {
+                            gwAddr = gw.Address;
+                            break;
+                        }
+                    }
+                    if (gwAddr == null) continue;
+                    if (bestIdx != 0 && (uint)v4.Index == bestIdx)
+                    {
+                        bestGw = gwAddr;
+                        break;
+                    }
+                    uint m;
+                    if (!TryGetIpv4InterfaceMetric(v4.Index, out m)) m = 999;
+                    if (m < lowestMetric)
+                    {
+                        lowestMetric = m;
+                        lowestMetricGw = gwAddr;
+                    }
+                }
+                return bestGw ?? lowestMetricGw;
+            }
+            catch { return null; }
+        }
+
+        public class MtuResult
+        {
+            public int MaxPayload;
+            public int EstimatedMtu;
+            public bool Ok;
+            public string Detail;
+        }
+
+        public static MtuResult ProbeMtu(IPAddress target, CancellationToken ct)
+        {
+            IPAddress dst = target ?? IPAddress.Parse("1.1.1.1");
+            if (ct.IsCancellationRequested)
+                return new MtuResult { MaxPayload = 0, EstimatedMtu = 0, Ok = false, Detail = "Cancelado" };
+
+            int[] payloads = new[] { 1472, 1392, 1352 };
+            var opts = new PingOptions(64, true);
+            bool sawPacketTooBig = false;
+            try
+            {
+                using (var ping = new System.Net.NetworkInformation.Ping())
+                {
+                    for (int i = 0; i < payloads.Length; i++)
+                    {
+                        if (ct.IsCancellationRequested)
+                            return new MtuResult { MaxPayload = 0, EstimatedMtu = 0, Ok = false, Detail = "Cancelado" };
+                        int size = payloads[i];
+                        byte[] buf = new byte[size];
+                        PingReply rep = ping.Send(dst, 1200, buf, opts);
+                        if (rep != null && rep.Status == IPStatus.Success)
+                        {
+                            int mtu = size + 28;
+                            string detail = size == 1472
+                                ? "MTU 1500 OK (sem fragmentação até 1472 B)"
+                                : "Limite em " + size + " B (MTU ~" + mtu + "; 1472 B fragmentou)";
+                            return new MtuResult { MaxPayload = size, EstimatedMtu = mtu, Ok = true, Detail = detail };
+                        }
+                        if (rep != null && rep.Status == IPStatus.PacketTooBig) sawPacketTooBig = true;
+                    }
+
+                    if (ct.IsCancellationRequested)
+                        return new MtuResult { MaxPayload = 0, EstimatedMtu = 0, Ok = false, Detail = "Cancelado" };
+                    PingReply ctrl = ping.Send(dst, 900, new byte[32], new PingOptions(64, false));
+                    if (ctrl != null && ctrl.Status == IPStatus.Success)
+                    {
+                        return new MtuResult
+                        {
+                            MaxPayload = 0,
+                            EstimatedMtu = 0,
+                            Ok = false,
+                            Detail = sawPacketTooBig
+                                ? "Fragmentação severa: pacotes <= 1352 B excedem o MTU (" + dst + ")"
+                                : "Fragmentação ou bloqueio DF: 32 B passou, 1352 B falhou (" + dst + ")"
+                        };
+                    }
+                    return new MtuResult
+                    {
+                        MaxPayload = 0,
+                        EstimatedMtu = 0,
+                        Ok = false,
+                        Detail = "ICMP bloqueado ou sem resposta em " + dst
+                    };
+                }
+            }
+            catch (Exception ex)
+            {
+                return new MtuResult { MaxPayload = 0, EstimatedMtu = 0, Ok = false, Detail = ShortErr(ex.Message) };
+            }
+        }
+
+        public class ConflictReport
+        {
+            public bool WireSockServiceRunning;
+            public int WireSockProcessCount;
+            public bool NdisDriverPresent;
+            public List<string> ConflictingAdapters = new List<string>();
+            public List<string> LowMetricAdapters = new List<string>();
+            public List<string> ConflictingServices = new List<string>();
+            public List<string> Warnings = new List<string>();
+        }
+
+        public static ConflictReport DetectConflicts()
+        {
+            var r = new ConflictReport();
+            try { r.WireSockServiceRunning = Paths.WireSockServiceRunning; } catch { }
+            try
+            {
+                Process[] procs = Tunnel.Find();
+                r.WireSockProcessCount = procs.Length;
+                for (int i = 0; i < procs.Length; i++) { try { procs[i].Dispose(); } catch { } }
+            }
+            catch { }
+
+            try
+            {
+                System.ServiceProcess.ServiceController[] devs = System.ServiceProcess.ServiceController.GetDevices();
+                try
+                {
+                    foreach (var d in devs)
+                    {
+                        try
+                        {
+                            if (d.ServiceName.Equals("ndiswgc", StringComparison.OrdinalIgnoreCase) &&
+                                d.Status == System.ServiceProcess.ServiceControllerStatus.Running)
+                            {
+                                r.NdisDriverPresent = true;
+                            }
+                        }
+                        catch { }
+                    }
+                }
+                finally
+                {
+                    foreach (var d in devs) { try { d.Dispose(); } catch { } }
+                }
+            }
+            catch { }
+
+            string[] badSvcTokens = new[]
+            {
+                "tailscale", "wireguard", "cloudflare", "warp", "protonvpn", "openvpn",
+                "mullvad", "exitlag", "radmin", "hamachi", "zerotier", "netlimiter", "killer"
+            };
+            try
+            {
+                System.ServiceProcess.ServiceController[] svcs = System.ServiceProcess.ServiceController.GetServices();
+                try
+                {
+                    foreach (var s in svcs)
+                    {
+                        try
+                        {
+                            if (s.Status != System.ServiceProcess.ServiceControllerStatus.Running) continue;
+                            if (s.ServiceName.StartsWith("wiresock-", StringComparison.OrdinalIgnoreCase)) continue;
+                            string low = (s.ServiceName + " " + s.DisplayName).ToLowerInvariant();
+                            for (int i = 0; i < badSvcTokens.Length; i++)
+                            {
+                                if (low.Contains(badSvcTokens[i]))
+                                {
+                                    string label = string.IsNullOrEmpty(s.DisplayName) ? s.ServiceName : s.DisplayName;
+                                    if (!r.ConflictingServices.Contains(label)) r.ConflictingServices.Add(label);
+                                    break;
+                                }
+                            }
+                        }
+                        catch { }
+                    }
+                }
+                finally
+                {
+                    foreach (var s in svcs) { try { s.Dispose(); } catch { } }
+                }
+            }
+            catch { }
+
+            string[] vpnAdapterTokens = new[]
+            {
+                "wintun", "wireguard", "tap-windows", "openvpn", "tailscale",
+                "proton", "cloudflare", "warp", "mullvad", "exitlag", "radmin", "hamachi", "zerotier"
+            };
+            bool tunnelActive = Tunnel.Active(true);
+            try
+            {
+                var upPhysical = new List<string>();
+                foreach (NetworkInterface ni in NetworkInterface.GetAllNetworkInterfaces())
+                {
+                    try
+                    {
+                        if (ni.OperationalStatus != OperationalStatus.Up || ni.NetworkInterfaceType == NetworkInterfaceType.Loopback) continue;
+                        string combined = ((ni.Description ?? "") + " " + (ni.Name ?? "")).ToLowerInvariant();
+                        uint metric = 0;
+                        bool hasMetric = false;
+                        try
+                        {
+                            IPv4InterfaceProperties v4 = ni.GetIPProperties().GetIPv4Properties();
+                            if (v4 != null) hasMetric = TryGetIpv4InterfaceMetric(v4.Index, out metric);
+                        }
+                        catch { }
+
+                        bool isWsAdapter = combined.Contains("wiresock");
+                        bool isOtherVpn = false;
+                        for (int i = 0; i < vpnAdapterTokens.Length; i++)
+                        {
+                            if (combined.Contains(vpnAdapterTokens[i])) { isOtherVpn = true; break; }
+                        }
+
+                        if (isOtherVpn || (isWsAdapter && !tunnelActive))
+                        {
+                            string info = hasMetric ? ni.Name + " (métrica " + metric + ")" : ni.Name;
+                            if (!r.ConflictingAdapters.Contains(info)) r.ConflictingAdapters.Add(info);
+                            if (hasMetric && metric <= 15 && !r.LowMetricAdapters.Contains(info))
+                                r.LowMetricAdapters.Add(info);
+                        }
+                        else if (!IsVirtualOrTunnelAdapter(ni))
+                        {
+                            string info = hasMetric ? ni.Name + " (métrica " + metric + ")" : ni.Name;
+                            if (hasMetric && metric <= 15) upPhysical.Add(info);
+                        }
+                    }
+                    catch { }
+                }
+                if (upPhysical.Count > 1)
+                {
+                    for (int i = 0; i < upPhysical.Count; i++)
+                        if (!r.LowMetricAdapters.Contains(upPhysical[i])) r.LowMetricAdapters.Add(upPhysical[i]);
+                }
+            }
+            catch { }
+
+            if (r.WireSockServiceRunning)
+                r.Warnings.Add("Serviço nativo do aplicativo oficial do WireSock em execução (conflito direto de driver).");
+            if (r.WireSockProcessCount > 1)
+                r.Warnings.Add("Múltiplos processos wiresock-client.exe rodando ao mesmo tempo (" + r.WireSockProcessCount + ").");
+            if (!r.NdisDriverPresent)
+                r.Warnings.Add("Driver NDIS do WireSock (ndiswgc) não está ativo no Windows.");
+            if (r.ConflictingAdapters.Count > 0)
+                r.Warnings.Add("Adaptador VPN/virtual concorrente ativo: " + string.Join(", ", r.ConflictingAdapters.ToArray()) + ".");
+            if (r.LowMetricAdapters.Count > 0)
+                r.Warnings.Add("Métrica de rota <= 15 concorrente (pode confundir o roteamento do WireSock): " + string.Join(", ", r.LowMetricAdapters.ToArray()) + ".");
+            if (r.ConflictingServices.Count > 0)
+                r.Warnings.Add("Serviço VPN/rede concorrente ativo: " + string.Join(", ", r.ConflictingServices.ToArray()) + ".");
+
+            return r;
+        }
+    }
+
+    // In-memory passive ring buffer recording network flaps, WireSock log errors and tunnel transitions
+    static class NetMon
+    {
+        public enum EventKind { Info, Warn, Error }
+
+        public class EventItem
+        {
+            public DateTime Time;
+            public string Category;
+            public EventKind Kind;
+            public string Message;
+        }
+
+        const int Capacity = 512;
+        static readonly object sync = new object();
+        static readonly EventItem[] ring = new EventItem[Capacity];
+        static int head;
+        static int count;
+        static long version;
+
+        public static long Version
+        {
+            get { lock (sync) return version; }
+        }
+
+        public static void Record(string category, EventKind kind, string message)
+        {
+            if (string.IsNullOrEmpty(message)) return;
+            var item = new EventItem
+            {
+                Time = DateTime.Now,
+                Category = string.IsNullOrEmpty(category) ? "Sistema" : category,
+                Kind = kind,
+                Message = message.Trim()
+            };
+            lock (sync)
+            {
+                ring[head] = item;
+                head = (head + 1) % Capacity;
+                if (count < Capacity) count++;
+                version++;
+            }
+        }
+
+        public static EventItem[] Snapshot(int maxCount)
+        {
+            lock (sync)
+            {
+                int take = maxCount <= 0 ? count : Math.Min(maxCount, count);
+                var res = new EventItem[take];
+                int start = (head - take + Capacity) % Capacity;
+                for (int i = 0; i < take; i++)
+                    res[i] = ring[(start + i) % Capacity];
+                return res;
+            }
+        }
+
+        public static string ExportText(int maxCount)
+        {
+            EventItem[] items = Snapshot(maxCount);
+            var sb = new StringBuilder();
+            for (int i = 0; i < items.Length; i++)
+            {
+                EventItem it = items[i];
+                string tag = it.Kind == EventKind.Error ? "ERRO" : it.Kind == EventKind.Warn ? "AVISO" : "INFO";
+                sb.AppendFormat("[{0:HH:mm:ss}] [{1}] [{2}] {3}\r\n", it.Time, tag, it.Category, it.Message);
+            }
+            return sb.ToString().TrimEnd();
+        }
+
+        public static void Clear()
+        {
+            lock (sync)
+            {
+                Array.Clear(ring, 0, Capacity);
+                head = 0;
+                count = 0;
+                version++;
+            }
+        }
     }
 
     // Fast Win32 process helpers: avoids Process.MainModule exceptions and per-process EnumWindows
@@ -2804,6 +3376,9 @@ namespace VpnPanel
 
         [DllImport("kernel32.dll")]
         static extern bool CloseHandle(IntPtr hObject);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        static extern bool GetExitCodeProcess(IntPtr hProcess, out uint lpExitCode);
 
         [DllImport("user32.dll")]
         static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
@@ -3027,6 +3602,14 @@ namespace VpnPanel
         public static bool IsAlive(IntPtr handle)
         {
             return handle != IntPtr.Zero && WaitForSingleObject(handle, 0) == WAIT_TIMEOUT;
+        }
+
+        public static int ExitCode(IntPtr handle)
+        {
+            uint code;
+            if (handle != IntPtr.Zero && GetExitCodeProcess(handle, out code))
+                return unchecked((int)code);
+            return -1;
         }
 
         public static void Close(ref IntPtr handle)

@@ -92,11 +92,13 @@ namespace VpnPanel
         readonly FrameworkElement pageHome, pageServers, pageApps, pageDiag, pageOptions;
         // Testes & Saúde (PageDiag)
         readonly Border diagRouteBadge, cardDiagVerdict, cardDiagLive;
-        readonly Ellipse diagVerdictDot, chkItem1Dot, chkItem2Dot, chkItem3Dot, chkItem4Dot, chkItem5Dot;
+        readonly Ellipse diagVerdictDot, chkItem1Dot, chkItem2Dot, chkItem3Dot, chkItem4Dot, chkItem5Dot, chkItem6Dot, chkItem7Dot;
         readonly TextBlock txtDiagRouteBadge, txtDiagVerdict, txtDiagVerdictSub;
-        readonly TextBlock txtDiagLiveStatus, txtDiagLiveTime, txtDiagSentLoss, txtDiagPing, txtDiagJitter, txtDiagDrops;
-        readonly TextBlock txtChk1Detail, txtChk2Detail, txtChk3Detail, txtChk4Detail, txtChk5Detail;
-        readonly Button btnDiagQuick, btnDiagContinuous, btnDiagRepair, btnDiagCopy, btnDiagApps;
+        readonly TextBlock txtDiagLiveStatus, txtDiagLiveTime, txtDiagSentLoss, txtDiagPing, txtDiagJitter, txtDiagDrops, txtDiagGw, txtDiagEp;
+        readonly TextBlock txtChk1Detail, txtChk2Detail, txtChk3Detail, txtChk4Detail, txtChk5Detail, txtChk6Detail, txtChk7Detail;
+        readonly TextBlock txtDiagTimelineEmpty;
+        readonly StackPanel diagTimelineList;
+        readonly Button btnDiagQuick, btnDiagContinuous, btnDiagRepair, btnDiagCopy, btnDiagApps, btnDiagClearLog;
 
         readonly WF.NotifyIcon tray;
         readonly WF.ContextMenuStrip trayMenu;
@@ -114,11 +116,12 @@ namespace VpnPanel
 
         Microsoft.Win32.PowerModeChangedEventHandler powerModeHandler;
         System.Net.NetworkInformation.NetworkAddressChangedEventHandler networkAddressHandler;
+        System.Net.NetworkInformation.NetworkAvailabilityChangedEventHandler networkAvailHandler;
 
         bool exiting, hintShown, loading, serversDirty, appsDirty, ipDirty;
         bool? wasRunning;
-        bool userStopped, connecting, reconnectPending;
-        int reconnectAttempts;
+        bool userStopped, connecting, reconnectPending, pendingPreConnectCleanup;
+        int reconnectAttempts, postDropCleanupSeq;
         uint msgTaskbarCreated;
         IntPtr windowHandle;
         bool hotkeyRegistered;
@@ -142,8 +145,9 @@ namespace VpnPanel
         static extern uint RegisterWindowMessage(string lpString);
         DateTime startedAt, lastProcScan, lastHomePing, lastHomeAppsCheck;
         long connectTotalStartTick, connectLaunchTick, resumeGraceUntilTick, lastDropTick;
-        long rehandshakeSuspectTick, lastObservedRx;
-        bool connectPausedForDialog, activeProbeRunning, rehandshakeConfirmedDown;
+        long rehandshakeSuspectTick;
+        int rehandshakeGen;
+        bool connectPausedForDialog, activeProbeRunning, rehandshakeConfirmedDown, rehandshakeOnlyChecked10s;
         bool wireSockScanRunning, cmdLineLookupRunning, runningAppsScanRunning;
         long lastWireSockBgCheckTick;
         string lastHomeAppsRunningKey = "";
@@ -196,9 +200,16 @@ namespace VpnPanel
 
         // diagnostics tab (Testes & Saúde)
         CancellationTokenSource diagQuickCts, diagContCts;
+        Thread diagContThread;
         int diagEpoch, diagContEpoch;
         bool diagQuickRunning, diagContinuousRunning;
+        long lastTimelineVersion = -1;
         string lastDiagSummary = "";
+        string lastContSummary = "";
+        string lastNetSignature = "";
+        readonly object netSigLock = new object();
+        long suppressMtuLogUntilTick;
+        readonly Dictionary<string, long> netMonLogCooldown = new Dictionary<string, long>(StringComparer.Ordinal);
 
         T E<T>(string name) where T : class { return (T)w.FindName(name); }
 
@@ -323,17 +334,26 @@ namespace VpnPanel
             txtDiagPing = E<TextBlock>("TxtDiagPing");
             txtDiagJitter = E<TextBlock>("TxtDiagJitter");
             txtDiagDrops = E<TextBlock>("TxtDiagDrops");
+            txtDiagGw = E<TextBlock>("TxtDiagGw");
+            txtDiagEp = E<TextBlock>("TxtDiagEp");
             chkItem1Dot = E<Ellipse>("ChkItem1Dot");
             chkItem2Dot = E<Ellipse>("ChkItem2Dot");
             chkItem3Dot = E<Ellipse>("ChkItem3Dot");
             chkItem4Dot = E<Ellipse>("ChkItem4Dot");
             chkItem5Dot = E<Ellipse>("ChkItem5Dot");
+            chkItem6Dot = E<Ellipse>("ChkItem6Dot");
+            chkItem7Dot = E<Ellipse>("ChkItem7Dot");
             txtChk1Detail = E<TextBlock>("TxtChk1Detail");
             txtChk2Detail = E<TextBlock>("TxtChk2Detail");
             txtChk3Detail = E<TextBlock>("TxtChk3Detail");
             txtChk4Detail = E<TextBlock>("TxtChk4Detail");
             txtChk5Detail = E<TextBlock>("TxtChk5Detail");
+            txtChk6Detail = E<TextBlock>("TxtChk6Detail");
+            txtChk7Detail = E<TextBlock>("TxtChk7Detail");
             btnDiagApps = E<Button>("BtnDiagApps");
+            btnDiagClearLog = E<Button>("BtnDiagClearLog");
+            txtDiagTimelineEmpty = E<TextBlock>("TxtDiagTimelineEmpty");
+            diagTimelineList = E<StackPanel>("DiagTimelineList");
 
             // title bar
             var btnMin = E<Button>("BtnMin");
@@ -451,6 +471,7 @@ namespace VpnPanel
             btnDiagContinuous.Click += (s, e) => ToggleContinuousDiag();
             btnDiagRepair.Click += (s, e) => RepairDiagNetwork();
             btnDiagCopy.Click += (s, e) => CopyDiagReport();
+            btnDiagClearLog.Click += (s, e) => { NetMon.Clear(); UpdateDiagTimeline(); };
             btnDiagApps.Click += (s, e) =>
             {
                 if (active == null) { tabApps.IsChecked = true; return; }
@@ -599,7 +620,7 @@ namespace VpnPanel
                             if (exiting) return;
                             // Reset monotonic handshake/connect timers so sleep duration never counts toward timeouts
                             if (pendingSinceTick != null) pendingSinceTick = NowTicks();
-                            if (rehandshakeSuspectTick > 0) rehandshakeSuspectTick = 0;
+                            if (rehandshakeSuspectTick > 0) { rehandshakeSuspectTick = 0; rehandshakeGen++; }
                             rehandshakeConfirmedDown = false;
                             if (connectLaunchTick > 0) connectLaunchTick = NowTicks();
                             if (isResume)
@@ -617,6 +638,7 @@ namespace VpnPanel
 
             networkAddressHandler = (s, e) =>
             {
+                ThreadPool.QueueUserWorkItem(_ => RecordNetworkAddressDelta());
                 var ui = Application.Current != null ? Application.Current.Dispatcher : null;
                 if (ui != null)
                 {
@@ -628,7 +650,14 @@ namespace VpnPanel
                     }));
                 }
             };
+            networkAvailHandler = (s, e) =>
+            {
+                NetMon.Record("Rede", e.IsAvailable ? NetMon.EventKind.Info : NetMon.EventKind.Error,
+                    e.IsAvailable ? "Rede do Windows ficou disponível" : "Rede do Windows ficou indisponível (sem link)");
+            };
             try { System.Net.NetworkInformation.NetworkChange.NetworkAddressChanged += networkAddressHandler; } catch { }
+            try { System.Net.NetworkInformation.NetworkChange.NetworkAvailabilityChanged += networkAvailHandler; } catch { }
+            ThreadPool.QueueUserWorkItem(_ => RecordNetworkAddressDelta(true));
 
             ListenForShowRequests();
             WatchConfigs();
@@ -912,6 +941,7 @@ namespace VpnPanel
             SaveWindowPosition();
             if (powerModeHandler != null) { try { Microsoft.Win32.SystemEvents.PowerModeChanged -= powerModeHandler; } catch { } }
             if (networkAddressHandler != null) { try { System.Net.NetworkInformation.NetworkChange.NetworkAddressChanged -= networkAddressHandler; } catch { } }
+            if (networkAvailHandler != null) { try { System.Net.NetworkInformation.NetworkChange.NetworkAvailabilityChanged -= networkAvailHandler; } catch { } }
             if (hotkeyRegistered && windowHandle != IntPtr.Zero)
             {
                 UnregisterHotKey(windowHandle, HotkeyId);
@@ -1357,9 +1387,32 @@ namespace VpnPanel
             }
         }
 
+        void QueuePostDropCleanup()
+        {
+            int dropSeq = ++postDropCleanupSeq;
+            ThreadPool.QueueUserWorkItem(_ =>
+            {
+                ConfFile.DeleteRuntimeCopies();
+                if (exiting || dropSeq != postDropCleanupSeq || connecting || reconnectPending || wasRunning == true) return;
+                if (Tunnel.HasPendingNetworkLock || settings.NetworkLock) Tunnel.ResetNetworkLock();
+                else ConfFile.CleanGhostNetwork();
+            });
+        }
+
         void Toggle()
         {
-            if (reconnectTimer.IsEnabled) { reconnectTimer.Stop(); UpdateState(); return; }
+            if (reconnectTimer.IsEnabled)
+            {
+                reconnectTimer.Stop();
+                reconnectAttempts = 0;
+                bool needCleanup = pendingPreConnectCleanup;
+                pendingPreConnectCleanup = false;
+                NetMon.Record("Túnel", NetMon.EventKind.Info, "Reconexão automática cancelada pelo usuário");
+                UpdateState();
+                UpdatePollInterval();
+                if (needCleanup) QueuePostDropCleanup();
+                return;
+            }
             if ((wasRunning == true && !userStopped) || connecting || reconnectPending) Disconnect(true);
             else Connect();
         }
@@ -1383,6 +1436,7 @@ namespace VpnPanel
                 UpdateState();
                 return;
             }
+            StopContinuousDiag("Interrompido: túnel alterado");
 
             string cfgName = active.Name;
             string wireSockExe = Paths.WireSock;
@@ -1395,6 +1449,9 @@ namespace VpnPanel
             int targetMtu = settings.OptimizeMtu ? 1380 : 0;
 
             if (!fromAutoReconnect) reconnectAttempts = 0;
+            bool needPreCleanup = pendingPreConnectCleanup;
+            pendingPreConnectCleanup = false;
+            postDropCleanupSeq++;
             CloseLogStream();
             Traffic.Stop();
             ResetTrafficLabels();
@@ -1405,6 +1462,7 @@ namespace VpnPanel
             connectTotalStartTick = NowTicks();
             StartMonitoring(true);
             appsNeedReconnect = false;
+            NetMon.Record("Túnel", NetMon.EventKind.Info, (fromAutoReconnect ? "Reconectando " : "Conectando ") + cfgName + " (" + effectiveMode + ")");
             settings.AddRecent(cfgName);
             UpdateAppsSaved();
             UpdateState();
@@ -1413,6 +1471,12 @@ namespace VpnPanel
             int seq = ++connectSeq;
             ThreadPool.QueueUserWorkItem(_ =>
             {
+                if (needPreCleanup)
+                {
+                    if (Tunnel.HasPendingNetworkLock || settings.NetworkLock) Tunnel.ResetNetworkLock();
+                    else ConfFile.CleanGhostNetwork();
+                    if (seq != connectSeq) return;
+                }
                 if (Paths.WireSockServiceRunning)
                 {
                     bool confirmed = false;
@@ -1527,7 +1591,9 @@ namespace VpnPanel
         // byUser: the user asked for it (resets the auto-reconnect budget)
         void Disconnect(bool byUser)
         {
+            StopContinuousDiag("Interrompido: túnel alterado");
             int seq = ++connectSeq;
+            postDropCleanupSeq++;
             userStopped = true;
             connecting = false;
             connectPausedForDialog = false;
@@ -1537,9 +1603,11 @@ namespace VpnPanel
             StopMonitoring();
             Traffic.Stop();
             ResetTrafficLabels();
+            NetMon.Record("Túnel", NetMon.EventKind.Info, byUser ? "Desconectado pelo usuário" : "Desconectando túnel");
             if (byUser)
             {
                 reconnectPending = false;
+                pendingPreConnectCleanup = false;
                 reconnectAttempts = 0;
                 if (reconnectTimer != null && reconnectTimer.IsEnabled) reconnectTimer.Stop();
             }
@@ -1575,6 +1643,7 @@ namespace VpnPanel
         void Reconnect()
         {
             if (wasRunning != true && !connecting) { Connect(); return; }
+            NetMon.Record("Túnel", NetMon.EventKind.Warn, "Reiniciando túnel...");
             reconnectPending = true;
             Disconnect(false);
         }
@@ -1590,7 +1659,9 @@ namespace VpnPanel
         {
             monitoring = false;
             rehandshakeSuspectTick = 0;
+            rehandshakeGen++;
             rehandshakeConfirmedDown = false;
+            rehandshakeOnlyChecked10s = false;
             activeProbeRunning = false;
             CloseLogStream();
         }
@@ -1605,34 +1676,65 @@ namespace VpnPanel
             seekToTail = !fresh;
             pendingSinceTick = fresh ? (long?)NowTicks() : null;
             rehandshakeSuspectTick = 0;
+            rehandshakeGen++;
             rehandshakeConfirmedDown = false;
+            rehandshakeOnlyChecked10s = false;
             activeProbeRunning = false;
-            lastObservedRx = 0;
             logPos = 0;
             logRest = "";
             logDecoder.Reset();
         }
 
-        void InspectHandshakeLine(string line)
+        static string ExtractLogMessage(string line, out string level)
         {
+            level = "";
+            if (string.IsNullOrEmpty(line)) return "";
+            Match lm = Regex.Match(line, "\"log_level\"\\s*:\\s*\"([^\"]+)\"", RegexOptions.IgnoreCase);
+            if (lm.Success) level = lm.Groups[1].Value.Trim().ToLowerInvariant();
+            Match mm = Regex.Match(line, "\"message\"\\s*:\\s*\"((?:[^\"\\\\]|\\\\.)*)\"");
+            if (mm.Success)
+            {
+                string msg = mm.Groups[1].Value.Replace("\\\"", "\"").Replace("\\\\", "\\");
+                return Regex.Replace(msg, @"\[\w+\]:\s*(Unhandled exception\s*)?", "").Trim();
+            }
+            return Regex.Replace(line.Trim(), @"^\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}(?:\.\d+)?\s*", "").Trim();
+        }
+
+        void RecordWireSockLogEvent(string key, NetMon.EventKind kind, string message)
+        {
+            long lastTick;
+            if (netMonLogCooldown.TryGetValue(key, out lastTick) && ElapsedSeconds(lastTick) < 10.0) return;
+            netMonLogCooldown[key] = NowTicks();
+            NetMon.Record("WireSock", kind, message);
+        }
+
+        void InspectHandshakeLine(string line, bool suppressEvents)
+        {
+            if (string.IsNullOrWhiteSpace(line)) return;
             if (line.IndexOf("Handshake response received", StringComparison.OrdinalIgnoreCase) >= 0 ||
                 line.IndexOf("Receiving handshake response", StringComparison.OrdinalIgnoreCase) >= 0)
             {
+                bool recovering = rehandshakeSuspectTick > 0;
                 handshakeOk = sawHandshake = true;
                 pendingSinceTick = null;
                 rehandshakeSuspectTick = 0;
+                rehandshakeGen++;
                 rehandshakeConfirmedDown = false;
+                rehandshakeOnlyChecked10s = false;
                 activeProbeRunning = false;
+                if (recovering && !suppressEvents) NetMon.Record("WireSock", NetMon.EventKind.Info, "Re-handshake WireGuard recuperado");
+                return;
             }
-            else if (line.IndexOf("Handshake initiation sent", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                     line.IndexOf("Sending handshake initiation", StringComparison.OrdinalIgnoreCase) >= 0)
+            if (line.IndexOf("Handshake initiation sent", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                line.IndexOf("Sending handshake initiation", StringComparison.OrdinalIgnoreCase) >= 0)
             {
                 sawHandshake = true;
                 // Only track initial pre-handshake pending window; post-handshake rekeys must not flap UI due to 4KB stdout buffering
                 if (!handshakeOk && pendingSinceTick == null)
                     pendingSinceTick = NowTicks();
+                return;
             }
-            else if (line.IndexOf("Handshake did not complete", StringComparison.OrdinalIgnoreCase) >= 0)
+            if (line.IndexOf("Handshake did not complete", StringComparison.OrdinalIgnoreCase) >= 0)
             {
                 sawHandshake = true;
                 if (!handshakeOk)
@@ -1642,8 +1744,36 @@ namespace VpnPanel
                 else if (rehandshakeSuspectTick == 0)
                 {
                     rehandshakeSuspectTick = NowTicks();
+                    rehandshakeGen++;
+                    rehandshakeOnlyChecked10s = false;
+                    if (!suppressEvents) NetMon.Record("WireSock", NetMon.EventKind.Warn, "Handshake WireGuard não completou — verificando túnel");
                 }
+                return;
             }
+            if (suppressEvents) return;
+
+            string level;
+            string msg = ExtractLogMessage(line, out level);
+            if (string.IsNullOrEmpty(msg)) return;
+            string low = msg.ToLowerInvariant();
+
+            if (low.Contains("failed to inject bypass packet") || low.Contains("failed to enqueue packet for deferred processing"))
+                RecordWireSockLogEvent("bypass", NetMon.EventKind.Error, "Driver falhou ao reinjetar pacote na placa física (bypass/fila)");
+            else if (low.Contains("packet size is above mtu"))
+            {
+                if (NowTicks() > Interlocked.Read(ref suppressMtuLogUntilTick))
+                    RecordWireSockLogEvent("mtu", NetMon.EventKind.Warn, "Pacote excedeu MTU configurado no túnel");
+            }
+            else if (low.Contains("ip_interface_changed_callback") || low.Contains("network adapter list changed"))
+                RecordWireSockLogEvent("flap", NetMon.EventKind.Warn, "WireSock detectou alteração/flap de adaptador e reiniciará o filtro");
+            else if (low.Contains("watchdog") || low.Contains("tunnel restart failed"))
+                RecordWireSockLogEvent("watchdog", NetMon.EventKind.Error, "Watchdog do WireSock: " + (msg.Length > 110 ? msg.Substring(0, 110) + "..." : msg));
+            else if (level == "error" || level == "fatal" || level == "critical")
+                RecordWireSockLogEvent("err", NetMon.EventKind.Error, msg.Length > 120 ? msg.Substring(0, 120) + "..." : msg);
+            else if (level == "warning" || level == "warn")
+                RecordWireSockLogEvent("warn", NetMon.EventKind.Warn, msg.Length > 120 ? msg.Substring(0, 120) + "..." : msg);
+            else if (string.IsNullOrEmpty(level) && (low.Contains("error") || low.Contains("exception") || low.Contains("failed") || low.Contains("fatal")))
+                RecordWireSockLogEvent("err", NetMon.EventKind.Error, msg.Length > 120 ? msg.Substring(0, 120) + "..." : msg);
         }
 
         void ReadHandshakes()
@@ -1657,9 +1787,11 @@ namespace VpnPanel
                     logDecoder.Reset();
                 }
                 long len = logStream.Length;
+                bool isTailReplay = false;
                 if (seekToTail)
                 {
                     seekToTail = false;
+                    isTailReplay = true;
                     if (len > 65536) logPos = len - 65536;
                 }
                 if (len < logPos)
@@ -1687,7 +1819,7 @@ namespace VpnPanel
                 if (cut >= 0)
                 {
                     foreach (string line in text.Substring(0, cut).Split('\n'))
-                        InspectHandshakeLine(line);
+                        InspectHandshakeLine(line, isTailReplay);
                 }
             }
             catch
@@ -1742,9 +1874,28 @@ namespace VpnPanel
                     if (fs.Length > 32768) fs.Seek(fs.Length - 32768, SeekOrigin.Begin);
                     using (var r = new StreamReader(fs))
                     {
-                        string last = r.ReadToEnd().Split('\n').Select(l => l.Trim()).LastOrDefault(l => l.Contains("\"log_level\":\"error\""));
-                        Match m = last != null ? Regex.Match(last, "\"message\"\\s*:\\s*\"((?:[^\"\\\\]|\\\\.)*)\"") : Match.Empty;
-                        if (m.Success) message = Regex.Replace(m.Groups[1].Value, @"\[\w+\]:\s*(Unhandled exception\s*)?", "").Trim();
+                        string[] lines = r.ReadToEnd().Split('\n');
+                        string warnFallback = null;
+                        string plainFallback = null;
+                        for (int i = lines.Length - 1; i >= 0; i--)
+                        {
+                            string l = lines[i].Trim();
+                            if (l.Length == 0) continue;
+                            string lvl;
+                            string msg = ExtractLogMessage(l, out lvl);
+                            if (string.IsNullOrEmpty(msg)) continue;
+                            if (lvl == "error" || lvl == "fatal" || lvl == "critical") { message = msg; break; }
+                            if (warnFallback == null && (lvl == "warning" || lvl == "warn")) warnFallback = msg;
+                            if (plainFallback == null && string.IsNullOrEmpty(lvl))
+                            {
+                                string low = msg.ToLowerInvariant();
+                                if (low.Contains("error") || low.Contains("exception") || low.Contains("failed") ||
+                                    low.Contains("watchdog") || low.Contains("wintun") || low.Contains("ndis") ||
+                                    low.Contains("access denied") || low.Contains("fatal"))
+                                    plainFallback = msg;
+                            }
+                        }
+                        if (string.IsNullOrEmpty(message)) message = warnFallback ?? plainFallback;
                     }
                 }
             }
@@ -1759,6 +1910,12 @@ namespace VpnPanel
                 return "Não foi possível encontrar o endereço do servidor. Confira sua internet ou escolha outro servidor.";
             if (lower.Contains("address") || lower.Contains("allowedips") || lower.Contains("parse"))
                 return "O arquivo deste servidor tem um erro de formato. Baixe o arquivo de novo no site do seu provedor.";
+            if (lower.Contains("inject") || lower.Contains("deferred") || lower.Contains("bypass"))
+                return "O driver do WireSock falhou ao repassar pacotes na placa de rede (conflito ou oscilação de adaptador).";
+            if (lower.Contains("mtu"))
+                return "Pacote excedeu o MTU configurado no túnel. Ative 'Otimizar MTU' nas Opções.";
+            if (lower.Contains("watchdog") || lower.Contains("adapter list changed"))
+                return "O WireSock reiniciou por alteração nos adaptadores de rede do Windows.";
             if (lower.Contains("driver") || lower.Contains("adapter") || lower.Contains("wintun") || lower.Contains("ndis"))
                 return "O WireSock não conseguiu preparar a rede. Reinstale o WireSock e reinicie o computador.";
             if (lower.Contains("access") && lower.Contains("denied"))
@@ -1987,19 +2144,27 @@ namespace VpnPanel
                     if (!userStopped && !reconnectPending)
                     {
                         lastDropTick = NowTicks();
-                        // Process exited unexpectedly: clear any residual WFP kill-switch lock asynchronously
-                        ThreadPool.QueueUserWorkItem(_ =>
+                        NetMon.Record("WireSock", NetMon.EventKind.Error,
+                            "wiresock-client encerrou inesperadamente (código " + Tunnel.LastExitCode + ")");
+                        bool willAutoReconnect = !quick && settings.AutoReconnect && reconnectAttempts < MaxReconnects;
+                        if (willAutoReconnect)
                         {
-                            if (Tunnel.HasPendingNetworkLock || settings.NetworkLock) Tunnel.ResetNetworkLock();
-                            else ConfFile.CleanGhostNetwork();
-                        });
-                        if (quick) ShowError("Não foi possível conectar", LogTail());
-                        else if (settings.AutoReconnect && reconnectAttempts < MaxReconnects)
-                        {
+                            // Serialize cleanup inside Connect(true) before Tunnel.Start so it never races the new tunnel
+                            pendingPreConnectCleanup = true;
+                            ThreadPool.QueueUserWorkItem(_ => ConfFile.DeleteRuntimeCopies());
                             reconnectAttempts++;
                             reconnectTimer.Start();
                         }
-                        else ShowError("A conexão caiu", reconnectAttempts > 0 ? "Tentei reconectar " + reconnectAttempts + " vezes sem sucesso. " + LogTail() : LogTail());
+                        else
+                        {
+                            QueuePostDropCleanup();
+                            if (quick) ShowError("Não foi possível conectar", LogTail());
+                            else ShowError("A conexão caiu", reconnectAttempts > 0 ? "Tentei reconectar " + reconnectAttempts + " vezes sem sucesso. " + LogTail() : LogTail());
+                        }
+                    }
+                    else
+                    {
+                        ThreadPool.QueueUserWorkItem(_ => ConfFile.DeleteRuntimeCopies());
                     }
                     userStopped = false;
                     runningConfig = null;
@@ -2027,18 +2192,11 @@ namespace VpnPanel
             if (running && monitoring)
             {
                 ReadHandshakes();
-                if (Traffic.Running && (long)Traffic.SessionIn > lastObservedRx)
-                {
-                    lastObservedRx = (long)Traffic.SessionIn;
-                    rehandshakeSuspectTick = 0;
-                    rehandshakeConfirmedDown = false;
-                }
                 // a WireSock version that logs handshakes differently or whose 4 KB stdout buffer hasn't flushed yet:
-                // assume initial connection succeeded after the grace window, but keep monitoring open
+                // assume initial connection succeeded after the grace window, keeping log monitoring active
                 if (!sawHandshake && (DateTime.Now - startedAt).TotalSeconds > (logPos > 0 ? 10 : 25))
                 {
-                    if (logPos > 0) StopMonitoring();
-                    else handshakeOk = true;
+                    handshakeOk = true;
                     pendingSinceTick = null;
                 }
                 bool pastResumeGrace = resumeGraceUntilTick == 0 || NowTicks() >= resumeGraceUntilTick;
@@ -2053,14 +2211,28 @@ namespace VpnPanel
                         hasMultiple ? (Action)ConnectFastest : Connect,
                         "Trocar servidor", () => tabServers.IsChecked = true);
                 }
-                // Post-handshake: only verify with active probe if WireSock explicitly logged "Handshake did not complete"
+                // Post-handshake: verify with mode-appropriate probe if WireSock logged "Handshake did not complete"
                 else if (handshakeOk && rehandshakeSuspectTick > 0 && pastResumeGrace)
                 {
-                    if (!rehandshakeConfirmedDown && !activeProbeRunning && ElapsedSeconds(rehandshakeSuspectTick) > 10)
+                    AppMode curMode = EffectiveAppMode();
+                    if (curMode == AppMode.Only)
                     {
-                        ProbeRehandshakeAsync(lastObservedRx, active);
+                        if (!rehandshakeOnlyChecked10s && !rehandshakeConfirmedDown && !activeProbeRunning && ElapsedSeconds(rehandshakeSuspectTick) > 10)
+                        {
+                            ProbeRehandshakeAsync(active);
+                        }
+                        else if (rehandshakeOnlyChecked10s && !rehandshakeConfirmedDown && !activeProbeRunning && ElapsedSeconds(rehandshakeSuspectTick) > 30)
+                        {
+                            rehandshakeConfirmedDown = true;
+                            NetMon.Record("WireSock", NetMon.EventKind.Warn, "Re-handshake sem resposta há 30s (modo Só estes)");
+                        }
                     }
-                    else if (rehandshakeConfirmedDown && ElapsedSeconds(rehandshakeSuspectTick) > GiveUpAfter)
+                    else if (!rehandshakeConfirmedDown && !activeProbeRunning && ElapsedSeconds(rehandshakeSuspectTick) > 10)
+                    {
+                        ProbeRehandshakeAsync(active);
+                    }
+
+                    if (rehandshakeConfirmedDown && ElapsedSeconds(rehandshakeSuspectTick) > GiveUpAfter)
                     {
                         if (settings.AutoReconnect && reconnectAttempts < MaxReconnects)
                         {
@@ -2131,42 +2303,70 @@ namespace VpnPanel
                     RefreshRunningAppsAsync(active.Apps);
                 }
             }
+            if (WindowShowing && pageDiag != null && pageDiag.Visibility == Visibility.Visible)
+                UpdateDiagTimeline();
             UpdatePollInterval();
         }
 
-        void ProbeRehandshakeAsync(long rxSnapshot, ConfigInfo cfgSnapshot)
+        void ProbeRehandshakeAsync(ConfigInfo cfgSnapshot)
         {
             activeProbeRunning = true;
             AppMode effMode = EffectiveAppMode();
+            int seq = connectSeq;
+            int hsGen = rehandshakeGen;
             ThreadPool.QueueUserWorkItem(_ =>
             {
-                bool ok = false;
+                bool tunnelAlive = false;
+                bool epOk = false;
                 try
                 {
-                    if (cfgSnapshot != null && !string.IsNullOrEmpty(cfgSnapshot.Endpoint))
+                    if (effMode != AppMode.Only)
                     {
-                        var epRes = NetDiag.ProbeEndpoint(cfgSnapshot, 1500, CancellationToken.None);
-                        ok = epRes != null && epRes.Ok;
+                        // All/Except: raw UDP DNS traverses the tunnel (no Windows DNS cache, no TCP RST false OK)
+                        NetDiag.ProbeResult udpRes = NetDiag.ProbeUdpDns("1.1.1.1", 53, 1500, CancellationToken.None);
+                        tunnelAlive = udpRes != null && udpRes.Ok;
+                        if (!tunnelAlive && cfgSnapshot != null && !string.IsNullOrEmpty(cfgSnapshot.Endpoint))
+                        {
+                            NetDiag.ProbeResult epRes = NetDiag.ProbeEndpoint(cfgSnapshot, 1500, CancellationToken.None);
+                            epOk = epRes != null && epRes.Ok;
+                            if (seq == connectSeq && hsGen == rehandshakeGen)
+                                NetMon.Record("Túnel", NetMon.EventKind.Warn,
+                                    "Túnel sem resposta UDP; endpoint físico " + (epOk ? "acessível" : "inacessível"));
+                        }
                     }
-                    // In All/Except modes VPN Panel's own DNS traffic traverses the tunnel, so DNS success proves tunnel liveness
-                    // even if the VPN server drops ICMP and TCP 443. In Only mode DNS goes outside the tunnel.
-                    if (!ok && effMode != AppMode.Only)
+                    else
                     {
-                        var dnsRes = NetDiag.ProbeDns("cloudflare.com", CancellationToken.None);
-                        ok = dnsRes != null && dnsRes.Ok;
+                        // Only mode: VpnPanel bypasses the tunnel; ProbeEndpoint only checks physical internet vs server
+                        if (cfgSnapshot != null && !string.IsNullOrEmpty(cfgSnapshot.Endpoint))
+                        {
+                            NetDiag.ProbeResult epRes = NetDiag.ProbeEndpoint(cfgSnapshot, 1500, CancellationToken.None);
+                            epOk = epRes != null && epRes.Ok;
+                        }
+                        else epOk = true;
                     }
                 }
-                catch { ok = false; }
+                catch { tunnelAlive = false; epOk = false; }
                 var ui = Application.Current != null ? Application.Current.Dispatcher : null;
                 if (ui != null)
                 {
                     ui.BeginInvoke(new Action(() =>
                     {
-                        activeProbeRunning = false;
-                        if (exiting || !monitoring || !handshakeOk) return;
-                        if (ok || (Traffic.Running && (long)Traffic.SessionIn > rxSnapshot))
+                        if (seq == connectSeq) activeProbeRunning = false;
+                        if (exiting || seq != connectSeq || !monitoring || !handshakeOk || rehandshakeSuspectTick == 0 || hsGen != rehandshakeGen) return;
+                        if (effMode == AppMode.Only)
+                        {
+                            rehandshakeOnlyChecked10s = true;
+                            if (!epOk)
+                            {
+                                rehandshakeConfirmedDown = true;
+                                NetMon.Record("Rede", NetMon.EventKind.Warn, "Re-handshake falhou e endpoint físico está inacessível");
+                            }
+                            return;
+                        }
+                        if (tunnelAlive)
                         {
                             rehandshakeSuspectTick = 0;
+                            rehandshakeGen++;
                             rehandshakeConfirmedDown = false;
                         }
                         else
@@ -2175,7 +2375,7 @@ namespace VpnPanel
                         }
                     }));
                 }
-                else activeProbeRunning = false;
+                else if (seq == connectSeq) activeProbeRunning = false;
             });
         }
 
@@ -2219,6 +2419,12 @@ namespace VpnPanel
             Conn prev = shown;
             Conn st = State;
             shown = st;
+            if (st != prev)
+            {
+                if (st == Conn.On) NetMon.Record("Túnel", NetMon.EventKind.Info, "VPN conectada (" + (active != null ? active.Name : "túnel") + ")");
+                else if (st == Conn.NoResponse) NetMon.Record("Túnel", NetMon.EventKind.Warn, "Servidor sem resposta ao handshake");
+                else if (st == Conn.Retrying) NetMon.Record("Túnel", NetMon.EventKind.Warn, "Reconexão automática (tentativa " + reconnectAttempts + "/" + MaxReconnects + ")");
+            }
             bool on = st == Conn.On;
             if (on && !Traffic.Running)
             {
@@ -3736,8 +3942,72 @@ namespace VpnPanel
             }
         }
 
+        bool HasActiveOrPendingTunnel
+        {
+            get { return wasRunning == true || connecting || reconnectPending || (reconnectTimer != null && reconnectTimer.IsEnabled); }
+        }
+
+        void DisconnectAndResetLock(Action onUiDone)
+        {
+            int seq = ++connectSeq;
+            postDropCleanupSeq++;
+            userStopped = true;
+            connecting = false;
+            connectPausedForDialog = false;
+            connectLaunchTick = 0;
+            wasRunning = false;
+            runningConfig = null;
+            reconnectPending = false;
+            pendingPreConnectCleanup = false;
+            reconnectAttempts = 0;
+            if (reconnectTimer != null && reconnectTimer.IsEnabled) reconnectTimer.Stop();
+            StopMonitoring();
+            Traffic.Stop();
+            ResetTrafficLabels();
+            bool netLock = settings.NetworkLock;
+            UpdateState();
+            UpdatePollInterval();
+            NetMon.Record("Bloqueio", NetMon.EventKind.Warn, "Desconectando túnel e resetando bloqueio de rede (WFP)");
+            ThreadPool.QueueUserWorkItem(_ =>
+            {
+                Tunnel.Stop(netLock);
+                Tunnel.ResetNetworkLock();
+                var ui = Application.Current != null ? Application.Current.Dispatcher : null;
+                if (ui != null)
+                {
+                    ui.BeginInvoke(new Action(() =>
+                    {
+                        if (exiting || seq != connectSeq) return;
+                        ipTimer.Stop();
+                        ipTimer.Start();
+                        Poll();
+                        if (onUiDone != null) onUiDone();
+                    }));
+                }
+            });
+        }
+
         void ResetNetworkLockAction()
         {
+            if (HasActiveOrPendingTunnel)
+            {
+                if (WindowShowing)
+                {
+                    bool ok = Dialogs.Confirm(w, "Túnel ativo",
+                        "Para liberar a internet e resetar o bloqueio com segurança, é preciso desconectar a VPN antes.",
+                        "Desconectar e liberar", true);
+                    if (!ok) return;
+                }
+                DisconnectAndResetLock(() =>
+                {
+                    if (WindowShowing)
+                        Dialogs.Info(w, "Internet liberada", "A VPN foi desconectada e o bloqueio de rede do WireSock foi desativado.");
+                    else if (tray != null)
+                        tray.ShowBalloonTip(3000, "Internet liberada", "VPN desconectada e bloqueio de rede desativado.", WF.ToolTipIcon.Info);
+                });
+                return;
+            }
+            NetMon.Record("Bloqueio", NetMon.EventKind.Warn, "Reset manual do bloqueio de rede (WFP)");
             ThreadPool.QueueUserWorkItem(_ =>
             {
                 Tunnel.ResetNetworkLock();
@@ -4204,11 +4474,207 @@ namespace VpnPanel
 
         // ---------- diagnostics (Testes & Saúde) ----------
 
+        void RecordNetworkAddressDelta() { RecordNetworkAddressDelta(false); }
+
+        void RecordNetworkAddressDelta(bool silent)
+        {
+            try
+            {
+                var parts = new List<string>();
+                bool hasPhysicalGw = false;
+                foreach (var ni in System.Net.NetworkInformation.NetworkInterface.GetAllNetworkInterfaces())
+                {
+                    if (ni.OperationalStatus != System.Net.NetworkInformation.OperationalStatus.Up ||
+                        ni.NetworkInterfaceType == System.Net.NetworkInformation.NetworkInterfaceType.Loopback)
+                        continue;
+                    string v4Ip = "";
+                    string gwIp = "";
+                    try
+                    {
+                        var props = ni.GetIPProperties();
+                        foreach (var ua in props.UnicastAddresses)
+                        {
+                            if (ua.Address.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork)
+                            {
+                                v4Ip = ua.Address.ToString();
+                                break;
+                            }
+                        }
+                        foreach (var gw in props.GatewayAddresses)
+                        {
+                            if (gw.Address != null && gw.Address.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork &&
+                                !IPAddress.Any.Equals(gw.Address))
+                            {
+                                gwIp = gw.Address.ToString();
+                                break;
+                            }
+                        }
+                    }
+                    catch { }
+                    if (string.IsNullOrEmpty(v4Ip) && string.IsNullOrEmpty(gwIp)) continue;
+                    string descLow = ((ni.Description ?? "") + " " + (ni.Name ?? "")).ToLowerInvariant();
+                    bool isVirtual = descLow.Contains("wiresock") || descLow.Contains("wintun") || descLow.Contains("wireguard") ||
+                                     descLow.Contains("tailscale") || descLow.Contains("warp") || descLow.Contains("hyper-v");
+                    if (!isVirtual && !string.IsNullOrEmpty(gwIp)) hasPhysicalGw = true;
+                    parts.Add(ni.Name + "=" + v4Ip + (string.IsNullOrEmpty(gwIp) ? "" : "/GW:" + gwIp));
+                }
+                parts.Sort(StringComparer.OrdinalIgnoreCase);
+                string sig = string.Join(" | ", parts.ToArray());
+                lock (netSigLock)
+                {
+                    if (sig == lastNetSignature) return;
+                    lastNetSignature = sig;
+                }
+                if (silent) return;
+                string summary = string.IsNullOrEmpty(sig) ? "Nenhuma interface IPv4 ativa" : sig;
+                NetMon.Record("Rede", hasPhysicalGw ? NetMon.EventKind.Info : NetMon.EventKind.Warn,
+                    "Mudança de interface/IP: " + summary);
+            }
+            catch { }
+        }
+
         void OnDiagPageShown()
         {
             UpdateDiagRouteBadge();
+            UpdateDiagTimeline();
             if (!diagQuickRunning && string.IsNullOrEmpty(lastDiagSummary))
                 RunQuickDiag();
+        }
+
+        void UpdateDiagTimeline()
+        {
+            if (diagTimelineList == null || txtDiagTimelineEmpty == null) return;
+            long v = NetMon.Version;
+            if (v == lastTimelineVersion) return;
+            lastTimelineVersion = v;
+
+            NetMon.EventItem[] items = NetMon.Snapshot(10);
+            diagTimelineList.Children.Clear();
+            if (items == null || items.Length == 0)
+            {
+                txtDiagTimelineEmpty.Visibility = Visibility.Visible;
+                diagTimelineList.Visibility = Visibility.Collapsed;
+                return;
+            }
+            txtDiagTimelineEmpty.Visibility = Visibility.Collapsed;
+            diagTimelineList.Visibility = Visibility.Visible;
+
+            for (int i = items.Length - 1; i >= 0; i--)
+            {
+                NetMon.EventItem it = items[i];
+                var row = new Grid { Margin = new Thickness(0, 0, 0, i == 0 ? 0 : 6) };
+                row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+                row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+
+                string brushKey = it.Kind == NetMon.EventKind.Error ? "Danger"
+                                : it.Kind == NetMon.EventKind.Warn ? "Warn"
+                                : "SecureText";
+                var dot = new Ellipse
+                {
+                    Width = 6,
+                    Height = 6,
+                    Fill = B(brushKey),
+                    VerticalAlignment = VerticalAlignment.Top,
+                    Margin = new Thickness(0, 5, 8, 0)
+                };
+                Grid.SetColumn(dot, 0);
+                row.Children.Add(dot);
+
+                var txt = new TextBlock
+                {
+                    Text = string.Format("{0:HH:mm:ss} [{1}] {2}", it.Time, it.Category, it.Message),
+                    FontSize = 11.5,
+                    Foreground = it.Kind == NetMon.EventKind.Error ? B("Danger") : it.Kind == NetMon.EventKind.Warn ? B("Warn") : B("Muted"),
+                    TextWrapping = TextWrapping.Wrap
+                };
+                Grid.SetColumn(txt, 1);
+                row.Children.Add(txt);
+                diagTimelineList.Children.Add(row);
+            }
+        }
+
+        static NetDiag.ProbeResult ProbeIcmpSingle(IPAddress ip, int timeoutMs, CancellationToken ct)
+        {
+            if (ip == null) return new NetDiag.ProbeResult { Ok = false, LatencyMs = -1, Target = "", Detail = "Sem gateway" };
+            if (ct.IsCancellationRequested) return new NetDiag.ProbeResult { Ok = false, LatencyMs = -1, Target = ip.ToString(), Detail = "Cancelado" };
+            try
+            {
+                using (var ping = new System.Net.NetworkInformation.Ping())
+                {
+                    var rep = ping.Send(ip, Math.Max(300, timeoutMs));
+                    if (rep != null && rep.Status == System.Net.NetworkInformation.IPStatus.Success)
+                    {
+                        return new NetDiag.ProbeResult
+                        {
+                            Ok = true,
+                            LatencyMs = Math.Max(1, (int)rep.RoundtripTime),
+                            Target = ip.ToString(),
+                            Detail = "ICMP OK"
+                        };
+                    }
+                    return new NetDiag.ProbeResult
+                    {
+                        Ok = false,
+                        LatencyMs = -1,
+                        Target = ip.ToString(),
+                        Detail = rep != null ? rep.Status.ToString() : "Sem resposta"
+                    };
+                }
+            }
+            catch (Exception ex)
+            {
+                return new NetDiag.ProbeResult { Ok = false, LatencyMs = -1, Target = ip.ToString(), Detail = ex.Message };
+            }
+        }
+
+        static void ScanRecentLogSignals(out string driverErr, out string logWarn, out bool hasBypassFail, out bool hasMtuErr, out bool hasAdapterFlap)
+        {
+            driverErr = null;
+            logWarn = null;
+            hasBypassFail = false;
+            hasMtuErr = false;
+            hasAdapterFlap = false;
+            try
+            {
+                if (!File.Exists(Paths.Log)) return;
+                using (var fs = new FileStream(Paths.Log, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+                {
+                    if (fs.Length > 32768) fs.Seek(fs.Length - 32768, SeekOrigin.Begin);
+                    using (var r = new StreamReader(fs))
+                    {
+                        string[] lines = r.ReadToEnd().Split('\n');
+                        for (int i = lines.Length - 1; i >= 0; i--)
+                        {
+                            string l = lines[i].Trim();
+                            if (l.Length == 0) continue;
+                            string lvl;
+                            string msg = ExtractLogMessage(l, out lvl);
+                            if (string.IsNullOrEmpty(msg)) continue;
+                            string low = msg.ToLowerInvariant();
+                            if (low.Contains("failed to inject bypass packet") || low.Contains("failed to enqueue packet for deferred processing"))
+                            {
+                                hasBypassFail = true;
+                                if (driverErr == null) driverErr = "Falha de reinjeção/bypass no driver WireSock";
+                            }
+                            if (low.Contains("packet size is above mtu"))
+                            {
+                                hasMtuErr = true;
+                                if (logWarn == null) logWarn = "Pacote acima do MTU no túnel";
+                            }
+                            if (low.Contains("ip_interface_changed_callback") || low.Contains("network adapter list changed") || low.Contains("watchdog"))
+                            {
+                                hasAdapterFlap = true;
+                                if (logWarn == null) logWarn = "WireSock reiniciou filtro por alteração de adaptador";
+                            }
+                            if (driverErr == null && (lvl == "error" || lvl == "fatal" || lvl == "critical"))
+                                driverErr = msg.Length > 110 ? msg.Substring(0, 110) + "..." : msg;
+                            if (logWarn == null && (lvl == "warning" || lvl == "warn"))
+                                logWarn = msg.Length > 110 ? msg.Substring(0, 110) + "..." : msg;
+                        }
+                    }
+                }
+            }
+            catch { }
         }
 
         void UpdateDiagRouteBadge()
@@ -4261,6 +4727,12 @@ namespace VpnPanel
                 try { diagContCts.Cancel(); } catch { }
                 diagContCts = null;
             }
+            if (btnDiagQuick != null)
+            {
+                btnDiagQuick.IsEnabled = true;
+                btnDiagQuick.Content = "Testar agora";
+            }
+            if (btnDiagContinuous != null) btnDiagContinuous.Content = "Teste contínuo";
         }
 
         static void SetDiagDot(Ellipse dot, string brushKey)
@@ -4299,12 +4771,14 @@ namespace VpnPanel
             SetDiagDot(diagVerdictDot, "Muted");
             txtDiagVerdict.Foreground = B("Text");
             txtDiagVerdict.Text = "Analisando conexão...";
-            txtDiagVerdictSub.Text = "Testando internet, DNS, servidor VPN, kill switch e configuração...";
-            SetDiagDot(chkItem1Dot, "Muted"); txtChk1Detail.Text = "Testando acesso HTTPS...";
+            txtDiagVerdictSub.Text = "Testando internet, UDP, DNS, gateway, MTU, conflitos e logs...";
+            SetDiagDot(chkItem1Dot, "Muted"); txtChk1Detail.Text = "Testando acesso HTTPS, UDP e gateway...";
             SetDiagDot(chkItem2Dot, "Muted"); txtChk2Detail.Text = "Testando resolução de nomes...";
-            SetDiagDot(chkItem3Dot, "Muted"); txtChk3Detail.Text = "Verificando servidor e túnel...";
+            SetDiagDot(chkItem3Dot, "Muted"); txtChk3Detail.Text = "Verificando servidor, túnel e log...";
             SetDiagDot(chkItem4Dot, "Muted"); txtChk4Detail.Text = "Verificando kill switch e IPv6...";
             SetDiagDot(chkItem5Dot, "Muted"); txtChk5Detail.Text = "Auditando configuração e apps...";
+            SetDiagDot(chkItem6Dot, "Muted"); txtChk6Detail.Text = "Testando fragmentação MTU (1472/1392/1352)...";
+            SetDiagDot(chkItem7Dot, "Muted"); txtChk7Detail.Text = "Verificando serviços, drivers e adaptadores...";
 
             ConfigInfo cfgSnap = active;
             var sSnap = new Settings
@@ -4317,6 +4791,8 @@ namespace VpnPanel
             };
             bool tunnelRunning = wasRunning == true;
             bool hsOk = handshakeOk;
+            bool v6Isolated = Tunnel.Ipv6Isolated;
+            bool wsInstalledSnap = wireSockInstalled;
             bool appsPending = appsNeedReconnect;
             AppMode effMode = EffectiveAppMode();
             TimeSpan up = (tunnelRunning && hsOk) ? (DateTime.Now - startedAt) : TimeSpan.Zero;
@@ -4327,33 +4803,78 @@ namespace VpnPanel
 
             ThreadPool.QueueUserWorkItem(_ =>
             {
+                bool uiPosted = false;
                 try
                 {
                     if (ct.IsCancellationRequested) return;
+                    string driverLogErr, driverLogWarn;
+                    bool logBypassFail, logMtuErr, logAdapterFlap;
+                    ScanRecentLogSignals(out driverLogErr, out driverLogWarn, out logBypassFail, out logMtuErr, out logAdapterFlap);
+
                     bool hasGhostV6 = ConfFile.HasGhostIpv6();
                     bool pendingLock = Tunnel.HasPendingNetworkLock;
                     List<NetDiag.AuditItem> audit = NetDiag.AuditConfig(cfgSnap, sSnap, hasGhostV6, tunnelRunning, appsPending);
                     NetDiag.ProbeResult httpRes = NetDiag.ProbeHttp204(3000, ct);
                     NetDiag.ProbeResult dnsRes = NetDiag.ProbeDns("cloudflare.com", ct);
+                    NetDiag.ProbeResult udpRes = NetDiag.ProbeUdpDns("1.1.1.1", 53, 1500, ct);
+                    IPAddress gwIp = NetDiag.GetPhysicalGateway();
+                    NetDiag.ProbeResult gwRes = gwIp != null ? ProbeIcmpSingle(gwIp, 1200, ct) : null;
                     NetDiag.ProbeResult epRes = cfgSnap != null ? NetDiag.ProbeEndpoint(cfgSnap, 2000, ct) : null;
+                    NetDiag.MtuResult mtuRes;
+                    try
+                    {
+                        Interlocked.Exchange(ref suppressMtuLogUntilTick, FutureTicks(6.0));
+                        mtuRes = NetDiag.ProbeMtu(IPAddress.Parse("1.1.1.1"), ct);
+                        if (!mtuRes.Ok && !ct.IsCancellationRequested &&
+                            mtuRes.Detail != null && mtuRes.Detail.IndexOf("ICMP bloqueado", StringComparison.OrdinalIgnoreCase) >= 0)
+                        {
+                            mtuRes = NetDiag.ProbeMtu(IPAddress.Parse("8.8.8.8"), ct);
+                        }
+                    }
+                    finally
+                    {
+                        Interlocked.Exchange(ref suppressMtuLogUntilTick, FutureTicks(1.5));
+                    }
+                    NetDiag.ConflictReport conflicts = NetDiag.DetectConflicts();
 
+                    // Recent NetMon events (last 5 minutes)
+                    DateTime cutoff = DateTime.Now.AddMinutes(-5);
+                    NetMon.EventItem[] recentEvents = NetMon.Snapshot(40);
+                    int recentNetFlaps = 0, recentDriverWarns = 0;
+                    for (int i = 0; i < recentEvents.Length; i++)
+                    {
+                        if (recentEvents[i].Time < cutoff) continue;
+                        if (recentEvents[i].Category == "Rede" && recentEvents[i].Kind != NetMon.EventKind.Info) recentNetFlaps++;
+                        if (recentEvents[i].Category == "WireSock" && recentEvents[i].Kind != NetMon.EventKind.Info) recentDriverWarns++;
+                    }
+
+                    bool cancelled = ct.IsCancellationRequested;
                     var ui = Application.Current != null ? Application.Current.Dispatcher : null;
                     if (ui == null) return;
+                    uiPosted = true;
                     ui.BeginInvoke(new Action(() =>
                     {
-                        if (exiting || myEpoch != diagEpoch || ct.IsCancellationRequested) return;
+                        if (exiting || myEpoch != diagEpoch) return;
                         diagQuickRunning = false;
                         btnDiagQuick.IsEnabled = true;
                         btnDiagQuick.Content = "Testar agora";
+                        if (cancelled) return;
                         UpdateDiagRouteBadge();
 
-                        // 1. Internet real (HTTP 204)
+                        // 1. Internet Base (HTTP 204 + UDP DNS + Gateway)
+                        string gwTag = gwRes == null ? "" : (gwRes.Ok ? " · GW " + gwRes.LatencyMs + " ms" : " · GW falhou (" + gwRes.Detail + ")");
+                        string udpTag = udpRes.Ok ? " · UDP " + udpRes.LatencyMs + " ms" : " · UDP falhou (" + udpRes.Detail + ")";
                         string d1;
-                        if (httpRes.Ok)
+                        if (httpRes.Ok && udpRes.Ok)
                         {
                             SetDiagDot(chkItem1Dot, "SecureText");
-                            d1 = "OK em " + httpRes.LatencyMs + " ms (" + httpRes.Target + ")" +
-                                 (tunnelRunning && effMode == AppMode.Only ? " — fora da VPN" : "");
+                            d1 = "OK em " + httpRes.LatencyMs + " ms" + udpTag + gwTag +
+                                 (tunnelRunning && effMode == AppMode.Only ? " — via bypass" : "");
+                        }
+                        else if (httpRes.Ok && !udpRes.Ok)
+                        {
+                            SetDiagDot(chkItem1Dot, "Warn");
+                            d1 = "HTTP OK (" + httpRes.LatencyMs + " ms), mas UDP:53 falhou (" + udpRes.Detail + ")" + gwTag;
                         }
                         else if (!tunnelRunning && pendingLock)
                         {
@@ -4363,11 +4884,11 @@ namespace VpnPanel
                         else
                         {
                             SetDiagDot(chkItem1Dot, "Danger");
-                            d1 = "Falhou (" + httpRes.Detail + ")";
+                            d1 = "Falhou (" + httpRes.Detail + ")" + udpTag + gwTag;
                         }
                         txtChk1Detail.Text = d1;
 
-                        // 2. DNS
+                        // 2. DNS do Windows
                         string d2;
                         if (dnsRes.Ok)
                         {
@@ -4377,12 +4898,14 @@ namespace VpnPanel
                         else
                         {
                             SetDiagDot(chkItem2Dot, "Danger");
-                            d2 = "Falhou (" + dnsRes.Detail + ")";
+                            d2 = "Falhou (" + dnsRes.Detail + ")" + (udpRes.Ok ? " — DNS UDP bruto respondeu, possível trava no Dnscache." : "");
                         }
                         txtChk2Detail.Text = d2;
 
-                        // 3. Servidor VPN & Túnel
+                        // 3. Túnel & Servidor VPN
                         string d3;
+                        string logExtra = !string.IsNullOrEmpty(driverLogErr) ? (" · Log: " + driverLogErr)
+                                        : !string.IsNullOrEmpty(driverLogWarn) ? (" · Log: " + driverLogWarn) : "";
                         if (cfgSnap == null)
                         {
                             SetDiagDot(chkItem3Dot, "Warn");
@@ -4392,21 +4915,21 @@ namespace VpnPanel
                         {
                             if (epRes != null && epRes.Ok)
                             {
-                                SetDiagDot(chkItem3Dot, "SecureText");
-                                d3 = "Conectado há " + uptimeStr + " · endpoint respondeu em " + epRes.LatencyMs + " ms";
+                                SetDiagDot(chkItem3Dot, !string.IsNullOrEmpty(driverLogErr) ? "Warn" : "SecureText");
+                                d3 = "Conectado há " + uptimeStr + " · endpoint " + epRes.LatencyMs + " ms" + logExtra;
                             }
                             else
                             {
                                 SetDiagDot(chkItem3Dot, "Warn");
-                                d3 = "Túnel ativo há " + uptimeStr + " (endpoint não respondeu a ICMP/TCP: " +
-                                     (epRes != null ? epRes.Detail : "sem resposta") + ")";
+                                d3 = "Túnel ativo há " + uptimeStr + " (endpoint sem resposta a ICMP/TCP: " +
+                                     (epRes != null ? epRes.Detail : "sem resposta") + ")" + logExtra;
                             }
                         }
                         else if (tunnelRunning)
                         {
                             SetDiagDot(chkItem3Dot, "Warn");
                             d3 = "WireSock aberto, aguardando handshake · endpoint: " +
-                                 (epRes != null && epRes.Ok ? epRes.LatencyMs + " ms" : (epRes != null ? epRes.Detail : "sem resposta"));
+                                 (epRes != null && epRes.Ok ? epRes.LatencyMs + " ms" : (epRes != null ? epRes.Detail : "sem resposta")) + logExtra;
                         }
                         else
                         {
@@ -4424,6 +4947,7 @@ namespace VpnPanel
                         txtChk3Detail.Text = d3;
 
                         // 4. Kill Switch & IPv6
+                        bool ghostAlert = hasGhostV6 && (!tunnelRunning || v6Isolated);
                         NetDiag.AuditItem lockFlagItem = FindAudit(audit, "lock_flag");
                         NetDiag.AuditItem ghostV6Item = FindAudit(audit, "ghost_v6");
                         NetDiag.AuditItem lockSplitItem = FindAudit(audit, "lock_split");
@@ -4436,7 +4960,7 @@ namespace VpnPanel
                             SetDiagDot(chkItem4Dot, "Danger");
                             d4 = lockFlagItem != null ? lockFlagItem.Detail : "Bloqueio residual do Kill Switch (WFP) ativo sem VPN.";
                         }
-                        else if (ghostV6Item != null && ghostV6Item.Severity != NetDiag.AuditSeverity.Ok)
+                        else if (ghostAlert && ghostV6Item != null && ghostV6Item.Severity != NetDiag.AuditSeverity.Ok)
                         {
                             item4HasWarn = true;
                             SetDiagDot(chkItem4Dot, "Warn");
@@ -4457,7 +4981,7 @@ namespace VpnPanel
                         }
                         txtChk4Detail.Text = d4;
 
-                        // 5. Configuração & Apps (config, keepalive, mtu, lan, apps_pending)
+                        // 5. Configuração & Apps
                         var item5Problems = new List<string>();
                         bool item5HasErr = false;
                         bool item5HasWarn = false;
@@ -4488,66 +5012,142 @@ namespace VpnPanel
                         }
                         txtChk5Detail.Text = d5;
 
-                        bool showRepair = (!tunnelRunning && pendingLock) || hasGhostV6 || (!httpRes.Ok && !dnsRes.Ok && !tunnelRunning);
+                        // 6. MTU & Pacotes de Jogos
+                        bool mtuBlockedOnly = !mtuRes.Ok && mtuRes.Detail != null && mtuRes.Detail.IndexOf("ICMP bloqueado", StringComparison.OrdinalIgnoreCase) >= 0;
+                        bool mtuFrag = (!mtuRes.Ok && !mtuBlockedOnly) || (mtuRes.Ok && mtuRes.MaxPayload < 1472) || logMtuErr;
+                        string d6 = mtuRes.Detail;
+                        if (logMtuErr)
+                            d6 += " · Log do WireSock acusou pacote acima do MTU.";
+                        if (mtuRes.Ok && mtuRes.MaxPayload == 1472 && !logMtuErr)
+                            SetDiagDot(chkItem6Dot, udpRes.Ok ? "SecureText" : "Warn");
+                        else if (mtuFrag)
+                            SetDiagDot(chkItem6Dot, (!mtuRes.Ok || logMtuErr) ? "Danger" : "Warn");
+                        else
+                            SetDiagDot(chkItem6Dot, "Muted");
+                        txtChk6Detail.Text = d6;
+
+                        // 7. Conflitos & Driver
+                        bool hardConflict = conflicts.WireSockServiceRunning || conflicts.WireSockProcessCount > 1 ||
+                                            conflicts.ConflictingAdapters.Count > 0 || conflicts.ConflictingServices.Count > 0;
+                        bool driverMissing = wsInstalledSnap && !conflicts.NdisDriverPresent;
+                        bool anyConflictWarn = hardConflict || driverMissing || conflicts.LowMetricAdapters.Count > 0 || logBypassFail || logAdapterFlap;
+                        string d7;
+                        if (conflicts.Warnings.Count > 0)
+                        {
+                            SetDiagDot(chkItem7Dot, (hardConflict || driverMissing) ? "Danger" : "Warn");
+                            d7 = string.Join(" ", conflicts.Warnings.ToArray());
+                        }
+                        else if (logBypassFail || logAdapterFlap)
+                        {
+                            SetDiagDot(chkItem7Dot, logBypassFail ? "Danger" : "Warn");
+                            d7 = logBypassFail ? "Sem conflitos externos, mas o driver falhou ao reinjetar pacotes (bypass)."
+                                               : "Sem conflitos externos, mas houve oscilação/reinício de adaptador no log.";
+                        }
+                        else
+                        {
+                            SetDiagDot(chkItem7Dot, "SecureText");
+                            d7 = "Driver ndiswgc ativo · sem VPNs, serviços ou rotas concorrentes.";
+                        }
+                        txtChk7Detail.Text = d7;
+
+                        bool showRepair = (!tunnelRunning && pendingLock) || ghostAlert || (!httpRes.Ok && !dnsRes.Ok && !tunnelRunning);
                         btnDiagRepair.Visibility = showRepair ? Visibility.Visible : Visibility.Collapsed;
 
-                        // Veredito consolidado
+                        // Motor de Veredito Causa-Raiz (Tabela de prioridade em PT-BR claro)
                         string vColor = "SecureText";
                         string vTitle, vSub;
+                        bool gwBlockedByTunnel = (epRes != null && epRes.Ok) || httpRes.Ok || udpRes.Ok || (tunnelRunning && effMode == AppMode.All);
+                        bool physicalGwDown = gwRes != null && !gwRes.Ok && !gwBlockedByTunnel;
+                        bool allNetDown = !httpRes.Ok && !dnsRes.Ok && !udpRes.Ok;
+                        bool endpointDown = epRes != null && !epRes.Ok;
+
                         if (!tunnelRunning && pendingLock)
                         {
                             vColor = "Danger";
                             vTitle = "Internet bloqueada pelo Kill Switch";
                             vSub = "Um bloqueio residual (WFP) permaneceu ativo sem a VPN. Clique em \"Reparar internet agora\".";
                         }
-                        else if (!httpRes.Ok && !dnsRes.Ok)
+                        else if (hardConflict)
                         {
                             vColor = "Danger";
-                            vTitle = "Sem acesso à internet";
-                            vSub = hasGhostV6
-                                ? "Nem DNS nem HTTPS responderam e há rota IPv6 fantasma. Clique em \"Reparar internet agora\"."
-                                : "Nem DNS nem conexão externa responderam. Verifique sua rede ou clique em \"Reparar internet agora\".";
+                            vTitle = "Conflito com outro serviço VPN / driver";
+                            vSub = conflicts.Warnings.Count > 0 ? conflicts.Warnings[0] : "Feche a outra VPN ou serviço concorrente para estabilizar jogos e apps.";
+                        }
+                        else if (physicalGwDown || (allNetDown && (endpointDown || !tunnelRunning || effMode == AppMode.Only)))
+                        {
+                            vColor = "Danger";
+                            vTitle = "A falha foi na sua internet / Wi-Fi";
+                            vSub = physicalGwDown
+                                ? "Seu roteador/gateway físico (" + gwRes.Target + ") não respondeu. Verifique Wi-Fi, cabo ou modem."
+                                : ghostAlert
+                                    ? "Sem resposta externa e há rota IPv6 fantasma. Verifique o Wi-Fi ou clique em \"Reparar internet agora\"."
+                                    : "Sem resposta de DNS, UDP nem HTTPS na conexão física. Verifique seu Wi-Fi ou operadora.";
+                        }
+                        else if (driverMissing || logBypassFail || (tunnelRunning && effMode == AppMode.Only && (!udpRes.Ok || !httpRes.Ok)))
+                        {
+                            vColor = "Danger";
+                            vTitle = "A falha foi no WireSock / driver derrubando a placa";
+                            vSub = driverMissing
+                                ? "O driver ndiswgc do WireSock não está ativo. Reinstale o WireSock e reinicie o PC."
+                                : "O filtro do WireSock na placa física teve falha de bypass/reinício (" + (driverLogErr ?? udpRes.Detail) + ").";
+                        }
+                        else if ((!mtuRes.Ok && !mtuBlockedOnly) || logMtuErr || (httpRes.Ok && !udpRes.Ok))
+                        {
+                            vColor = "Warn";
+                            vTitle = "Fragmentação de MTU / perda UDP para jogos";
+                            vSub = !udpRes.Ok
+                                ? "Navegação HTTP passou, mas pacotes UDP (jogos como Roblox) falharam. Rode o Teste contínuo."
+                                : "Pacotes grandes estão fragmentando (" + mtuRes.Detail + "). Ative 'Otimizar MTU' nas Opções.";
+                        }
+                        else if (tunnelRunning && !hsOk)
+                        {
+                            vColor = "Warn";
+                            vTitle = "Servidor VPN instável ou sem resposta";
+                            vSub = "O WireSock abriu, mas o servidor não respondeu ao handshake." +
+                                   (string.IsNullOrEmpty(logHint) ? "" : " " + logHint);
+                        }
+                        else if (allNetDown && tunnelRunning && !endpointDown)
+                        {
+                            vColor = "Danger";
+                            vTitle = "Servidor VPN instável ou sem resposta";
+                            vSub = "Sua internet física alcança o servidor, mas o tráfego dentro do túnel não responde. Troque de servidor.";
                         }
                         else if (!dnsRes.Ok)
                         {
                             vColor = "Danger";
-                            vTitle = "Falha na resolução DNS";
-                            vSub = "A rede responde, mas nomes de domínio não estão resolvendo (" + dnsRes.Detail + ").";
+                            vTitle = "Falha na resolução DNS do Windows";
+                            vSub = "A rede responde, mas nomes não resolvem (" + dnsRes.Detail + ").";
                         }
                         else if (!httpRes.Ok)
                         {
                             vColor = "Warn";
                             vTitle = "Internet instável ou bloqueada";
-                            vSub = "O DNS respondeu, mas o teste HTTPS falhou (" + httpRes.Detail + ").";
+                            vSub = "DNS respondeu, mas HTTPS falhou (" + httpRes.Detail + ").";
                         }
-                        else if (tunnelRunning && !hsOk)
-                        {
-                            vColor = "Warn";
-                            vTitle = "Túnel aguardando resposta do servidor";
-                            vSub = "O WireSock está em execução, mas o handshake ainda não completou." +
-                                   (string.IsNullOrEmpty(logHint) ? "" : " " + logHint);
-                        }
-                        else if (hasGhostV6)
+                        else if (ghostAlert)
                         {
                             vColor = "Warn";
                             vTitle = "Internet OK, mas há rota IPv6 fantasma";
-                            vSub = "Uma rota ::/0 residual pode causar travamentos ou vazamentos. Clique em \"Reparar internet agora\".";
+                            vSub = "Uma rota ::/0 residual pode causar travamentos. Clique em \"Reparar internet agora\".";
                         }
-                        else if (item4HasErr || item4HasWarn || item5HasErr || item5HasWarn)
+                        else if (anyConflictWarn || item4HasErr || item4HasWarn || item5HasErr || item5HasWarn || (mtuRes.Ok && mtuRes.MaxPayload < 1472))
                         {
                             vColor = "Warn";
-                            vTitle = tunnelRunning ? "Conexão ativa com avisos" : "Rede OK com avisos de configuração";
-                            vSub = item5Problems.Count > 0 ? item5Problems[0]
-                                 : (item4HasErr || item4HasWarn) ? d4
-                                 : "Revise os itens marcados em amarelo abaixo.";
+                            vTitle = tunnelRunning ? "Conexão ativa com avisos" : "Rede OK com avisos";
+                            vSub = conflicts.Warnings.Count > 0 ? conflicts.Warnings[0]
+                                 : (mtuRes.Ok && mtuRes.MaxPayload < 1472) ? mtuRes.Detail
+                                 : item5Problems.Count > 0 ? item5Problems[0]
+                                 : d4;
                         }
                         else
                         {
                             vColor = "SecureText";
                             vTitle = "Tudo funcionando normalmente";
-                            vSub = tunnelRunning
-                                ? "Internet, DNS, servidor VPN e configuração aprovados."
-                                : "Internet, DNS e servidor acessíveis (VPN desconectada no momento).";
+                            vSub = (recentNetFlaps > 0 || recentDriverWarns > 0)
+                                ? "Sem falhas agora, mas houve oscilações nos últimos 5 min (veja Linha do Tempo ou rode o Teste contínuo)."
+                                : tunnelRunning
+                                    ? "Internet, UDP, DNS, MTU, driver e servidor VPN aprovados."
+                                    : "Internet, UDP, DNS, MTU e servidor acessíveis (VPN desconectada).";
                         }
 
                         SetDiagDot(diagVerdictDot, vColor);
@@ -4566,11 +5166,31 @@ namespace VpnPanel
                         sb.AppendLine("3. Túnel & Servidor VPN: " + d3);
                         sb.AppendLine("4. Kill Switch & IPv6: " + d4);
                         sb.AppendLine("5. Configuração & Apps: " + d5);
+                        sb.AppendLine("6. MTU & Pacotes de Jogos: " + d6);
+                        sb.AppendLine("7. Conflitos & Driver: " + d7);
                         lastDiagSummary = sb.ToString().TrimEnd();
+                        UpdateDiagTimeline();
                     }));
                 }
                 finally
                 {
+                    if (!uiPosted && !exiting)
+                    {
+                        var ui = Application.Current != null ? Application.Current.Dispatcher : null;
+                        if (ui != null)
+                        {
+                            ui.BeginInvoke(new Action(() =>
+                            {
+                                if (exiting || myEpoch != diagEpoch) return;
+                                diagQuickRunning = false;
+                                if (btnDiagQuick != null)
+                                {
+                                    btnDiagQuick.IsEnabled = true;
+                                    btnDiagQuick.Content = "Testar agora";
+                                }
+                            }));
+                        }
+                    }
                     try { myCts.Dispose(); } catch { }
                 }
             });
@@ -4595,113 +5215,259 @@ namespace VpnPanel
             int myContEpoch = ++diagContEpoch;
 
             diagContinuousRunning = true;
+            lastContSummary = "";
             btnDiagContinuous.Content = "Parar teste";
-            txtDiagLiveStatus.Text = "Executando (0/60s)";
+            txtDiagLiveStatus.Text = "Executando rajada UDP (0/60s)";
             txtDiagLiveTime.Text = "00:00";
             txtDiagSentLoss.Text = "0 / 0%";
             txtDiagPing.Text = "— / —";
             txtDiagJitter.Text = "—";
-            txtDiagDrops.Text = "0";
+            txtDiagDrops.Text = "0 / 0";
+            txtDiagGw.Text = "—";
+            txtDiagEp.Text = "—";
 
             ConfigInfo cfgSnap = active;
             AppMode effMode = EffectiveAppMode();
             bool tunnelRunning = wasRunning == true;
 
-            ThreadPool.QueueUserWorkItem(_ =>
+            diagContThread = new Thread(() =>
             {
                 try
                 {
-                    int sent = 0;
-                    int lost = 0;
-                    int consecFail = 0;
-                    int drops = 0;
-                    var latencies = new List<int>(60);
+                    int udpSent = 0, udpLost = 0;
+                    int microDrops = 0, drops = 0, spikes200 = 0;
+                    int consecDownSecs = 0;
+                    int gwSent = 0, gwLost = 0;
+                    long gwLatSum = 0;
+                    int gwOkCount = 0;
+                    bool gwFiltered = false;
+                    int epOkCount = 0;
+                    bool epFiltered = false;
+                    int epLastMs = -1;
+                    bool epLastOk = false;
+                    double rfcJitter = 0;
+                    int prevRtt = -1;
+                    var latencies = new List<int>(300);
+                    long lastEventLogTick = 0;
 
-                    for (int sec = 1; sec <= 60; sec++)
+                    IPAddress gwIp = NetDiag.GetPhysicalGateway();
+                    IPAddress epIp = null;
+                    if (cfgSnap != null && !string.IsNullOrEmpty(cfgSnap.Endpoint))
                     {
-                        if (ct.IsCancellationRequested) break;
-                        Stopwatch sw = Stopwatch.StartNew();
-
-                        NetDiag.ProbeResult res;
-                        if (effMode == AppMode.Only && tunnelRunning && cfgSnap != null && !string.IsNullOrEmpty(cfgSnap.Endpoint))
+                        if (!IPAddress.TryParse(cfgSnap.Endpoint, out epIp))
                         {
-                            res = NetDiag.ProbeEndpoint(cfgSnap, 1500, ct);
-                        }
-                        else
-                        {
-                            res = NetDiag.ProbeTcp("1.1.1.1", 443, 1500, ct);
-                            if (res.Ok && sec % 5 == 0)
+                            try
                             {
-                                NetDiag.ProbeResult dnsCheck = NetDiag.ProbeDns("cloudflare.com", ct);
-                                if (!dnsCheck.Ok) res = dnsCheck;
+                                IPAddress[] addrs = Dns.GetHostAddresses(cfgSnap.Endpoint);
+                                if (addrs != null && addrs.Length > 0) epIp = addrs[0];
                             }
-                        }
-
-                        if (ct.IsCancellationRequested) break;
-
-                        sent++;
-                        if (res.Ok)
-                        {
-                            consecFail = 0;
-                            latencies.Add(res.LatencyMs);
-                        }
-                        else
-                        {
-                            lost++;
-                            consecFail++;
-                            if (consecFail == 2) drops++;
-                        }
-
-                        int avgMs = 0, maxMs = 0, jitterMs = 0;
-                        if (latencies.Count > 0)
-                        {
-                            long sum = 0;
-                            long jitterSum = 0;
-                            for (int i = 0; i < latencies.Count; i++)
-                            {
-                                int val = latencies[i];
-                                sum += val;
-                                if (val > maxMs) maxMs = val;
-                                if (i > 0) jitterSum += Math.Abs(val - latencies[i - 1]);
-                            }
-                            avgMs = (int)Math.Round((double)sum / latencies.Count);
-                            if (latencies.Count >= 2)
-                                jitterMs = (int)Math.Round((double)jitterSum / (latencies.Count - 1));
-                        }
-
-                        int curSec = sec;
-                        int curSent = sent;
-                        int curLost = lost;
-                        int curDrops = drops;
-                        int latCount = latencies.Count;
-                        int curAvg = avgMs;
-                        int curMax = maxMs;
-                        int curJitter = jitterMs;
-
-                        var ui = Application.Current != null ? Application.Current.Dispatcher : null;
-                        if (ui != null)
-                        {
-                            ui.BeginInvoke(new Action(() =>
-                            {
-                                if (exiting || myContEpoch != diagContEpoch || ct.IsCancellationRequested) return;
-                                txtDiagLiveTime.Text = string.Format("{0:00}:{1:00}", curSec / 60, curSec % 60);
-                                txtDiagLiveStatus.Text = "Executando (" + curSec + "/60s)";
-                                int lossPct = curSent > 0 ? (int)Math.Round(100.0 * curLost / curSent) : 0;
-                                txtDiagSentLoss.Text = curSent + " / " + lossPct + "%";
-                                txtDiagPing.Text = latCount > 0 ? (curAvg + " / " + curMax + " ms") : "— / —";
-                                txtDiagJitter.Text = latCount >= 2 ? (curJitter + " ms") : (latCount == 1 ? "0 ms" : "—");
-                                txtDiagDrops.Text = curDrops.ToString();
-                            }));
-                        }
-
-                        int waitMs = 1000 - (int)sw.ElapsedMilliseconds;
-                        if (waitMs > 0)
-                        {
-                            try { ct.WaitHandle.WaitOne(waitMs); }
-                            catch { break; }
+                            catch { }
                         }
                     }
 
+                    using (var ping = new System.Net.NetworkInformation.Ping())
+                    {
+                        Stopwatch totalSw = Stopwatch.StartNew();
+                        int iter = 0;
+                        while (!ct.IsCancellationRequested && totalSw.ElapsedMilliseconds < 60000)
+                        {
+                            iter++;
+                            Stopwatch secSw = Stopwatch.StartNew();
+
+                            if (gwIp == null && iter % 10 == 0) gwIp = NetDiag.GetPhysicalGateway();
+
+                            // 5x UDP DNS probes (~200ms cadence) -> catches sub-second game microdrops
+                            int burstOk = 0, burstLost = 0;
+                            bool burstSpike250 = false;
+                            for (int b = 0; b < 5; b++)
+                            {
+                                if (ct.IsCancellationRequested || totalSw.ElapsedMilliseconds >= 60000) break;
+                                NetDiag.ProbeResult u = NetDiag.ProbeUdpDns("1.1.1.1", 53, 350, ct);
+                                if (ct.IsCancellationRequested) break;
+                                udpSent++;
+                                if (u.Ok)
+                                {
+                                    burstOk++;
+                                    latencies.Add(u.LatencyMs);
+                                    if (u.LatencyMs > 200) spikes200++;
+                                    if (u.LatencyMs > 250) burstSpike250 = true;
+                                    if (prevRtt >= 0)
+                                    {
+                                        int diff = Math.Abs(u.LatencyMs - prevRtt);
+                                        rfcJitter += (diff - rfcJitter) / 16.0;
+                                    }
+                                    prevRtt = u.LatencyMs;
+                                }
+                                else
+                                {
+                                    burstLost++;
+                                    udpLost++;
+                                }
+
+                                if (b < 4)
+                                {
+                                    int nextSlotMs = (b + 1) * 200 - (int)secSw.ElapsedMilliseconds;
+                                    int remMs = 60000 - (int)totalSw.ElapsedMilliseconds;
+                                    int slotWaitMs = Math.Min(nextSlotMs, remMs);
+                                    if (slotWaitMs > 0)
+                                    {
+                                        try { ct.WaitHandle.WaitOne(slotWaitMs); }
+                                        catch { break; }
+                                    }
+                                }
+                            }
+                            if (ct.IsCancellationRequested) break;
+                            if (burstOk + burstLost == 0) break;
+
+                            // Physical gateway ICMP check (separates Wi-Fi/router drops from VPN/driver)
+                            bool gwOkNow = false;
+                            if (gwIp != null && !gwFiltered && totalSw.ElapsedMilliseconds < 60000)
+                            {
+                                gwSent++;
+                                try
+                                {
+                                    var rep = ping.Send(gwIp, 350);
+                                    if (rep != null && rep.Status == System.Net.NetworkInformation.IPStatus.Success)
+                                    {
+                                        gwOkNow = true;
+                                        gwOkCount++;
+                                        gwLatSum += Math.Max(1, (int)rep.RoundtripTime);
+                                    }
+                                    else gwLost++;
+                                }
+                                catch { gwLost++; }
+                                if (!gwOkNow && gwSent >= 5 && gwOkCount == 0 && udpSent > udpLost)
+                                    gwFiltered = true;
+                            }
+
+                            // VPN Endpoint check (marks "n/d" if filtered during the first iterations)
+                            if (epIp != null && !epFiltered && totalSw.ElapsedMilliseconds < 60000)
+                            {
+                                bool gotEp = false;
+                                try
+                                {
+                                    var epRep = ping.Send(epIp, 350);
+                                    if (epRep != null && epRep.Status == System.Net.NetworkInformation.IPStatus.Success)
+                                    {
+                                        gotEp = true;
+                                        epOkCount++;
+                                        epLastOk = true;
+                                        epLastMs = Math.Max(1, (int)epRep.RoundtripTime);
+                                    }
+                                }
+                                catch { }
+
+                                if (!gotEp)
+                                {
+                                    epLastOk = false;
+                                    if (iter == 5 && epOkCount == 0 && cfgSnap != null)
+                                    {
+                                        NetDiag.ProbeResult tcpEp = NetDiag.ProbeEndpoint(cfgSnap, 800, ct);
+                                        if (tcpEp != null && tcpEp.Ok)
+                                        {
+                                            epOkCount++;
+                                            epLastOk = true;
+                                            epLastMs = tcpEp.LatencyMs;
+                                        }
+                                        else if (gwIp == null || gwOkNow || (effMode == AppMode.All && tunnelRunning))
+                                        {
+                                            epFiltered = true;
+                                        }
+                                    }
+                                }
+                            }
+
+                            if (ct.IsCancellationRequested) break;
+
+                            bool fullSecDown = burstOk == 0;
+                            if (fullSecDown)
+                            {
+                                consecDownSecs++;
+                                if (consecDownSecs == 2) drops++;
+                            }
+                            else
+                            {
+                                if (consecDownSecs == 1) microDrops++; // brief 1s outage recovered
+                                consecDownSecs = 0;
+                                if (burstLost > 0 || burstSpike250) microDrops++;
+                            }
+
+                            bool gwBlockedInAll = effMode == AppMode.All && tunnelRunning;
+                            if ((burstLost > 0 || fullSecDown) && (lastEventLogTick == 0 || ElapsedSeconds(lastEventLogTick) >= 5))
+                            {
+                                lastEventLogTick = NowTicks();
+                                string reason;
+                                if (gwIp != null && !gwFiltered && !gwOkNow && gwOkCount > 0 && !epLastOk && !gwBlockedInAll)
+                                    reason = "Perda UDP + gateway físico falhou -> oscilação na rede local/Wi-Fi";
+                                else if (epIp != null && !epFiltered && !epLastOk)
+                                    reason = "Perda UDP + endpoint falhou (gateway OK) -> falha na internet externa ou servidor VPN";
+                                else if (effMode == AppMode.Only && tunnelRunning)
+                                    reason = "Microqueda UDP (" + burstLost + "/5 perdidos; gateway OK) -> perda no bypass do driver WireSock";
+                                else
+                                    reason = "Microqueda UDP (" + burstLost + "/5 perdidos; " + (gwBlockedInAll ? "túnel All" : "gateway OK") + ") -> perda no túnel/rota";
+                                NetMon.Record("Teste", fullSecDown ? NetMon.EventKind.Error : NetMon.EventKind.Warn, reason);
+                            }
+
+                            int avgMs = 0, maxMs = 0;
+                            if (latencies.Count > 0)
+                            {
+                                long sum = 0;
+                                for (int i = 0; i < latencies.Count; i++)
+                                {
+                                    int val = latencies[i];
+                                    sum += val;
+                                    if (val > maxMs) maxMs = val;
+                                }
+                                avgMs = (int)Math.Round((double)sum / latencies.Count);
+                            }
+
+                            int curSec = Math.Min(60, Math.Max(1, (int)Math.Round(totalSw.Elapsed.TotalSeconds)));
+                            int curSent = udpSent, curLost = udpLost;
+                            int curMicro = microDrops, curDrops = drops, curSpikes = spikes200;
+                            int latCount = latencies.Count, curAvg = avgMs, curMax = maxMs;
+                            int curJitter = (int)Math.Round(rfcJitter);
+                            string gwText = gwIp == null ? "indisp."
+                                          : gwOkCount > 0 ? ((int)Math.Round((double)gwLatSum / gwOkCount) + "ms (" + gwLost + "p)")
+                                          : gwBlockedInAll ? "filtrado (túnel)"
+                                          : gwFiltered ? "n/d (ICMP)"
+                                          : ("falhou (" + gwLost + "/" + gwSent + ")");
+                            string epText = epIp == null ? "—"
+                                          : epFiltered ? "n/d (ICMP)"
+                                          : epLastOk ? (epLastMs + " ms")
+                                          : "sem resp.";
+
+                            bool iterCancelled = ct.IsCancellationRequested;
+                            var ui = Application.Current != null ? Application.Current.Dispatcher : null;
+                            if (ui != null)
+                            {
+                                ui.BeginInvoke(new Action(() =>
+                                {
+                                    if (exiting || myContEpoch != diagContEpoch || iterCancelled) return;
+                                    txtDiagLiveTime.Text = string.Format("{0:00}:{1:00}", curSec / 60, curSec % 60);
+                                    txtDiagLiveStatus.Text = "Rajada UDP 5 pps (" + curSec + "/60s)";
+                                    int lossPct = curSent > 0 ? (int)Math.Round(100.0 * curLost / curSent) : 0;
+                                    txtDiagSentLoss.Text = curSent + " / " + lossPct + "%";
+                                    txtDiagPing.Text = latCount > 0 ? (curAvg + " / " + curMax + " ms") : "— / —";
+                                    txtDiagJitter.Text = latCount >= 2 ? (curJitter + " ms / " + curSpikes) : (latCount == 1 ? "0 ms / " + curSpikes : "—");
+                                    txtDiagDrops.Text = curMicro + " / " + curDrops;
+                                    txtDiagGw.Text = gwText;
+                                    txtDiagEp.Text = epText;
+                                    if (WindowShowing && pageDiag.Visibility == Visibility.Visible) UpdateDiagTimeline();
+                                }));
+                            }
+
+                            int waitMs = Math.Min(1000 - (int)secSw.ElapsedMilliseconds, 60000 - (int)totalSw.ElapsedMilliseconds);
+                            if (waitMs > 0)
+                            {
+                                try { ct.WaitHandle.WaitOne(waitMs); }
+                                catch { break; }
+                            }
+                        }
+                    }
+
+                    if (consecDownSecs == 1) microDrops++;
+
+                    bool doneCancelled = ct.IsCancellationRequested;
                     var uiDone = Application.Current != null ? Application.Current.Dispatcher : null;
                     if (uiDone != null)
                     {
@@ -4710,14 +5476,37 @@ namespace VpnPanel
                             if (exiting || myContEpoch != diagContEpoch) return;
                             diagContinuousRunning = false;
                             btnDiagContinuous.Content = "Teste contínuo";
-                            if (!ct.IsCancellationRequested)
+                            if (!doneCancelled)
                             {
-                                txtDiagLiveStatus.Text = drops == 0 && lost == 0
-                                    ? "Concluído — estável"
-                                    : drops > 0
-                                        ? "Concluído — " + drops + " queda(s)"
-                                        : "Concluído — " + lost + " falha(s)";
+                                string statusText = (drops == 0 && microDrops == 0 && udpLost == 0)
+                                    ? "Concluído — estável (0% perda)"
+                                    : "Concluído — " + microDrops + " micro, " + drops + " queda(s)";
+                                txtDiagLiveStatus.Text = statusText;
+                                txtDiagDrops.Text = microDrops + " / " + drops;
+                                lastContSummary = "Teste contínuo (" + statusText + "): " +
+                                                  "UDP=" + txtDiagSentLoss.Text +
+                                                  " | Ping(méd/máx)=" + txtDiagPing.Text +
+                                                  " | Jitter/Picos=" + txtDiagJitter.Text +
+                                                  " | Micro/Quedas=" + txtDiagDrops.Text +
+                                                  " | GW=" + txtDiagGw.Text +
+                                                  " | Endpoint=" + txtDiagEp.Text;
+                                UpdateDiagTimeline();
                             }
+                        }));
+                    }
+                }
+                catch (Exception ex)
+                {
+                    NetMon.Record("Teste", NetMon.EventKind.Error, "Erro inesperado no teste contínuo: " + ex.Message);
+                    var uiErr = Application.Current != null ? Application.Current.Dispatcher : null;
+                    if (uiErr != null)
+                    {
+                        uiErr.BeginInvoke(new Action(() =>
+                        {
+                            if (exiting || myContEpoch != diagContEpoch) return;
+                            diagContinuousRunning = false;
+                            if (btnDiagContinuous != null) btnDiagContinuous.Content = "Teste contínuo";
+                            if (txtDiagLiveStatus != null) txtDiagLiveStatus.Text = "Interrompido por erro";
                         }));
                     }
                 }
@@ -4725,7 +5514,8 @@ namespace VpnPanel
                 {
                     try { myCts.Dispose(); } catch { }
                 }
-            });
+            }) { IsBackground = true, Name = "DiagContinuous" };
+            diagContThread.Start();
         }
 
         void StopContinuousDiag(string statusText)
@@ -4746,12 +5536,35 @@ namespace VpnPanel
         {
             if (exiting) return;
             StopContinuousDiag("Interrompido para reparo");
+            if (HasActiveOrPendingTunnel)
+            {
+                bool ok = Dialogs.Confirm(w, "Túnel ativo",
+                    "Para reparar rotas e o bloqueio de rede com segurança, o VPN Panel precisa desconectar a VPN primeiro.",
+                    "Desconectar e reparar", true);
+                if (!ok) return;
+                btnDiagRepair.IsEnabled = false;
+                btnDiagRepair.Content = "Reparando...";
+                SetDiagDot(diagVerdictDot, "Muted");
+                txtDiagVerdict.Foreground = B("Text");
+                txtDiagVerdict.Text = "Desconectando e reparando...";
+                txtDiagVerdictSub.Text = "Encerrando túnel, removendo kill switch (WFP) e rotas IPv6 fantasmas...";
+                DisconnectAndResetLock(() =>
+                {
+                    btnDiagRepair.IsEnabled = true;
+                    btnDiagRepair.Content = "Reparar internet agora";
+                    CheckIp();
+                    RunQuickDiag();
+                });
+                return;
+            }
+
             btnDiagRepair.IsEnabled = false;
             btnDiagRepair.Content = "Reparando...";
             SetDiagDot(diagVerdictDot, "Muted");
             txtDiagVerdict.Foreground = B("Text");
             txtDiagVerdict.Text = "Reparando bloqueio e rotas...";
             txtDiagVerdictSub.Text = "Removendo kill switch residual (WFP) e rotas IPv6 fantasmas...";
+            NetMon.Record("Bloqueio", NetMon.EventKind.Warn, "Reparo manual executado na aba Testes");
 
             ThreadPool.QueueUserWorkItem(_ =>
             {
@@ -4785,14 +5598,29 @@ namespace VpnPanel
                 if (txtChk3Detail != null) sb.AppendLine("3. Túnel & Servidor VPN: " + txtChk3Detail.Text);
                 if (txtChk4Detail != null) sb.AppendLine("4. Kill Switch & IPv6: " + txtChk4Detail.Text);
                 if (txtChk5Detail != null) sb.AppendLine("5. Configuração & Apps: " + txtChk5Detail.Text);
+                if (txtChk6Detail != null) sb.AppendLine("6. MTU & Pacotes de Jogos: " + txtChk6Detail.Text);
+                if (txtChk7Detail != null) sb.AppendLine("7. Conflitos & Driver: " + txtChk7Detail.Text);
             }
-            if (txtDiagSentLoss != null && txtDiagSentLoss.Text != "0 / 0%")
+            if (!string.IsNullOrEmpty(lastContSummary))
+            {
+                sb.AppendLine(lastContSummary);
+            }
+            else if (txtDiagSentLoss != null && txtDiagSentLoss.Text != "—" && txtDiagSentLoss.Text != "0 / 0%")
             {
                 sb.AppendLine("Teste contínuo (" + txtDiagLiveStatus.Text + "): " +
-                              "Enviados/Perda=" + txtDiagSentLoss.Text +
+                              "UDP=" + txtDiagSentLoss.Text +
                               " | Ping(méd/máx)=" + txtDiagPing.Text +
-                              " | Jitter=" + txtDiagJitter.Text +
-                              " | Quedas=" + txtDiagDrops.Text);
+                              " | Jitter/Picos=" + txtDiagJitter.Text +
+                              " | Micro/Quedas=" + txtDiagDrops.Text +
+                              " | GW=" + txtDiagGw.Text +
+                              " | Endpoint=" + txtDiagEp.Text);
+            }
+            string timeline = NetMon.ExportText(30);
+            if (!string.IsNullOrEmpty(timeline))
+            {
+                sb.AppendLine();
+                sb.AppendLine("Linha do Tempo (últimos 30 eventos):");
+                sb.AppendLine(timeline);
             }
 
             try
