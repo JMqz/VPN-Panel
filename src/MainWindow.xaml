@@ -463,6 +463,13 @@
                 </StackPanel>
               </CheckBox>
               <Border Height="1" Background="{StaticResource Line}" Margin="0,14"/>
+              <CheckBox x:Name="ChkAutoHeal" AutomationProperties.Name="Autocura automática de rede e MTU" Style="{StaticResource Switch}">
+                <StackPanel>
+                  <TextBlock Text="Autocura automática de rede e MTU" FontWeight="SemiBold"/>
+                  <TextBlock Style="{StaticResource Caption}" Margin="0,2,0,0" Text="Limpa bloqueios WFP/rotas IPv6 fantasmas, para serviço WireSock em conflito e adapta o MTU ao detectar perda ou fragmentação."/>
+                </StackPanel>
+              </CheckBox>
+              <Border Height="1" Background="{StaticResource Line}" Margin="0,14"/>
               <CheckBox x:Name="ChkHotkey" AutomationProperties.Name="Atalho global Ctrl+Alt+V para conectar e desconectar" Style="{StaticResource Switch}">
                 <StackPanel>
                   <TextBlock Text="Atalho global (Ctrl + Alt + V)" FontWeight="SemiBold"/>
@@ -604,8 +611,9 @@
                     Style="{StaticResource GhostButton}" Content="Teste contínuo" Padding="10,8"/>
           </Grid>
 
-          <Button x:Name="BtnDiagRepair" AutomationProperties.Name="Reparar internet agora"
-                  Style="{StaticResource DangerButton}" Content="Reparar internet agora"
+          <Button x:Name="BtnDiagRepair" AutomationProperties.Name="Corrigir problemas encontrados"
+                  Style="{StaticResource DangerButton}" Content="Corrigir problemas encontrados"
+                  HorizontalContentAlignment="Center"
                   Padding="12,8" Margin="0,8,0,0" Visibility="Collapsed"/>
 
           <Button x:Name="BtnDiagCopy" AutomationProperties.Name="Copiar resultado"

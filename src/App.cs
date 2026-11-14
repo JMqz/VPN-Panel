@@ -34,8 +34,8 @@ using System.Windows.Shell;
 [assembly: AssemblyTrademark("VPN Panel")]
 [assembly: ComVisible(false)]
 [assembly: Guid("b7c93e48-8120-4a87-8d2b-65c71d798a21")]
-[assembly: AssemblyVersion("3.0.4.0")]
-[assembly: AssemblyFileVersion("3.0.4.0")]
+[assembly: AssemblyVersion("3.0.5.0")]
+[assembly: AssemblyFileVersion("3.0.5.0")]
 
 namespace VpnPanel
 {
@@ -44,7 +44,7 @@ namespace VpnPanel
         // Same mutex as the old vpn-panel.ps1, so they never run together
         const string MutexName = @"Global\VpnPanelWireSock";
         public const string ShowEventName = @"Global\VpnPanelWireSockShow";
-        public const string Version = "3.0.4";
+        public const string Version = "3.0.5";
 
         [STAThread]
         static void Main(string[] args)
@@ -378,6 +378,8 @@ namespace VpnPanel
         public bool NetworkLock;
         public bool AutoConnect;
         public bool AutoReconnect = true;
+        public bool AutoHeal = true;
+        public int AdaptiveMtu = 0;
         public bool OptimizeMtu = true;
         public bool SkipUac = true;
         public bool SharedApps = true;
@@ -421,6 +423,12 @@ namespace VpnPanel
                 if (d.TryGetValue("networkLock", out v) && v is bool) s.NetworkLock = (bool)v;
                 if (d.TryGetValue("autoConnect", out v) && v is bool) s.AutoConnect = (bool)v;
                 if (d.TryGetValue("autoReconnect", out v) && v is bool) s.AutoReconnect = (bool)v;
+                if (d.TryGetValue("autoHeal", out v) && v is bool) s.AutoHeal = (bool)v;
+                if (d.TryGetValue("adaptiveMtu", out v) && (v is int || v is decimal || v is double))
+                {
+                    int am = Convert.ToInt32(v);
+                    if (am == 0 || (am >= 1200 && am <= 1500)) s.AdaptiveMtu = am;
+                }
                 if (d.TryGetValue("optimizeMtu", out v) && v is bool) s.OptimizeMtu = (bool)v;
                 if (d.TryGetValue("skipUac", out v) && v is bool) s.SkipUac = (bool)v;
                 if (d.TryGetValue("hotkey", out v) && v is bool) s.Hotkey = (bool)v;
@@ -466,7 +474,8 @@ namespace VpnPanel
                 var d = new Dictionary<string, object>
                 {
                     { "config", Config }, { "networkLock", NetworkLock }, { "autoConnect", AutoConnect },
-                    { "autoReconnect", AutoReconnect }, { "optimizeMtu", OptimizeMtu }, { "skipUac", SkipUac },
+                    { "autoReconnect", AutoReconnect }, { "autoHeal", AutoHeal }, { "adaptiveMtu", AdaptiveMtu },
+                    { "optimizeMtu", OptimizeMtu }, { "skipUac", SkipUac },
                     { "recent", Recent }, { "sharedApps", SharedApps }, { "appsMode", AppsMode.ToString() },
                     { "apps", Apps }, { "hotkey", Hotkey }, { "checkUpdates", CheckUpdates },
                     { "accentColor", AccentColor ?? "green" },
@@ -765,7 +774,13 @@ namespace VpnPanel
         //   3. Ensures DisallowedIPs excludes loopback/LAN/multicast from the tunnel.
         public static string EffectivePath(string name, out bool ipv6Stripped)
         {
+            return EffectivePath(name, 0, out ipv6Stripped);
+        }
+
+        public static string EffectivePath(string name, int maxMtu, out bool ipv6Stripped)
+        {
             ipv6Stripped = false;
+            if (maxMtu > 0 && maxMtu < 1200) maxMtu = 1200;
             string src = Paths.Conf(name);
             ConfigInfo info = ConfigInfo.Read(name);
             if (!info.Readable) return src;
@@ -775,7 +790,7 @@ namespace VpnPanel
                 string[] rawLines = File.ReadAllLines(src);
                 var lines = new List<string>(rawLines.Length + 4);
                 bool anyChanged = false, inInterface = false, inPeer = false;
-                bool hasDisallowedIps = false, hasKeepalive = false, keepaliveInserted = false;
+                bool hasDisallowedIps = false, hasKeepalive = false, keepaliveInserted = false, mtuHandled = false;
                 int peerCount = 0;
                 string tunnelIpv4 = null;
 
@@ -825,6 +840,12 @@ namespace VpnPanel
                     Match sec = SectionLine.Match(line);
                     if (sec.Success)
                     {
+                        if (inInterface && maxMtu > 0 && !mtuHandled)
+                        {
+                            lines.Add("MTU = " + maxMtu);
+                            mtuHandled = true;
+                            anyChanged = true;
+                        }
                         if (inPeer && peerCount == 1 && !hasKeepalive && !keepaliveInserted)
                         {
                             lines.Add("PersistentKeepalive = 25");
@@ -837,13 +858,27 @@ namespace VpnPanel
                         lines.Add(line);
                         continue;
                     }
-                    if (inInterface && MtuLine.IsMatch(line) && line.IndexOf(MtuMarker, StringComparison.OrdinalIgnoreCase) >= 0)
+                    if (inInterface && MtuLine.IsMatch(line))
                     {
-                        int idx = line.IndexOf('#');
-                        if (idx > 0)
+                        if (line.IndexOf(MtuMarker, StringComparison.OrdinalIgnoreCase) >= 0)
                         {
-                            line = line.Substring(0, idx).TrimEnd();
-                            anyChanged = true;
+                            int idx = line.IndexOf('#');
+                            if (idx > 0)
+                            {
+                                line = line.Substring(0, idx).TrimEnd();
+                                anyChanged = true;
+                            }
+                        }
+                        mtuHandled = true;
+                        if (maxMtu > 0)
+                        {
+                            Match mtuM = MtuLine.Match(line);
+                            int curMtu;
+                            if (!mtuM.Success || !int.TryParse(mtuM.Groups[1].Value, out curMtu) || curMtu <= 0 || curMtu > maxMtu)
+                            {
+                                line = "MTU = " + maxMtu;
+                                anyChanged = true;
+                            }
                         }
                     }
                     if (inPeer && peerCount == 1)
@@ -884,6 +919,12 @@ namespace VpnPanel
                         hasDisallowedIps = true;
                         anyChanged = true;
                     }
+                }
+                if (inInterface && maxMtu > 0 && !mtuHandled)
+                {
+                    lines.Add("MTU = " + maxMtu);
+                    mtuHandled = true;
+                    anyChanged = true;
                 }
                 if (inPeer && peerCount == 1 && !hasKeepalive && !keepaliveInserted)
                 {
@@ -2119,6 +2160,8 @@ namespace VpnPanel
         public static int LastExitCode { get; private set; }
         public static int Pid { get { lock (stateLock) return currentPid; } }
         public static DateTime StartTime { get; private set; }
+        static volatile bool connecting;
+        public static bool Connecting { get { return connecting; } set { connecting = value; } }
         public static bool IsStopping { get { return Interlocked.CompareExchange(ref stoppingCount, 0, 0) > 0; } }
         public static bool HasPendingNetworkLock
         {
@@ -2231,6 +2274,11 @@ namespace VpnPanel
 
         public static void Start(string exe, string config, bool networkLock)
         {
+            Start(exe, config, networkLock, 0);
+        }
+
+        public static void Start(string exe, string config, bool networkLock, int maxMtu)
+        {
             lock (stopLock)
             {
                 // Never leave an orphaned client fighting for the WireSock driver
@@ -2248,7 +2296,7 @@ namespace VpnPanel
                 LastStartedAt = DateTime.UtcNow;
                 LastExitCode = 0;
                 bool v6Stripped;
-                string confPath = ConfFile.EffectivePath(config, out v6Stripped);
+                string confPath = ConfFile.EffectivePath(config, maxMtu, out v6Stripped);
                 Ipv6Isolated = v6Stripped;
                 if (v6Stripped && ConfFile.HasGhostIpv6()) ConfFile.CleanGhostNetwork();
                 if (networkLock) WriteNetworkLockFlag(config);
@@ -2328,6 +2376,88 @@ namespace VpnPanel
                     catch { }
                 }
                 ClearNetworkLockFlag();
+            }
+        }
+
+        // Serializes idle cleanup with Tunnel.Start/Stop under stopLock so background or manual
+        // repair can never reset WFP or delete runtime files for an active/starting tunnel.
+        public static bool TryIdleCleanup(
+            bool killOrphans,
+            bool resetLockIfPending,
+            bool forceDnsFlush,
+            bool cleanGhostV6,
+            Func<bool> isBusy,
+            out int orphansKilled,
+            out bool lockReset,
+            out bool ghostOrDnsCleaned)
+        {
+            orphansKilled = 0;
+            lockReset = false;
+            ghostOrDnsCleaned = false;
+            lock (stopLock)
+            {
+                bool activeNow = killOrphans ? Active(false) : Active(true);
+                if (Connecting || IsStopping || activeNow || (isBusy != null && isBusy()))
+                    return false;
+
+                if (killOrphans)
+                {
+                    try
+                    {
+                        Process[] procs = Find();
+                        for (int i = 0; i < procs.Length; i++)
+                        {
+                            Process p = procs[i];
+                            try
+                            {
+                                if (ProcUtil.Shutdown(p.Id, 2000))
+                                {
+                                    orphansKilled++;
+                                }
+                                else
+                                {
+                                    p.Kill();
+                                    p.WaitForExit(1500);
+                                    orphansKilled++;
+                                }
+                            }
+                            catch { }
+                            finally { try { p.Dispose(); } catch { } }
+                        }
+                    }
+                    catch { }
+                }
+
+                bool hasRuntime = false;
+                try
+                {
+                    hasRuntime = Directory.Exists(Paths.Runtime) && Directory.GetFiles(Paths.Runtime, "*.conf").Length > 0;
+                }
+                catch { }
+
+                bool hasLock = false;
+                try { hasLock = HasPendingNetworkLock; } catch { }
+
+                bool hasGhost = false;
+                if (cleanGhostV6)
+                {
+                    try { hasGhost = ConfFile.HasGhostIpv6(); } catch { }
+                }
+
+                if ((resetLockIfPending && (hasLock || hasRuntime)) || orphansKilled > 0)
+                {
+                    ConfFile.DeleteRuntimeCopies();
+                    ResetNetworkLock();
+                    lockReset = true;
+                    if (forceDnsFlush || hasGhost) ghostOrDnsCleaned = true;
+                }
+                else if (forceDnsFlush || hasGhost)
+                {
+                    ConfFile.CleanGhostNetwork(true);
+                    ghostOrDnsCleaned = true;
+                }
+
+                return true;
             }
         }
     }
@@ -3063,7 +3193,7 @@ namespace VpnPanel
             if (ct.IsCancellationRequested)
                 return new MtuResult { MaxPayload = 0, EstimatedMtu = 0, Ok = false, Detail = "Cancelado" };
 
-            int[] payloads = new[] { 1472, 1392, 1352 };
+            int[] payloads = new[] { 1472, 1392, 1352, 1312, 1252 };
             var opts = new PingOptions(64, true);
             bool sawPacketTooBig = false;
             try
@@ -3099,8 +3229,8 @@ namespace VpnPanel
                             EstimatedMtu = 0,
                             Ok = false,
                             Detail = sawPacketTooBig
-                                ? "Fragmentação severa: pacotes <= 1352 B excedem o MTU (" + dst + ")"
-                                : "Fragmentação ou bloqueio DF: 32 B passou, 1352 B falhou (" + dst + ")"
+                                ? "Fragmentação severa: pacotes <= 1252 B excedem o MTU (" + dst + ")"
+                                : "Fragmentação ou bloqueio DF: 32 B passou, 1252 B falhou (" + dst + ")"
                         };
                     }
                     return new MtuResult
@@ -3168,8 +3298,9 @@ namespace VpnPanel
 
             string[] badSvcTokens = new[]
             {
-                "tailscale", "wireguard", "cloudflare", "warp", "protonvpn", "openvpn",
-                "mullvad", "exitlag", "radmin", "hamachi", "zerotier", "netlimiter", "killer"
+                "tailscale", "wireguard", "cloudflarewarp", "cloudflare warp", "cloudflare", "warp-svc",
+                "masque", "protonvpn", "openvpn", "mullvad", "exitlag", "radmin", "hamachi",
+                "zerotier", "netlimiter", "killer network", "killernetwork", "killerservice"
             };
             try
             {
@@ -3182,6 +3313,7 @@ namespace VpnPanel
                         {
                             if (s.Status != System.ServiceProcess.ServiceControllerStatus.Running) continue;
                             if (s.ServiceName.StartsWith("wiresock-", StringComparison.OrdinalIgnoreCase)) continue;
+                            if (s.ServiceName.Equals("warpjitsvc", StringComparison.OrdinalIgnoreCase)) continue;
                             string low = (s.ServiceName + " " + s.DisplayName).ToLowerInvariant();
                             for (int i = 0; i < badSvcTokens.Length; i++)
                             {
@@ -3206,7 +3338,8 @@ namespace VpnPanel
             string[] vpnAdapterTokens = new[]
             {
                 "wintun", "wireguard", "tap-windows", "openvpn", "tailscale",
-                "proton", "cloudflare", "warp", "mullvad", "exitlag", "radmin", "hamachi", "zerotier"
+                "proton", "cloudflare", "cloudflarewarp", "cloudflare warp", "mullvad",
+                "exitlag", "radmin", "hamachi", "zerotier"
             };
             bool tunnelActive = Tunnel.Active(true);
             try
@@ -3352,6 +3485,381 @@ namespace VpnPanel
                 head = 0;
                 count = 0;
                 version++;
+            }
+        }
+    }
+
+    // Deterministic self-healing and safe auto-remediation for network lock, ghost IPv6,
+    // conflicting WireSock/VPN services, orphan processes, and adaptive MTU step-down.
+    static class AutoHealer
+    {
+        public class FixReport
+        {
+            public int FixedCount;
+            public bool NeedReconnect;
+            public bool EnableOptimizeMtu;
+            public int SuggestedMtu;
+            public List<string> Applied = new List<string>();
+            public List<string> Skipped = new List<string>();
+            public List<string> Failed = new List<string>();
+        }
+
+        static readonly object fixLock = new object();
+        static DateTime lastBgNetHealUtc = DateTime.MinValue;
+        static DateTime lastBgMtuHealUtc = DateTime.MinValue;
+
+        static readonly HashSet<string> ProtectedServices = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "wuauserv", "bits", "dnscache", "dhcp", "nsi", "netprofm", "nlasvc",
+            "bfe", "mpssvc", "iphlpsvc", "winmgmt", "rpcss", "dcomlaunch",
+            "plugplay", "eventlog", "cryptsvc", "trustedinstaller",
+            "lanmanworkstation", "lanmanserver", "netman", "wlansvc", "dot3svc",
+            "rasman", "sstpsvc", "ikeext", "policyagent", "gpsvc", "profsvc",
+            "samss", "lsass", "schedule", "winhttpautoproxysvc", "tcpip",
+            "afd", "ndis", "ndiswgc", "wscsvc", "winrm", "windefend",
+            "sense", "securityhealthservice", "warpjitsvc"
+        };
+
+        public static int SuggestSafeMtu(NetDiag.MtuResult mtu, bool logMtuErr, int currentMax)
+        {
+            if (!logMtuErr && currentMax > 0 && mtu != null && mtu.Ok && mtu.MaxPayload >= currentMax - 28)
+                return 0;
+
+            bool icmpBlockedOrCanceled = mtu != null && !mtu.Ok && mtu.Detail != null &&
+                (mtu.Detail.IndexOf("ICMP bloqueado", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                 mtu.Detail.Equals("Cancelado", StringComparison.OrdinalIgnoreCase));
+            bool fragmented = mtu != null && (
+                (mtu.Ok && mtu.MaxPayload > 0 && mtu.MaxPayload < 1472) ||
+                (!mtu.Ok && !icmpBlockedOrCanceled && mtu.Detail != null &&
+                 mtu.Detail.IndexOf("Fragmenta", StringComparison.OrdinalIgnoreCase) >= 0));
+
+            if (!fragmented && !logMtuErr) return 0;
+
+            if (mtu != null && !mtu.Ok && fragmented)
+                return 1280;
+
+            if (mtu != null && mtu.Ok && mtu.MaxPayload > 0 && mtu.MaxPayload < 1392)
+            {
+                // If 1352 passed only because the tunnel itself was capped at 1380, step 1380 -> 1340 first.
+                if (currentMax >= 1380 && mtu.MaxPayload >= currentMax - 28)
+                    return 1340;
+                return 1280;
+            }
+
+            if (currentMax > 0 && currentMax <= 1340) return 1280;
+            return 1340;
+        }
+
+        public static List<string> StopConflictingServices(List<string> targets)
+        {
+            var stopped = new List<string>();
+            if (targets == null || targets.Count == 0) return stopped;
+
+            var targetSet = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            for (int i = 0; i < targets.Count; i++)
+            {
+                string t = targets[i];
+                if (!string.IsNullOrEmpty(t)) targetSet.Add(t.Trim());
+            }
+            if (targetSet.Count == 0) return stopped;
+
+            System.ServiceProcess.ServiceController[] services = null;
+            try
+            {
+                services = System.ServiceProcess.ServiceController.GetServices();
+                for (int i = 0; i < services.Length; i++)
+                {
+                    System.ServiceProcess.ServiceController s = services[i];
+                    try
+                    {
+                        if (s.Status != System.ServiceProcess.ServiceControllerStatus.Running) continue;
+                        if (s.ServiceName.StartsWith("wiresock", StringComparison.OrdinalIgnoreCase)) continue;
+                        if (ProtectedServices.Contains(s.ServiceName)) continue;
+
+                        bool matched = targetSet.Contains(s.ServiceName) ||
+                            (!string.IsNullOrEmpty(s.DisplayName) && targetSet.Contains(s.DisplayName));
+                        if (!matched) continue;
+                        if (!s.CanStop) continue;
+
+                        s.Stop();
+                        s.WaitForStatus(System.ServiceProcess.ServiceControllerStatus.Stopped, TimeSpan.FromSeconds(4));
+                        if (s.Status == System.ServiceProcess.ServiceControllerStatus.Stopped)
+                        {
+                            string label = string.IsNullOrEmpty(s.DisplayName) ? s.ServiceName : s.DisplayName;
+                            if (!stopped.Contains(label)) stopped.Add(label);
+                        }
+                    }
+                    catch { }
+                }
+            }
+            catch { }
+            finally
+            {
+                if (services != null)
+                {
+                    for (int i = 0; i < services.Length; i++)
+                    {
+                        try { services[i].Dispose(); } catch { }
+                    }
+                }
+            }
+            return stopped;
+        }
+
+        public static FixReport ApplyFixes(
+            Settings settings,
+            NetDiag.MtuResult mtuRes,
+            NetDiag.ConflictReport conflicts,
+            bool logMtuErr,
+            bool dnsFailed,
+            bool tunnelRunning,
+            bool stopExternalServices)
+        {
+            bool opt = settings == null || settings.OptimizeMtu;
+            int cur = settings != null && settings.AdaptiveMtu > 0 ? settings.AdaptiveMtu : (opt && tunnelRunning ? 1380 : 0);
+            return ApplyFixes(opt, cur, mtuRes, conflicts, logMtuErr, dnsFailed, tunnelRunning, stopExternalServices, null);
+        }
+
+        public static FixReport ApplyFixes(
+            bool optimizeMtu,
+            int currentMaxMtu,
+            NetDiag.MtuResult mtuRes,
+            NetDiag.ConflictReport conflicts,
+            bool logMtuErr,
+            bool dnsFailed,
+            bool tunnelRunning,
+            bool stopExternalServices,
+            Func<bool> isBusy)
+        {
+            var report = new FixReport();
+            lock (fixLock)
+            {
+                // 1. Stop conflicting native WireSock service if running
+                bool wsSvc = false;
+                try { wsSvc = Paths.WireSockServiceRunning; } catch { }
+                if (wsSvc)
+                {
+                    try
+                    {
+                        Paths.StopWireSockService();
+                        if (!Paths.WireSockServiceRunning)
+                        {
+                            report.Applied.Add("Serviço nativo do WireSock encerrado");
+                            NetMon.Record("Autocura", NetMon.EventKind.Info, "Serviço nativo do WireSock encerrado.");
+                        }
+                        else
+                        {
+                            report.Failed.Add("Não foi possível encerrar o serviço nativo do WireSock");
+                            NetMon.Record("Autocura", NetMon.EventKind.Warn, "Não foi possível encerrar o serviço nativo do WireSock.");
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        report.Failed.Add("Erro ao encerrar serviço WireSock: " + ex.Message);
+                        NetMon.Record("Autocura", NetMon.EventKind.Warn, "Erro ao encerrar serviço WireSock: " + ex.Message);
+                    }
+                }
+
+                // 2. Kill orphans + release WFP/runtime + flush DNS/ghost IPv6 serialized under Tunnel.stopLock
+                if (!tunnelRunning)
+                {
+                    int orphansKilled;
+                    bool lockReset;
+                    bool ghostOrDnsCleaned;
+                    bool cleaned = Tunnel.TryIdleCleanup(
+                        true,
+                        true,
+                        dnsFailed,
+                        true,
+                        isBusy,
+                        out orphansKilled,
+                        out lockReset,
+                        out ghostOrDnsCleaned);
+
+                    if (!cleaned)
+                    {
+                        report.Skipped.Add("Limpeza de rede ignorada porque há uma conexão em andamento");
+                        NetMon.Record("Autocura", NetMon.EventKind.Info, "Limpeza de rede ignorada (túnel em início/operação).");
+                    }
+                    else
+                    {
+                        if (orphansKilled > 0)
+                        {
+                            report.Applied.Add("Processos órfãos do WireSock encerrados (" + orphansKilled + ")");
+                            NetMon.Record("Autocura", NetMon.EventKind.Info, "Processos órfãos do WireSock encerrados: " + orphansKilled + ".");
+                        }
+                        if (lockReset)
+                        {
+                            report.Applied.Add("Kill Switch residual (WFP) e arquivos temporários limpos");
+                            NetMon.Record("Autocura", NetMon.EventKind.Info, "WFP/Kill Switch residual e arquivos temporários limpos.");
+                        }
+                        if (ghostOrDnsCleaned)
+                        {
+                            report.Applied.Add("Cache DNS renovado e rotas IPv6 fantasmas limpas");
+                            NetMon.Record("Autocura", NetMon.EventKind.Info, "Cache DNS renovado e rotas IPv6 fantasmas limpas.");
+                        }
+                    }
+                }
+                else
+                {
+                    if (conflicts != null && conflicts.WireSockProcessCount > 1)
+                    {
+                        report.Skipped.Add("Múltiplos wiresock-client.exe com túnel ativo (reconecte para limpar)");
+                        report.NeedReconnect = true;
+                    }
+                    bool hasGhostV6 = false;
+                    try { hasGhostV6 = ConfFile.HasGhostIpv6(); } catch { }
+                    if (dnsFailed || hasGhostV6)
+                    {
+                        ConfFile.CleanGhostNetwork(true);
+                        report.Applied.Add("Cache DNS e rotas IPv6 fantasmas limpos (túnel mantido)");
+                        NetMon.Record("Autocura", NetMon.EventKind.Info, "Cache DNS e rotas IPv6 fantasmas limpos com túnel ativo.");
+                    }
+                    if (Tunnel.HasPendingNetworkLock)
+                    {
+                        report.Skipped.Add("Reset completo de WFP adiado enquanto o túnel está ativo");
+                        report.NeedReconnect = true;
+                    }
+                }
+
+                // 3. Adaptive MTU recommendation (UI thread applies to Settings and calls Save)
+                int suggested = SuggestSafeMtu(mtuRes, logMtuErr, currentMaxMtu);
+                if (suggested > 0)
+                {
+                    if (!optimizeMtu || currentMaxMtu == 0 || suggested < currentMaxMtu)
+                    {
+                        report.SuggestedMtu = suggested;
+                        report.EnableOptimizeMtu = true;
+                        report.Applied.Add("MTU adaptativo configurado para " + suggested + " bytes");
+                        NetMon.Record("Autocura", NetMon.EventKind.Info, "MTU adaptativo ajustado para " + suggested + ".");
+                        if (tunnelRunning) report.NeedReconnect = true;
+                    }
+                    else if (currentMaxMtu > 0)
+                    {
+                        report.Skipped.Add("MTU adaptativo já está no piso seguro (" + currentMaxMtu + " bytes)");
+                    }
+                }
+
+                // 4. External conflicting services only when explicitly authorized by user
+                if (conflicts != null && conflicts.ConflictingServices != null && conflicts.ConflictingServices.Count > 0)
+                {
+                    if (stopExternalServices)
+                    {
+                        List<string> stopped = StopConflictingServices(conflicts.ConflictingServices);
+                        for (int i = 0; i < stopped.Count; i++)
+                        {
+                            report.Applied.Add("Serviço conflitante encerrado: " + stopped[i]);
+                            NetMon.Record("Autocura", NetMon.EventKind.Info, "Serviço conflitante encerrado: " + stopped[i] + ".");
+                        }
+                        for (int i = 0; i < conflicts.ConflictingServices.Count; i++)
+                        {
+                            string tgt = conflicts.ConflictingServices[i];
+                            bool wasStopped = false;
+                            for (int j = 0; j < stopped.Count; j++)
+                            {
+                                if (stopped[j].Equals(tgt, StringComparison.OrdinalIgnoreCase))
+                                {
+                                    wasStopped = true;
+                                    break;
+                                }
+                            }
+                            if (!wasStopped)
+                            {
+                                report.Failed.Add("Não foi possível encerrar: " + tgt);
+                                NetMon.Record("Autocura", NetMon.EventKind.Warn, "Não foi possível encerrar serviço conflitante: " + tgt + ".");
+                            }
+                        }
+                    }
+                    else
+                    {
+                        report.Skipped.Add("Serviços concorrentes mantidos sem alteração: " +
+                            string.Join(", ", conflicts.ConflictingServices.ToArray()));
+                    }
+                }
+
+                report.FixedCount = report.Applied.Count;
+                return report;
+            }
+        }
+
+        public static FixReport TryBackgroundAutoHeal(Settings settings, bool tunnelRunning, bool repeatedMtuError)
+        {
+            return TryBackgroundAutoHeal(settings, tunnelRunning, repeatedMtuError, null);
+        }
+
+        public static FixReport TryBackgroundAutoHeal(Settings settings, bool tunnelRunning, bool repeatedMtuError, NetDiag.MtuResult mtuRes)
+        {
+            if (settings == null || !settings.AutoHeal) return new FixReport();
+            int cur = settings.AdaptiveMtu > 0 ? settings.AdaptiveMtu : (settings.OptimizeMtu && tunnelRunning ? 1380 : 0);
+            return TryBackgroundAutoHeal(settings.AutoHeal, settings.OptimizeMtu, cur, tunnelRunning, repeatedMtuError, true, mtuRes, null);
+        }
+
+        public static FixReport TryBackgroundAutoHeal(
+            bool autoHealEnabled,
+            bool optimizeMtu,
+            int currentMaxMtu,
+            bool tunnelRunning,
+            bool repeatedMtuError,
+            bool allowMtuStep,
+            NetDiag.MtuResult mtuRes,
+            Func<bool> isBusy)
+        {
+            var report = new FixReport();
+            if (!autoHealEnabled) return report;
+
+            lock (fixLock)
+            {
+                DateTime now = DateTime.UtcNow;
+
+                if (!tunnelRunning && (lastBgNetHealUtc == DateTime.MinValue || (now - lastBgNetHealUtc).TotalSeconds >= 60.0))
+                {
+                    int orphansKilled;
+                    bool lockReset;
+                    bool ghostOrDnsCleaned;
+                    bool cleaned = Tunnel.TryIdleCleanup(
+                        false,
+                        true,
+                        false,
+                        true,
+                        isBusy,
+                        out orphansKilled,
+                        out lockReset,
+                        out ghostOrDnsCleaned);
+
+                    if (cleaned)
+                    {
+                        lastBgNetHealUtc = now;
+                        if (lockReset)
+                        {
+                            report.Applied.Add("Kill Switch residual (WFP) e temporários limpos automaticamente");
+                            NetMon.Record("Autocura", NetMon.EventKind.Warn, "Kill Switch residual (WFP) e temporários limpos em segundo plano.");
+                        }
+                        if (ghostOrDnsCleaned)
+                        {
+                            report.Applied.Add("Rotas IPv6 fantasmas e cache DNS limpos automaticamente");
+                            NetMon.Record("Autocura", NetMon.EventKind.Warn, "Rotas IPv6 fantasmas e cache DNS limpos em segundo plano.");
+                        }
+                    }
+                }
+
+                if (repeatedMtuError && allowMtuStep && optimizeMtu &&
+                    (lastBgMtuHealUtc == DateTime.MinValue || (now - lastBgMtuHealUtc).TotalSeconds >= 60.0))
+                {
+                    lastBgMtuHealUtc = now;
+
+                    int suggested = SuggestSafeMtu(mtuRes, true, currentMaxMtu);
+                    if (suggested > 0 && (currentMaxMtu == 0 || suggested < currentMaxMtu))
+                    {
+                        report.SuggestedMtu = suggested;
+                        if (tunnelRunning) report.NeedReconnect = true;
+                        report.Applied.Add("MTU adaptativo reduzido automaticamente para " + suggested + " bytes");
+                        NetMon.Record("Autocura", NetMon.EventKind.Warn,
+                            "MTU adaptativo ajustado automaticamente para " + suggested + " após erros repetidos de MTU no log.");
+                    }
+                }
+
+                report.FixedCount = report.Applied.Count;
+                return report;
             }
         }
     }
