@@ -296,8 +296,8 @@ namespace VpnPanel
             return entries;
         }
 
-        // Shows with 100% certainty which open apps are routed through the VPN and which are on the direct local connection
-        public static void VerifyRouting(Window owner, ConfigInfo cfg, bool ipv6Isolated, Func<string, string, ImageSource> icon)
+        // Shows which open apps match the configured VPN routing rules (and warns if a reconnect is pending)
+        public static void VerifyRouting(Window owner, ConfigInfo cfg, bool ipv6Isolated, Func<string, string, ImageSource> icon, bool pendingReconnect = false)
         {
             if (cfg == null) return;
             Window d = Frame(owner, "Auditoria de tráfego em tempo real", 380);
@@ -306,6 +306,25 @@ namespace VpnPanel
                             : cfg.Mode == AppMode.Except ? "Modo ativo: Todos os apps passam, exceto os escolhidos."
                             : "Modo ativo: Todos os apps do PC passam pela VPN.";
             body.Children.Add(Message(modeDesc));
+
+            if (pendingReconnect)
+            {
+                var warnBadge = new Border
+                {
+                    Background = B("WarnSoft"),
+                    CornerRadius = new CornerRadius(8),
+                    Padding = new Thickness(10, 8, 10, 8),
+                    Margin = new Thickness(0, 10, 0, 0),
+                };
+                warnBadge.Child = new TextBlock
+                {
+                    Text = "Você alterou a lista de apps, mas a VPN ainda está usando a configuração anterior. Reconecte para aplicar as mudanças.",
+                    FontSize = 11.5,
+                    Foreground = B("Warn"),
+                    TextWrapping = TextWrapping.Wrap,
+                };
+                body.Children.Add(warnBadge);
+            }
 
             if (ipv6Isolated)
             {

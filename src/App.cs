@@ -34,8 +34,8 @@ using System.Windows.Shell;
 [assembly: AssemblyTrademark("VPN Panel")]
 [assembly: ComVisible(false)]
 [assembly: Guid("b7c93e48-8120-4a87-8d2b-65c71d798a21")]
-[assembly: AssemblyVersion("3.0.2.0")]
-[assembly: AssemblyFileVersion("3.0.2.0")]
+[assembly: AssemblyVersion("3.0.3.0")]
+[assembly: AssemblyFileVersion("3.0.3.0")]
 
 namespace VpnPanel
 {
@@ -44,7 +44,7 @@ namespace VpnPanel
         // Same mutex as the old vpn-panel.ps1, so they never run together
         const string MutexName = @"Global\VpnPanelWireSock";
         public const string ShowEventName = @"Global\VpnPanelWireSockShow";
-        public const string Version = "3.0.2";
+        public const string Version = "3.0.3";
 
         [STAThread]
         static void Main(string[] args)
@@ -155,6 +155,7 @@ namespace VpnPanel
         public static readonly string Settings = Path.Combine(Data, "settings.json");
         public static readonly string Log = Path.Combine(Data, "wiresock.log");
         public static readonly string GeoCache = Path.Combine(Data, "locations.json");
+        public static readonly string NetworkLockFlag = Path.Combine(Data, "network.lock");
         public static bool FirstRun;
 
         public static bool IsInstalled
@@ -493,8 +494,11 @@ namespace VpnPanel
         public string Name;
         public string Server;    // first comment in [Peer], e.g. "# US-FREE#40" in Proton configs
         public string Endpoint;  // host only
+        public int EndpointPort; // UDP port in [Peer] Endpoint, or 0
         public int Mtu;          // MTU in [Interface], or 0 when not specified
         public bool AutoMtu;     // true when MTU = 1380 was added by VPN Panel (# vpn-panel-mtu)
+        public int PersistentKeepalive; // PersistentKeepalive in [Peer], or 0 when absent/0
+        public bool HasDisallowedIps;   // true when DisallowedIPs is defined in [Peer]
         public string GuessedCountry; // provisional ISO country code from server comment/name
         public AppMode Mode;
         public List<string> Apps = new List<string>();
@@ -544,7 +548,7 @@ namespace VpnPanel
             try
             {
                 string[] lines = File.ReadAllLines(path);
-                bool inPeer = false, inInterface = false;
+                bool inPeer = false, inInterface = false, prevMtuMarker = false;
                 foreach (string line in lines)
                 {
                     Match m = ConfFile.SectionLine.Match(line);
@@ -553,17 +557,26 @@ namespace VpnPanel
                         string sec = m.Groups[1].Value;
                         inPeer = sec.Equals("Peer", StringComparison.OrdinalIgnoreCase);
                         inInterface = sec.Equals("Interface", StringComparison.OrdinalIgnoreCase);
+                        prevMtuMarker = false;
                         continue;
                     }
                     if (inInterface && c.Mtu == 0)
                     {
+                        if (line.Trim().Equals(ConfFile.MtuMarker, StringComparison.OrdinalIgnoreCase))
+                        {
+                            prevMtuMarker = true;
+                            continue;
+                        }
                         m = ConfFile.MtuLine.Match(line);
                         if (m.Success)
                         {
                             int parsedMtu;
                             c.Mtu = int.TryParse(m.Groups[1].Value, out parsedMtu) && parsedMtu > 0 ? parsedMtu : -1;
-                            c.AutoMtu = line.IndexOf(ConfFile.MtuMarker, StringComparison.OrdinalIgnoreCase) >= 0;
+                            c.AutoMtu = prevMtuMarker || line.IndexOf(ConfFile.MtuMarker, StringComparison.OrdinalIgnoreCase) >= 0;
+                            prevMtuMarker = false;
+                            continue;
                         }
+                        if (line.Trim().Length > 0) prevMtuMarker = false;
                     }
                     if (!inPeer) continue;
                     if (c.Server == null)
@@ -578,10 +591,40 @@ namespace VpnPanel
                         if (m.Success)
                         {
                             string ep = m.Groups[1].Value;
-                            c.Endpoint = ep.StartsWith("[") ? ep.Substring(1, Math.Max(0, ep.IndexOf(']') - 1))
-                                       : ep.Contains(':') ? ep.Substring(0, ep.LastIndexOf(':')) : ep;
+                            int colon = ep.StartsWith("[") ? ep.LastIndexOf("]:") : ep.LastIndexOf(':');
+                            if (ep.StartsWith("["))
+                            {
+                                int close = ep.IndexOf(']');
+                                c.Endpoint = ep.Substring(1, Math.Max(0, close - 1));
+                                if (colon > close)
+                                {
+                                    int port;
+                                    if (int.TryParse(ep.Substring(colon + 2), out port) && port > 0) c.EndpointPort = port;
+                                }
+                            }
+                            else if (colon >= 0)
+                            {
+                                c.Endpoint = ep.Substring(0, colon);
+                                int port;
+                                if (int.TryParse(ep.Substring(colon + 1), out port) && port > 0) c.EndpointPort = port;
+                            }
+                            else
+                            {
+                                c.Endpoint = ep;
+                            }
                         }
                     }
+                    if (c.PersistentKeepalive == 0)
+                    {
+                        m = ConfFile.KeepaliveLine.Match(line);
+                        if (m.Success)
+                        {
+                            int ka;
+                            if (int.TryParse(m.Groups[1].Value, out ka) && ka > 0) c.PersistentKeepalive = ka;
+                        }
+                    }
+                    if (!c.HasDisallowedIps && ConfFile.DisallowedIpsLine.IsMatch(line))
+                        c.HasDisallowedIps = true;
                 }
                 c.GuessedCountry = GuessCountry(c.Server) ?? GuessCountry(c.Name);
                 c.Mode = ConfFile.ReadApps(lines, c.Apps);
@@ -632,13 +675,16 @@ namespace VpnPanel
         static readonly Regex DnsLine = new Regex(@"^\s*DNS\s*=", RegexOptions.IgnoreCase | RegexOptions.Compiled);
         static readonly Regex AppsLine = new Regex(@"^\s*(AllowedApps|DisallowedApps)\s*=\s*([^#]*)", RegexOptions.IgnoreCase | RegexOptions.Compiled);
         static readonly Regex AllowedIpsLine = new Regex(@"^\s*AllowedIPs\s*=", RegexOptions.IgnoreCase | RegexOptions.Compiled);
-        static readonly Regex DisallowedIpsLine = new Regex(@"^\s*DisallowedIPs\s*=", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+        public static readonly Regex DisallowedIpsLine = new Regex(@"^\s*DisallowedIPs\s*=", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+        public static readonly Regex KeepaliveLine = new Regex(@"^\s*PersistentKeepalive\s*=\s*(\d+)", RegexOptions.IgnoreCase | RegexOptions.Compiled);
         static readonly Regex V6KeyLine = new Regex(@"^(\s*(?:Address|DNS|AllowedIPs)\s*=\s*)([^#]*)(#.*)?$", RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
         [DllImport("dnsapi.dll")]
         static extern int DnsFlushResolverCache();
 
-        static string StripV6List(Match m, out bool changed)
+        // Strips IPv6 entries from Address/DNS/AllowedIPs. Returns null when the whole line was IPv6-only
+        // so callers omit that line completely instead of leaving IPv6 active.
+        public static string StripV6List(Match m, out bool changed)
         {
             changed = false;
             string prefix = m.Groups[1].Value;
@@ -653,8 +699,9 @@ namespace VpnPanel
                 if (item.Contains(':')) hadV6 = true;
                 else v4.Add(item);
             }
-            if (!hadV6 || v4.Count == 0) return m.Value;
+            if (!hadV6) return m.Value;
             changed = true;
+            if (v4.Count == 0) return null;
             return prefix + string.Join(", ", v4) + comment;
         }
 
@@ -709,24 +756,27 @@ namespace VpnPanel
             return string.Join(", ", list);
         }
 
-        // In split-tunneling modes (Only / Except):
-        // 1. WireSock's NDIS filter binds [Interface] IPv6 addresses and a default ::/0 route onto the physical NIC,
-        //    causing non-tunneled apps (and Steam's ipv6check/CEF sockets) to pick the VPN's IPv6 source address and stall.
-        // 2. Windows resolves DNS for all apps through svchost.exe (Dnscache); if [Interface] DNS = 10.2.0.1 is set,
-        //    WireSock redirects system-wide UDP port 53 to the remote VPN DNS server (160+ ms latency) or fails when
-        //    svchost is not in AllowedApps, causing Steam Connection Manager lookups to fail with 0.0.0.0.
-        // 3. DisallowedIPs excludes loopback/LAN/multicast from the tunnel.
+        // Normalizes the config into Paths.Runtime before launching WireSock:
+        // - All modes: ensures PersistentKeepalive = 25 in [Peer] when absent or 0 (prevents NAT timeout drops)
+        //   and strips legacy inline "# vpn-panel-mtu" comments from MTU lines.
+        // - Split-tunneling modes (Only / Except):
+        //   1. Strips IPv6 addresses/routes (even IPv6-only lines) so WireSock does not bind IPv6/::0 onto the physical NIC.
+        //   2. Comments out [Interface] DNS = ... so Windows Dnscache (svchost.exe) stays on local DNS instead of stalling.
+        //   3. Ensures DisallowedIPs excludes loopback/LAN/multicast from the tunnel.
         public static string EffectivePath(string name, out bool ipv6Stripped)
         {
             ipv6Stripped = false;
             string src = Paths.Conf(name);
             ConfigInfo info = ConfigInfo.Read(name);
-            if (!info.Readable || info.Mode == AppMode.All) return src;
+            if (!info.Readable) return src;
+            bool splitMode = info.Mode != AppMode.All;
             try
             {
                 string[] rawLines = File.ReadAllLines(src);
-                var lines = new List<string>(rawLines.Length + 2);
-                bool anyChanged = false, inInterface = false, inPeer = false, hasDisallowedIps = false;
+                var lines = new List<string>(rawLines.Length + 4);
+                bool anyChanged = false, inInterface = false, inPeer = false;
+                bool hasDisallowedIps = false, hasKeepalive = false, keepaliveInserted = false;
+                int peerCount = 0;
                 string tunnelIpv4 = null;
 
                 foreach (string rawLine in rawLines)
@@ -739,6 +789,15 @@ namespace VpnPanel
                         continue;
                     }
                     if (inPeer && DisallowedIpsLine.IsMatch(rawLine)) hasDisallowedIps = true;
+                    if (inPeer)
+                    {
+                        Match km = KeepaliveLine.Match(rawLine);
+                        if (km.Success)
+                        {
+                            int ka;
+                            if (int.TryParse(km.Groups[1].Value, out ka) && ka > 0) hasKeepalive = true;
+                        }
+                    }
                     if (inInterface && AddressLine.IsMatch(rawLine))
                     {
                         Match am = V6KeyLine.Match(rawLine);
@@ -766,83 +825,154 @@ namespace VpnPanel
                     Match sec = SectionLine.Match(line);
                     if (sec.Success)
                     {
+                        if (inPeer && peerCount == 1 && !hasKeepalive && !keepaliveInserted)
+                        {
+                            lines.Add("PersistentKeepalive = 25");
+                            keepaliveInserted = true;
+                            anyChanged = true;
+                        }
                         inInterface = IsInterface(sec);
                         inPeer = IsPeer(sec);
+                        if (inPeer) peerCount++;
                         lines.Add(line);
                         continue;
                     }
-                    if (inInterface && DnsLine.IsMatch(line))
+                    if (inInterface && MtuLine.IsMatch(line) && line.IndexOf(MtuMarker, StringComparison.OrdinalIgnoreCase) >= 0)
                     {
-                        lines.Add("# " + line.Trim() + " # vpn-panel: DNS local mantido em split tunneling");
-                        anyChanged = true;
-                        continue;
+                        int idx = line.IndexOf('#');
+                        if (idx > 0)
+                        {
+                            line = line.Substring(0, idx).TrimEnd();
+                            anyChanged = true;
+                        }
                     }
-                    Match m = V6KeyLine.Match(line);
-                    if (m.Success)
+                    if (inPeer && peerCount == 1)
                     {
-                        bool lineChanged;
-                        line = StripV6List(m, out lineChanged);
-                        if (lineChanged) anyChanged = true;
+                        Match km = KeepaliveLine.Match(line);
+                        if (km.Success)
+                        {
+                            int ka;
+                            if (!int.TryParse(km.Groups[1].Value, out ka) || ka <= 0)
+                            {
+                                line = "PersistentKeepalive = 25";
+                                anyChanged = true;
+                            }
+                            keepaliveInserted = true;
+                        }
+                    }
+                    if (splitMode)
+                    {
+                        if (inInterface && DnsLine.IsMatch(line))
+                        {
+                            lines.Add("# " + line.Trim() + " # vpn-panel: DNS local mantido em split tunneling");
+                            anyChanged = true;
+                            continue;
+                        }
+                        Match m = V6KeyLine.Match(line);
+                        if (m.Success)
+                        {
+                            bool lineChanged;
+                            line = StripV6List(m, out lineChanged);
+                            if (lineChanged) anyChanged = true;
+                            if (line == null) continue;
+                        }
                     }
                     lines.Add(line);
-                    if (inPeer && !hasDisallowedIps && AllowedIpsLine.IsMatch(line))
+                    if (splitMode && inPeer && !hasDisallowedIps && AllowedIpsLine.IsMatch(line))
                     {
                         lines.Add("DisallowedIPs = " + BuildDisallowedIps(tunnelIpv4));
                         hasDisallowedIps = true;
                         anyChanged = true;
                     }
                 }
-                if (!anyChanged) return src;
+                if (inPeer && peerCount == 1 && !hasKeepalive && !keepaliveInserted)
+                {
+                    lines.Add("PersistentKeepalive = 25");
+                    anyChanged = true;
+                }
+                if (splitMode && inPeer && !hasDisallowedIps)
+                {
+                    lines.Add("DisallowedIPs = " + BuildDisallowedIps(tunnelIpv4));
+                    anyChanged = true;
+                }
+                if (!splitMode && !anyChanged) return src;
                 Directory.CreateDirectory(Paths.Runtime);
                 string dst = Path.Combine(Paths.Runtime, name + ".conf");
                 File.WriteAllLines(dst, lines.ToArray(), new UTF8Encoding(false));
-                ipv6Stripped = true;
+                ipv6Stripped = splitMode;
                 return dst;
             }
             catch { return src; }
         }
 
-        static void CollectVpnIpv6(out HashSet<string> addrs, out HashSet<string> gws)
+        static string Prefix64(IPAddress addr)
+        {
+            if (addr == null || addr.AddressFamily != AddressFamily.InterNetworkV6) return null;
+            if (addr.IsIPv6LinkLocal || IPAddress.IsLoopback(addr)) return null;
+            byte[] b = addr.GetAddressBytes();
+            return string.Format("{0:x2}{1:x2}:{2:x2}{3:x2}:{4:x2}{5:x2}:{6:x2}{7:x2}",
+                b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]);
+        }
+
+        static bool IsWireSockAdapter(NetworkInterface ni)
+        {
+            if (ni == null) return false;
+            string d = (ni.Description ?? "") + " " + (ni.Name ?? "");
+            return d.IndexOf("WireSock", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   d.IndexOf("Wintun", StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        static void CollectVpnIpv6(out HashSet<string> addrs, out HashSet<string> gws, out HashSet<string> prefixes)
         {
             addrs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             gws = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            prefixes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var files = new List<string>();
             try
             {
-                if (!Directory.Exists(Paths.Configs)) return;
-                foreach (string f in Directory.GetFiles(Paths.Configs, "*.conf"))
-                {
-                    try
-                    {
-                        foreach (string line in File.ReadAllLines(f))
-                        {
-                            bool isAddr = AddressLine.IsMatch(line);
-                            bool isDns = !isAddr && DnsLine.IsMatch(line);
-                            if (!isAddr && !isDns) continue;
-                            Match m = V6KeyLine.Match(line);
-                            if (!m.Success) continue;
-                            foreach (string part in m.Groups[2].Value.Split(','))
-                            {
-                                string item = part.Trim();
-                                if (!item.Contains(':')) continue;
-                                int slash = item.IndexOf('/');
-                                if (slash > 0) item = item.Substring(0, slash).Trim();
-                                IPAddress parsed;
-                                if (!IPAddress.TryParse(item, out parsed) || parsed.AddressFamily != AddressFamily.InterNetworkV6) continue;
-                                string norm = parsed.ToString();
-                                if (isAddr)
-                                {
-                                    addrs.Add(norm);
-                                    if (norm.EndsWith(":2", StringComparison.OrdinalIgnoreCase))
-                                        gws.Add(norm.Substring(0, norm.Length - 2) + ":1");
-                                }
-                                else gws.Add(norm);
-                            }
-                        }
-                    }
-                    catch { }
-                }
+                if (Directory.Exists(Paths.Configs)) files.AddRange(Directory.GetFiles(Paths.Configs, "*.conf"));
+                if (Directory.Exists(Paths.Runtime)) files.AddRange(Directory.GetFiles(Paths.Runtime, "*.conf"));
             }
             catch { }
+            foreach (string f in files)
+            {
+                try
+                {
+                    foreach (string line in File.ReadAllLines(f))
+                    {
+                        bool isAddr = AddressLine.IsMatch(line);
+                        bool isDns = !isAddr && DnsLine.IsMatch(line);
+                        if (!isAddr && !isDns) continue;
+                        Match m = V6KeyLine.Match(line);
+                        if (!m.Success) continue;
+                        foreach (string part in m.Groups[2].Value.Split(','))
+                        {
+                            string item = part.Trim();
+                            if (!item.Contains(':')) continue;
+                            int slash = item.IndexOf('/');
+                            if (slash > 0) item = item.Substring(0, slash).Trim();
+                            IPAddress parsed;
+                            if (!IPAddress.TryParse(item, out parsed) || parsed.AddressFamily != AddressFamily.InterNetworkV6) continue;
+                            string norm = parsed.ToString();
+                            string p64 = Prefix64(parsed);
+                            if (p64 != null) prefixes.Add(p64);
+                            if (isAddr)
+                            {
+                                addrs.Add(norm);
+                                if (norm.EndsWith(":2", StringComparison.OrdinalIgnoreCase))
+                                    gws.Add(norm.Substring(0, norm.Length - 2) + ":1");
+                                byte[] b = parsed.GetAddressBytes();
+                                byte[] gw1 = new byte[16];
+                                Array.Copy(b, gw1, 8);
+                                gw1[15] = 1;
+                                gws.Add(new IPAddress(gw1).ToString());
+                            }
+                            else gws.Add(norm);
+                        }
+                    }
+                }
+                catch { }
+            }
         }
 
         // True if any physical adapter still holds a ghost IPv6 address or route left behind by an earlier WireSock session
@@ -850,27 +980,36 @@ namespace VpnPanel
         {
             try
             {
-                HashSet<string> addrs, gws;
-                CollectVpnIpv6(out addrs, out gws);
+                HashSet<string> addrs, gws, prefixes;
+                CollectVpnIpv6(out addrs, out gws, out prefixes);
+                bool tunnelUp = Tunnel.Active(false);
                 foreach (NetworkInterface ni in NetworkInterface.GetAllNetworkInterfaces())
                 {
                     if (ni.NetworkInterfaceType == NetworkInterfaceType.Loopback) continue;
+                    if (!tunnelUp && IsWireSockAdapter(ni) && ni.OperationalStatus == OperationalStatus.Up)
+                        return true;
                     IPInterfaceProperties props = ni.GetIPProperties();
                     foreach (UnicastIPAddressInformation ua in props.UnicastAddresses)
                     {
-                        if (ua.Address.AddressFamily == AddressFamily.InterNetworkV6 && addrs.Contains(ua.Address.ToString()))
-                            return true;
+                        if (ua.Address.AddressFamily != AddressFamily.InterNetworkV6) continue;
+                        if (addrs.Contains(ua.Address.ToString())) return true;
+                        string p64 = Prefix64(ua.Address);
+                        if (p64 != null && prefixes.Contains(p64)) return true;
                     }
                     foreach (GatewayIPAddressInformation gw in props.GatewayAddresses)
                     {
-                        if (gw.Address != null && gw.Address.AddressFamily == AddressFamily.InterNetworkV6 && gws.Contains(gw.Address.ToString()))
-                            return true;
+                        if (gw.Address == null || gw.Address.AddressFamily != AddressFamily.InterNetworkV6) continue;
+                        if (gws.Contains(gw.Address.ToString())) return true;
+                        string p64 = Prefix64(gw.Address);
+                        if (p64 != null && prefixes.Contains(p64)) return true;
                     }
                 }
             }
             catch { }
             return false;
         }
+
+        static readonly Regex DefaultV6RouteLine = new Regex(@"(?:^|\s)::/0\s+(\d+)\s+(\S+)", RegexOptions.Compiled);
 
         // Purges any lingering VPN IPv6 addresses/routes stuck on physical NICs (from v2.6 or full-tunnel runs)
         // and flushes the Windows DNS resolver cache so negative cache entries (0.0.0.0) don't stall Steam/games.
@@ -879,9 +1018,13 @@ namespace VpnPanel
             try { DnsFlushResolverCache(); } catch { }
             try
             {
-                HashSet<string> addrs, gws;
-                CollectVpnIpv6(out addrs, out gws);
+                HashSet<string> addrs, gws, prefixes;
+                CollectVpnIpv6(out addrs, out gws, out prefixes);
                 var netshCmds = new List<string>();
+                var taintedIfs = new HashSet<int>();
+                var wireSockIfs = new HashSet<int>();
+                bool tunnelUp = Tunnel.Active(false);
+
                 foreach (NetworkInterface ni in NetworkInterface.GetAllNetworkInterfaces())
                 {
                     if (ni.NetworkInterfaceType == NetworkInterfaceType.Loopback) continue;
@@ -896,39 +1039,105 @@ namespace VpnPanel
                     }
                     catch { continue; }
 
+                    bool isWs = !tunnelUp && IsWireSockAdapter(ni);
+                    if (isWs) wireSockIfs.Add(ifIdx);
+
                     bool foundOnNic = false;
+                    var nicVpnAddrs = new List<string>();
                     foreach (UnicastIPAddressInformation ua in props.UnicastAddresses)
                     {
-                        if (ua.Address.AddressFamily == AddressFamily.InterNetworkV6 && addrs.Contains(ua.Address.ToString()))
+                        if (ua.Address.AddressFamily != AddressFamily.InterNetworkV6) continue;
+                        string s = ua.Address.ToString();
+                        string p64 = Prefix64(ua.Address);
+                        if (addrs.Contains(s) || (p64 != null && prefixes.Contains(p64)))
                         {
                             foundOnNic = true;
-                            break;
+                            nicVpnAddrs.Add(s);
                         }
                     }
-                    if (!foundOnNic)
+                    var nicVpnGws = new List<string>();
+                    foreach (GatewayIPAddressInformation gw in props.GatewayAddresses)
                     {
-                        foreach (GatewayIPAddressInformation gw in props.GatewayAddresses)
+                        if (gw.Address == null || gw.Address.AddressFamily != AddressFamily.InterNetworkV6) continue;
+                        string s = gw.Address.ToString();
+                        string p64 = Prefix64(gw.Address);
+                        if (gws.Contains(s) || (p64 != null && prefixes.Contains(p64)))
                         {
-                            if (gw.Address != null && gw.Address.AddressFamily == AddressFamily.InterNetworkV6 && gws.Contains(gw.Address.ToString()))
-                            {
-                                foundOnNic = true;
-                                break;
-                            }
+                            foundOnNic = true;
+                            nicVpnGws.Add(s);
                         }
                     }
-                    if (!foundOnNic) continue;
+                    if (!foundOnNic && !isWs) continue;
+                    taintedIfs.Add(ifIdx);
 
                     foreach (string gw in gws)
                     {
                         netshCmds.Add("interface ipv6 delete route ::/0 interface=" + ifIdx + " " + gw + " store=active");
                         netshCmds.Add("interface ipv6 delete route ::/0 interface=" + ifIdx + " " + gw + " store=persistent");
                     }
+                    foreach (string gw in nicVpnGws)
+                    {
+                        if (!gws.Contains(gw))
+                        {
+                            netshCmds.Add("interface ipv6 delete route ::/0 interface=" + ifIdx + " " + gw + " store=active");
+                            netshCmds.Add("interface ipv6 delete route ::/0 interface=" + ifIdx + " " + gw + " store=persistent");
+                        }
+                    }
                     foreach (string addr in addrs)
                     {
                         netshCmds.Add("interface ipv6 delete address interface=" + ifIdx + " addr=" + addr + " store=active");
                         netshCmds.Add("interface ipv6 delete address interface=" + ifIdx + " addr=" + addr + " store=persistent");
                     }
+                    foreach (string addr in nicVpnAddrs)
+                    {
+                        if (!addrs.Contains(addr))
+                        {
+                            netshCmds.Add("interface ipv6 delete address interface=" + ifIdx + " addr=" + addr + " store=active");
+                            netshCmds.Add("interface ipv6 delete address interface=" + ifIdx + " addr=" + addr + " store=persistent");
+                        }
+                    }
                 }
+
+                // Inspect active IPv6 routing table so ghost ::/0 routes with non-:1 gateways are also purged
+                try
+                {
+                    var showPsi = new ProcessStartInfo("netsh.exe", "interface ipv6 show route")
+                    {
+                        UseShellExecute = false,
+                        CreateNoWindow = true,
+                        RedirectStandardOutput = true,
+                        RedirectStandardError = true,
+                    };
+                    using (Process sp = Process.Start(showPsi))
+                    {
+                        string routeOut = sp.StandardOutput.ReadToEnd();
+                        sp.WaitForExit(3000);
+                        foreach (string rline in routeOut.Split('\n'))
+                        {
+                            Match rm = DefaultV6RouteLine.Match(rline);
+                            if (!rm.Success) continue;
+                            int rIfIdx;
+                            if (!int.TryParse(rm.Groups[1].Value, out rIfIdx)) continue;
+                            string nextHopRaw = rm.Groups[2].Value.Trim();
+                            IPAddress nh;
+                            bool isIp = IPAddress.TryParse(nextHopRaw, out nh) && nh.AddressFamily == AddressFamily.InterNetworkV6;
+                            string nhNorm = isIp ? nh.ToString() : nextHopRaw;
+                            string nhPrefix = isIp ? Prefix64(nh) : null;
+                            bool match = wireSockIfs.Contains(rIfIdx) ||
+                                         (isIp && (gws.Contains(nhNorm) || addrs.Contains(nhNorm) || (nhPrefix != null && prefixes.Contains(nhPrefix)))) ||
+                                         (taintedIfs.Contains(rIfIdx) && (!isIp || !nh.IsIPv6LinkLocal));
+                            if (match)
+                            {
+                                string cmd = isIp
+                                    ? "interface ipv6 delete route ::/0 interface=" + rIfIdx + " " + nhNorm
+                                    : "interface ipv6 delete route ::/0 interface=" + rIfIdx;
+                                if (!netshCmds.Contains(cmd + " store=active")) netshCmds.Add(cmd + " store=active");
+                                if (!netshCmds.Contains(cmd + " store=persistent")) netshCmds.Add(cmd + " store=persistent");
+                            }
+                        }
+                    }
+                }
+                catch { }
 
                 if (netshCmds.Count > 0)
                 {
@@ -1024,29 +1233,41 @@ namespace VpnPanel
             if (updateMtu)
             {
                 int ifaces = 0, mtuInsertAt = -1;
-                bool inIface = false, hasProviderMtu = false;
+                bool inIface = false, hasProviderMtu = false, nextMtuIsAuto = false;
                 for (int i = 0; i < lines.Count; i++)
                 {
                     Match m = SectionLine.Match(lines[i]);
                     if (m.Success)
                     {
                         inIface = IsInterface(m);
+                        nextMtuIsAuto = false;
                         if (inIface && ++ifaces == 1) mtuInsertAt = i + 1;
                         continue;
                     }
                     if (!inIface) continue;
+                    if (lines[i].Trim().Equals(MtuMarker, StringComparison.OrdinalIgnoreCase))
+                    {
+                        lines.RemoveAt(i--);
+                        nextMtuIsAuto = true;
+                        continue;
+                    }
                     if (MtuLine.IsMatch(lines[i]))
                     {
-                        if (lines[i].IndexOf(MtuMarker, StringComparison.OrdinalIgnoreCase) >= 0)
+                        if (nextMtuIsAuto || lines[i].IndexOf(MtuMarker, StringComparison.OrdinalIgnoreCase) >= 0)
                             lines.RemoveAt(i--);
                         else
                             hasProviderMtu = true;
+                        nextMtuIsAuto = false;
                         continue;
                     }
+                    if (lines[i].Trim().Length > 0) nextMtuIsAuto = false;
                     if (ifaces == 1 && AddressLine.IsMatch(lines[i])) mtuInsertAt = i + 1;
                 }
                 if (mtu > 0 && !hasProviderMtu && mtuInsertAt >= 0)
-                    lines.Insert(mtuInsertAt, "MTU = " + mtu + " " + MtuMarker);
+                {
+                    lines.Insert(mtuInsertAt, MtuMarker);
+                    lines.Insert(mtuInsertAt + 1, "MTU = " + mtu);
+                }
             }
 
             if (updateApps)
@@ -1746,10 +1967,18 @@ namespace VpnPanel
                 IPAddress ip;
                 if (!IPAddress.TryParse(host, out ip))
                 {
-                    IAsyncResult ar = Dns.BeginGetHostAddresses(host, null, null);
-                    if (!ar.AsyncWaitHandle.WaitOne(1500)) return -1;
-                    IPAddress[] addrs = Dns.EndGetHostAddresses(ar);
-                    if (addrs == null || addrs.Length == 0) return -1;
+                    IPAddress[] addrs = null;
+                    Exception dnsEx = null;
+                    var done = new ManualResetEventSlim(false);
+                    Dns.BeginGetHostAddresses(host, ar =>
+                    {
+                        try { addrs = Dns.EndGetHostAddresses(ar); }
+                        catch (Exception ex) { dnsEx = ex; }
+                        finally { try { done.Set(); } catch { } }
+                    }, null);
+                    bool signaled = done.Wait(1500);
+                    done.Dispose();
+                    if (!signaled || dnsEx != null || addrs == null || addrs.Length == 0) return -1;
                     ip = addrs[0];
                 }
                 using (var ping = new System.Net.NetworkInformation.Ping())
@@ -1869,6 +2098,27 @@ namespace VpnPanel
         public static bool Ipv6Isolated { get; private set; }
         public static int Pid { get { lock (stateLock) return currentPid; } }
         public static DateTime StartTime { get; private set; }
+        public static bool IsStopping { get { return Interlocked.CompareExchange(ref stoppingCount, 0, 0) > 0; } }
+        public static bool HasPendingNetworkLock
+        {
+            get { return lockHint || File.Exists(Paths.NetworkLockFlag); }
+        }
+
+        static void WriteNetworkLockFlag(string config)
+        {
+            try
+            {
+                Directory.CreateDirectory(Paths.Data);
+                File.WriteAllText(Paths.NetworkLockFlag, config ?? "");
+            }
+            catch { }
+        }
+
+        static void ClearNetworkLockFlag()
+        {
+            try { if (File.Exists(Paths.NetworkLockFlag)) File.Delete(Paths.NetworkLockFlag); }
+            catch { }
+        }
 
         public static Process[] Find() { return Process.GetProcessesByName("wiresock-client"); }
 
@@ -1929,7 +2179,11 @@ namespace VpnPanel
         public static void NoteCommandLine(string commandLine)
         {
             lockHint = commandLine != null && Regex.IsMatch(commandLine, "-network-lock\\s+(enabled|on)\\b", RegexOptions.IgnoreCase);
-            Ipv6Isolated = commandLine != null && commandLine.IndexOf(Paths.Runtime, StringComparison.OrdinalIgnoreCase) >= 0;
+            string cfg = ConfigOf(commandLine);
+            ConfigInfo info = cfg != null ? ConfigInfo.Read(cfg) : null;
+            Ipv6Isolated = commandLine != null &&
+                           commandLine.IndexOf(Paths.Runtime, StringComparison.OrdinalIgnoreCase) >= 0 &&
+                           (info == null || info.Mode != AppMode.All);
         }
 
         public static string CommandLine(int pid)
@@ -1957,21 +2211,42 @@ namespace VpnPanel
         {
             lock (stopLock)
             {
+                // Never leave an orphaned client fighting for the WireSock driver
+                foreach (Process existing in Find())
+                {
+                    ProcUtil.Shutdown(existing.Id, 2000);
+                    existing.Dispose();
+                }
+
+                ConfigInfo info = ConfigInfo.Read(config);
+                // Kill switch blocks svchost.exe (local DNS) and non-tunneled apps in split-tunneling modes
+                if (info != null && info.Mode != AppMode.All) networkLock = false;
+
                 LastStartedConfig = config;
                 LastStartedAt = DateTime.UtcNow;
                 bool v6Stripped;
                 string confPath = ConfFile.EffectivePath(config, out v6Stripped);
                 Ipv6Isolated = v6Stripped;
                 if (v6Stripped && ConfFile.HasGhostIpv6()) ConfFile.CleanGhostNetwork();
+                if (networkLock) WriteNetworkLockFlag(config);
+                else ClearNetworkLockFlag();
                 // "info" logs handshakes, which is how the app knows the server really answered
                 string cmdLine = "\"" + exe + "\" run -config \"" + confPath + "\" -log-level info";
                 if (networkLock) cmdLine += " -network-lock enabled";
                 // The client writes straight to the log file it inherits, so it keeps running (and logging)
                 // after the panel exits, and any later instance can follow the same file
                 int pid;
-                IntPtr h = ProcUtil.StartLogged(exe, cmdLine, Paths.Log, out pid);
-                Track(pid, h);
-                lockHint = networkLock;
+                try
+                {
+                    IntPtr h = ProcUtil.StartLogged(exe, cmdLine, Paths.Log, out pid);
+                    Track(pid, h);
+                    lockHint = networkLock;
+                }
+                catch
+                {
+                    if (networkLock) ClearNetworkLockFlag();
+                    throw;
+                }
             }
         }
 
@@ -1986,22 +2261,26 @@ namespace VpnPanel
                 {
                     LastStartedConfig = null;
                     Ipv6Isolated = false;
-                    resetLock |= lockHint;
+                    resetLock |= lockHint || File.Exists(Paths.NetworkLockFlag);
                     lockHint = false;
-                    bool stoppedCleanly = false;
                     int pidToStop;
                     lock (stateLock) pidToStop = currentPid;
                     ReleaseCurrent();
+                    bool anyFound = pidToStop != 0;
+                    bool stoppedCleanly = true;
                     // Ctrl+C first: WireSock then drops the tunnel and releases the lock by itself
                     if (pidToStop != 0) stoppedCleanly = ProcUtil.Shutdown(pidToStop, 3000);
                     foreach (Process p in Find())
                     {
+                        anyFound = true;
                         stoppedCleanly = ProcUtil.Shutdown(p.Id, 3000) && stoppedCleanly;
                         p.Dispose();
                     }
+                    if (!anyFound) stoppedCleanly = false;
                     ConfFile.DeleteRuntimeCopies();
                     if (ConfFile.HasGhostIpv6()) ConfFile.CleanGhostNetwork();
                     if (resetLock && !stoppedCleanly) ResetNetworkLock();
+                    else if (stoppedCleanly) ClearNetworkLockFlag();
                 }
             }
             finally
@@ -2012,15 +2291,496 @@ namespace VpnPanel
 
         public static void ResetNetworkLock()
         {
-            ConfFile.CleanGhostNetwork();
-            string exe = Paths.WireSock;
-            if (exe == null) return;
+            lock (stopLock)
+            {
+                ConfFile.CleanGhostNetwork();
+                string exe = Paths.WireSock;
+                if (exe != null)
+                {
+                    try
+                    {
+                        var psi = new ProcessStartInfo(exe, "reset-network-lock") { UseShellExecute = false, CreateNoWindow = true };
+                        using (Process p = Process.Start(psi)) p.WaitForExit(5000);
+                    }
+                    catch { }
+                }
+                ClearNetworkLockFlag();
+            }
+        }
+    }
+
+    // Passive network diagnostics and stability probing for the Tests tab.
+    // Never modifies routes, WFP/network-lock state, or restarts the tunnel.
+    static class NetDiag
+    {
+        public class ProbeResult
+        {
+            public bool Ok;
+            public int LatencyMs; // -1 on failure
+            public string Target;
+            public string Detail;
+        }
+
+        public enum AuditSeverity { Ok, Warn, Error }
+
+        public class AuditItem
+        {
+            public string Key;
+            public AuditSeverity Severity;
+            public string Title;
+            public string Detail;
+        }
+
+        static string ShortErr(string msg)
+        {
+            if (string.IsNullOrEmpty(msg)) return "Sem resposta";
+            string s = msg.Trim().Replace("\r", " ").Replace("\n", " ");
+            return s.Length > 72 ? s.Substring(0, 72) + "..." : s;
+        }
+
+        public static ProbeResult ProbeHttp204(int timeoutMs, CancellationToken ct)
+        {
+            if (ct.IsCancellationRequested)
+                return new ProbeResult { Ok = false, LatencyMs = -1, Target = "cp.cloudflare.com", Detail = "Cancelado" };
+            int timeout = Math.Max(500, timeoutMs);
+            var sw = Stopwatch.StartNew();
+            string httpErr = null;
             try
             {
-                var psi = new ProcessStartInfo(exe, "reset-network-lock") { UseShellExecute = false, CreateNoWindow = true };
-                using (Process p = Process.Start(psi)) p.WaitForExit(5000);
+                var req = (HttpWebRequest)WebRequest.Create("https://cp.cloudflare.com/generate_204");
+                req.Method = "GET";
+                req.UserAgent = "vpn-panel";
+                req.Timeout = timeout;
+                req.ReadWriteTimeout = timeout;
+                req.AllowAutoRedirect = false;
+                req.KeepAlive = false;
+                req.CachePolicy = new System.Net.Cache.RequestCachePolicy(System.Net.Cache.RequestCacheLevel.NoCacheNoStore);
+                using (ct.Register(() => { try { req.Abort(); } catch { } }))
+                using (var resp = (HttpWebResponse)req.GetResponse())
+                {
+                    sw.Stop();
+                    int code = (int)resp.StatusCode;
+                    if (code >= 200 && code < 400)
+                    {
+                        return new ProbeResult
+                        {
+                            Ok = true,
+                            LatencyMs = Math.Max(1, (int)sw.ElapsedMilliseconds),
+                            Target = "cp.cloudflare.com",
+                            Detail = "HTTP " + code
+                        };
+                    }
+                    httpErr = "HTTP " + code;
+                }
+            }
+            catch (WebException wex)
+            {
+                if (ct.IsCancellationRequested)
+                    return new ProbeResult { Ok = false, LatencyMs = -1, Target = "cp.cloudflare.com", Detail = "Cancelado" };
+                httpErr = wex.Message;
+            }
+            catch (Exception ex)
+            {
+                if (ct.IsCancellationRequested)
+                    return new ProbeResult { Ok = false, LatencyMs = -1, Target = "cp.cloudflare.com", Detail = "Cancelado" };
+                httpErr = ex.Message;
+            }
+
+            ProbeResult tcp = ProbeTcp("1.1.1.1", 443, Math.Min(timeout, 2500), ct);
+            if (tcp.Ok)
+            {
+                return new ProbeResult
+                {
+                    Ok = true,
+                    LatencyMs = tcp.LatencyMs,
+                    Target = "1.1.1.1:443",
+                    Detail = "TCP OK (HTTP falhou: " + ShortErr(httpErr) + ")"
+                };
+            }
+            return new ProbeResult
+            {
+                Ok = false,
+                LatencyMs = -1,
+                Target = "cp.cloudflare.com",
+                Detail = ShortErr(!string.IsNullOrEmpty(httpErr) ? httpErr : tcp.Detail)
+            };
+        }
+
+        public static ProbeResult ProbeTcp(string host, int port, int timeoutMs, CancellationToken ct)
+        {
+            if (string.IsNullOrEmpty(host))
+                return new ProbeResult { Ok = false, LatencyMs = -1, Target = "", Detail = "Host vazio" };
+            if (ct.IsCancellationRequested)
+                return new ProbeResult { Ok = false, LatencyMs = -1, Target = host + ":" + port, Detail = "Cancelado" };
+
+            IPAddress ip;
+            if (!IPAddress.TryParse(host, out ip))
+            {
+                ProbeResult dns = ProbeDns(host, ct);
+                if (!dns.Ok || !IPAddress.TryParse(dns.Detail, out ip))
+                {
+                    return new ProbeResult
+                    {
+                        Ok = false,
+                        LatencyMs = -1,
+                        Target = host + ":" + port,
+                        Detail = "DNS falhou: " + dns.Detail
+                    };
+                }
+            }
+            SocketError err;
+            return ProbeTcpIp(ip, port, timeoutMs, ct, out err);
+        }
+
+        static ProbeResult ProbeTcpIp(IPAddress ip, int port, int timeoutMs, CancellationToken ct, out SocketError sockErr)
+        {
+            sockErr = SocketError.Success;
+            string target = ip + ":" + port;
+            int timeout = Math.Max(400, timeoutMs);
+            var sw = Stopwatch.StartNew();
+            Socket sock = null;
+            var done = new ManualResetEventSlim(false);
+            bool connected = false;
+            string errMsg = null;
+            SocketError localErr = SocketError.Success;
+            try
+            {
+                sock = new Socket(ip.AddressFamily, SocketType.Stream, ProtocolType.Tcp);
+                sock.BeginConnect(new IPEndPoint(ip, port), ar =>
+                {
+                    try
+                    {
+                        sock.EndConnect(ar);
+                        connected = true;
+                    }
+                    catch (SocketException sex)
+                    {
+                        localErr = sex.SocketErrorCode;
+                        errMsg = sex.Message;
+                    }
+                    catch (ObjectDisposedException)
+                    {
+                        localErr = SocketError.OperationAborted;
+                    }
+                    catch (Exception ex)
+                    {
+                        localErr = SocketError.SocketError;
+                        errMsg = ex.Message;
+                    }
+                    finally
+                    {
+                        try { done.Set(); } catch { }
+                    }
+                }, null);
+
+                bool signaled;
+                try { signaled = done.Wait(timeout, ct); }
+                catch (OperationCanceledException)
+                {
+                    sockErr = SocketError.OperationAborted;
+                    return new ProbeResult { Ok = false, LatencyMs = -1, Target = target, Detail = "Cancelado" };
+                }
+
+                sw.Stop();
+                sockErr = localErr;
+                if (!signaled)
+                {
+                    sockErr = SocketError.TimedOut;
+                    return new ProbeResult { Ok = false, LatencyMs = -1, Target = target, Detail = "Tempo esgotado" };
+                }
+                if (connected)
+                {
+                    return new ProbeResult
+                    {
+                        Ok = true,
+                        LatencyMs = Math.Max(1, (int)sw.ElapsedMilliseconds),
+                        Target = target,
+                        Detail = "TCP OK"
+                    };
+                }
+                return new ProbeResult
+                {
+                    Ok = false,
+                    LatencyMs = -1,
+                    Target = target,
+                    Detail = ShortErr(errMsg ?? sockErr.ToString())
+                };
+            }
+            catch (Exception ex)
+            {
+                sockErr = SocketError.SocketError;
+                return new ProbeResult { Ok = false, LatencyMs = -1, Target = target, Detail = ShortErr(ex.Message) };
+            }
+            finally
+            {
+                if (sock != null) { try { sock.Close(); } catch { } }
+                done.Dispose();
+            }
+        }
+
+        public static ProbeResult ProbeDns(string host, CancellationToken ct)
+        {
+            string target = string.IsNullOrEmpty(host) ? "cloudflare.com" : host;
+            if (ct.IsCancellationRequested)
+                return new ProbeResult { Ok = false, LatencyMs = -1, Target = target, Detail = "Cancelado" };
+
+            var sw = Stopwatch.StartNew();
+            IPAddress[] addrs = null;
+            Exception dnsEx = null;
+            var done = new ManualResetEventSlim(false);
+            try
+            {
+                Dns.BeginGetHostAddresses(target, ar =>
+                {
+                    try { addrs = Dns.EndGetHostAddresses(ar); }
+                    catch (Exception ex) { dnsEx = ex; }
+                    finally { try { done.Set(); } catch { } }
+                }, null);
+
+                bool signaled;
+                try { signaled = done.Wait(3000, ct); }
+                catch (OperationCanceledException)
+                {
+                    return new ProbeResult { Ok = false, LatencyMs = -1, Target = target, Detail = "Cancelado" };
+                }
+                sw.Stop();
+                if (!signaled)
+                    return new ProbeResult { Ok = false, LatencyMs = -1, Target = target, Detail = "Tempo esgotado no DNS" };
+                if (dnsEx != null)
+                    return new ProbeResult { Ok = false, LatencyMs = -1, Target = target, Detail = ShortErr(dnsEx.Message) };
+                if (addrs == null || addrs.Length == 0)
+                    return new ProbeResult { Ok = false, LatencyMs = -1, Target = target, Detail = "Nenhum IP retornado" };
+
+                IPAddress valid = null;
+                foreach (IPAddress a in addrs)
+                {
+                    if (!IPAddress.Any.Equals(a) && !IPAddress.IPv6Any.Equals(a))
+                    {
+                        valid = a;
+                        break;
+                    }
+                }
+                if (valid == null)
+                    return new ProbeResult { Ok = false, LatencyMs = -1, Target = target, Detail = "DNS retornou 0.0.0.0 (bloqueio/falha)" };
+
+                return new ProbeResult
+                {
+                    Ok = true,
+                    LatencyMs = Math.Max(1, (int)sw.ElapsedMilliseconds),
+                    Target = target,
+                    Detail = valid.ToString()
+                };
+            }
+            catch (Exception ex)
+            {
+                return new ProbeResult { Ok = false, LatencyMs = -1, Target = target, Detail = ShortErr(ex.Message) };
+            }
+            finally
+            {
+                done.Dispose();
+            }
+        }
+
+        public static ProbeResult ProbeEndpoint(ConfigInfo cfg, int timeoutMs, CancellationToken ct)
+        {
+            if (cfg == null || string.IsNullOrEmpty(cfg.Endpoint))
+                return new ProbeResult { Ok = false, LatencyMs = -1, Target = "", Detail = "Nenhum servidor selecionado" };
+            if (ct.IsCancellationRequested)
+                return new ProbeResult { Ok = false, LatencyMs = -1, Target = cfg.Endpoint, Detail = "Cancelado" };
+
+            IPAddress ip;
+            if (!IPAddress.TryParse(cfg.Endpoint, out ip))
+            {
+                ProbeResult dns = ProbeDns(cfg.Endpoint, ct);
+                if (!dns.Ok || !IPAddress.TryParse(dns.Detail, out ip))
+                {
+                    return new ProbeResult
+                    {
+                        Ok = false,
+                        LatencyMs = -1,
+                        Target = cfg.Endpoint,
+                        Detail = "DNS do servidor falhou: " + dns.Detail
+                    };
+                }
+            }
+
+            int pingMs = Math.Max(500, Math.Min(timeoutMs, 1500));
+            try
+            {
+                using (var ping = new System.Net.NetworkInformation.Ping())
+                {
+                    PingReply reply = ping.Send(ip, pingMs);
+                    if (reply != null && reply.Status == IPStatus.Success)
+                    {
+                        return new ProbeResult
+                        {
+                            Ok = true,
+                            LatencyMs = Math.Max(1, (int)reply.RoundtripTime),
+                            Target = cfg.Endpoint,
+                            Detail = ip + " (ICMP)"
+                        };
+                    }
+                }
             }
             catch { }
+
+            if (ct.IsCancellationRequested)
+                return new ProbeResult { Ok = false, LatencyMs = -1, Target = cfg.Endpoint, Detail = "Cancelado" };
+
+            // Many WireGuard servers filter ICMP: a fast TCP RST (ConnectionRefused) still proves network reachability
+            SocketError err;
+            var sw = Stopwatch.StartNew();
+            ProbeResult tcp = ProbeTcpIp(ip, 443, Math.Max(500, Math.Min(timeoutMs, 1500)), ct, out err);
+            sw.Stop();
+            if (tcp.Ok || err == SocketError.ConnectionRefused)
+            {
+                int ms = tcp.Ok ? tcp.LatencyMs : Math.Max(1, (int)sw.ElapsedMilliseconds);
+                return new ProbeResult
+                {
+                    Ok = true,
+                    LatencyMs = ms,
+                    Target = cfg.Endpoint,
+                    Detail = ip + " (alcançável; ICMP filtrado)"
+                };
+            }
+
+            return new ProbeResult
+            {
+                Ok = false,
+                LatencyMs = -1,
+                Target = cfg.Endpoint,
+                Detail = "Sem resposta de " + ip + " (" + tcp.Detail + ")"
+            };
+        }
+
+        public static List<AuditItem> AuditConfig(ConfigInfo cfg, Settings s, bool hasGhostV6, bool activeTunnel, bool appsNeedReconnect)
+        {
+            var items = new List<AuditItem>();
+            if (cfg == null || !cfg.Readable)
+            {
+                items.Add(new AuditItem
+                {
+                    Key = "config",
+                    Severity = AuditSeverity.Error,
+                    Title = "Configuração indisponível",
+                    Detail = "Selecione ou importe um servidor WireGuard válido."
+                });
+                return items;
+            }
+
+            if (cfg.PersistentKeepalive <= 0)
+            {
+                items.Add(new AuditItem
+                {
+                    Key = "keepalive",
+                    Severity = AuditSeverity.Warn,
+                    Title = "Sem PersistentKeepalive no arquivo",
+                    Detail = "O VPN Panel injeta Keepalive = 25s automaticamente ao conectar para evitar quedas em repouso."
+                });
+            }
+            else
+            {
+                items.Add(new AuditItem
+                {
+                    Key = "keepalive",
+                    Severity = AuditSeverity.Ok,
+                    Title = "PersistentKeepalive = " + cfg.PersistentKeepalive + "s",
+                    Detail = "Mantém o túnel ativo atrás de NAT/roteador."
+                });
+            }
+
+            if (cfg.Mtu == 0)
+            {
+                bool opt = s == null || s.OptimizeMtu;
+                items.Add(new AuditItem
+                {
+                    Key = "mtu",
+                    Severity = opt ? AuditSeverity.Ok : AuditSeverity.Warn,
+                    Title = opt ? "MTU otimizado (1380)" : "MTU padrão não otimizado",
+                    Detail = opt
+                        ? "Será aplicado MTU = 1380 ao conectar para evitar travamentos."
+                        : "Ative 'Otimizar MTU' nas Opções se páginas travarem em Wi-Fi/4G."
+                });
+            }
+            else if (cfg.Mtu > 1420)
+            {
+                items.Add(new AuditItem
+                {
+                    Key = "mtu",
+                    Severity = AuditSeverity.Warn,
+                    Title = "MTU alto (" + cfg.Mtu + ")",
+                    Detail = "Valores acima de 1420 podem causar fragmentação ou travamento em PPPoE/4G."
+                });
+            }
+            else
+            {
+                items.Add(new AuditItem
+                {
+                    Key = "mtu",
+                    Severity = AuditSeverity.Ok,
+                    Title = "MTU = " + cfg.Mtu,
+                    Detail = "Tamanho de pacote adequado para WireGuard."
+                });
+            }
+
+            if (cfg.Mode != AppMode.All)
+            {
+                items.Add(new AuditItem
+                {
+                    Key = "lan",
+                    Severity = AuditSeverity.Ok,
+                    Title = cfg.HasDisallowedIps ? "DisallowedIPs (LAN) definido" : "Proteção de rede local automática",
+                    Detail = cfg.HasDisallowedIps
+                        ? "Sub-redes locais excluídas do túnel."
+                        : "LAN, loopback e multicast são excluídos em runtime ao conectar."
+                });
+            }
+
+            if (s != null && s.NetworkLock && cfg.Mode != AppMode.All)
+            {
+                items.Add(new AuditItem
+                {
+                    Key = "lock_split",
+                    Severity = AuditSeverity.Warn,
+                    Title = "Kill Switch ignorado no modo Split",
+                    Detail = "Em 'Só estes' ou 'Exceto', o Kill Switch é desativado para não bloquear o DNS local."
+                });
+            }
+
+            if (hasGhostV6)
+            {
+                items.Add(new AuditItem
+                {
+                    Key = "ghost_v6",
+                    Severity = AuditSeverity.Error,
+                    Title = "IPv6/rota fantasma detectado",
+                    Detail = "Resto de sessão anterior na placa de rede. Use 'Reparar internet agora'."
+                });
+            }
+
+            if (!activeTunnel && Tunnel.HasPendingNetworkLock)
+            {
+                items.Add(new AuditItem
+                {
+                    Key = "lock_flag",
+                    Severity = AuditSeverity.Error,
+                    Title = "Bloqueio residual do Kill Switch",
+                    Detail = "Sessão anterior encerrou sem liberar o WFP. Use 'Reparar internet agora'."
+                });
+            }
+
+            if (activeTunnel && appsNeedReconnect)
+            {
+                items.Add(new AuditItem
+                {
+                    Key = "apps_pending",
+                    Severity = AuditSeverity.Warn,
+                    Title = "Regras de apps pendentes",
+                    Detail = "Você alterou os apps; reconecte para aplicar no túnel atual."
+                });
+            }
+
+            return items;
         }
     }
 
@@ -2242,7 +3002,7 @@ namespace VpnPanel
             if (h == IntPtr.Zero) return false;
             try
             {
-                if (!IsAlive(h)) return true;
+                if (!IsAlive(h)) return false; // already crashed/exited without graceful Ctrl+C cleanup
                 lock (consoleLock)
                 {
                     // The panel has no console: borrow the client's for a moment, ignoring the event ourselves

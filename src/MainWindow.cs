@@ -79,6 +79,7 @@ namespace VpnPanel
         readonly StackPanel appList;
         // Opções
         readonly CheckBox chkReconnect, chkLock, chkMtu, chkHotkey, chkStartup, chkAuto, chkSkipUac, chkUpdates;
+        readonly TextBlock txtLockNote;
         readonly Border cardUpdate;
         readonly Button btnApplyUpdate, btnCheckUpdate, btnResetLock;
         readonly TextBlock txtUpdateFoundTitle, txtUpdateFoundDetail, txtUpdateBadge;
@@ -87,8 +88,15 @@ namespace VpnPanel
         DateTime lastUpdateCheck = DateTime.MinValue;
         readonly DispatcherTimer updateCheckTimer;
         // Tabs
-        readonly RadioButton tabHome, tabServers, tabApps, tabOptions;
-        readonly FrameworkElement pageHome, pageServers, pageApps, pageOptions;
+        readonly RadioButton tabHome, tabServers, tabApps, tabDiag, tabOptions;
+        readonly FrameworkElement pageHome, pageServers, pageApps, pageDiag, pageOptions;
+        // Testes & Saúde (PageDiag)
+        readonly Border diagRouteBadge, cardDiagVerdict, cardDiagLive;
+        readonly Ellipse diagVerdictDot, chkItem1Dot, chkItem2Dot, chkItem3Dot, chkItem4Dot, chkItem5Dot;
+        readonly TextBlock txtDiagRouteBadge, txtDiagVerdict, txtDiagVerdictSub;
+        readonly TextBlock txtDiagLiveStatus, txtDiagLiveTime, txtDiagSentLoss, txtDiagPing, txtDiagJitter, txtDiagDrops;
+        readonly TextBlock txtChk1Detail, txtChk2Detail, txtChk3Detail, txtChk4Detail, txtChk5Detail;
+        readonly Button btnDiagQuick, btnDiagContinuous, btnDiagRepair, btnDiagCopy, btnDiagApps;
 
         readonly WF.NotifyIcon tray;
         readonly WF.ContextMenuStrip trayMenu;
@@ -132,15 +140,33 @@ namespace VpnPanel
 
         [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
         static extern uint RegisterWindowMessage(string lpString);
-        DateTime connectRequested, startedAt, lastProcScan, lastHomePing, lastHomeAppsCheck;
+        DateTime startedAt, lastProcScan, lastHomePing, lastHomeAppsCheck;
+        long connectTotalStartTick, connectLaunchTick, resumeGraceUntilTick, lastDropTick;
+        long rehandshakeSuspectTick, lastObservedRx;
+        bool connectPausedForDialog, activeProbeRunning, rehandshakeConfirmedDown;
+        bool wireSockScanRunning, cmdLineLookupRunning, runningAppsScanRunning;
+        long lastWireSockBgCheckTick;
         string lastHomeAppsRunningKey = "";
         Conn shown = Conn.Off;
         Action bannerPrimary, bannerSecondary;
 
         // handshake tracking from the WireSock log, for tunnels this app started
         bool monitoring, handshakeOk, sawHandshake, seekToTail;
-        bool step1SpinnerRunning;
-        DateTime? pendingSince;
+        bool step1SpinnerRunning, powerSpinnerRunning, startupIsolationCheckPending;
+        long? pendingSinceTick;
+
+        static long NowTicks() { return Stopwatch.GetTimestamp(); }
+
+        static double ElapsedSeconds(long startTicks)
+        {
+            if (startTicks <= 0) return 0;
+            return (double)(Stopwatch.GetTimestamp() - startTicks) / Stopwatch.Frequency;
+        }
+
+        static long FutureTicks(double seconds)
+        {
+            return Stopwatch.GetTimestamp() + (long)(seconds * Stopwatch.Frequency);
+        }
         FileStream logStream;
         readonly byte[] logBuf = new byte[8192];
         readonly char[] logChars = new char[Encoding.UTF8.GetMaxCharCount(8192)];
@@ -167,6 +193,12 @@ namespace VpnPanel
         AppMode editMode;
         List<string> editApps = new List<string>();
         bool appsNeedReconnect;
+
+        // diagnostics tab (Testes & Saúde)
+        CancellationTokenSource diagQuickCts, diagContCts;
+        int diagEpoch, diagContEpoch;
+        bool diagQuickRunning, diagContinuousRunning;
+        string lastDiagSummary = "";
 
         T E<T>(string name) where T : class { return (T)w.FindName(name); }
 
@@ -249,6 +281,7 @@ namespace VpnPanel
             appList = E<StackPanel>("AppList");
             chkReconnect = E<CheckBox>("ChkReconnect");
             chkLock = E<CheckBox>("ChkLock");
+            txtLockNote = E<TextBlock>("TxtLockNote");
             chkMtu = E<CheckBox>("ChkMtu");
             chkHotkey = E<CheckBox>("ChkHotkey");
             chkStartup = E<CheckBox>("ChkStartup");
@@ -266,11 +299,41 @@ namespace VpnPanel
             tabHome = E<RadioButton>("TabHome");
             tabServers = E<RadioButton>("TabServers");
             tabApps = E<RadioButton>("TabApps");
+            tabDiag = E<RadioButton>("TabDiag");
             tabOptions = E<RadioButton>("TabOptions");
             pageHome = E<FrameworkElement>("PageHome");
             pageServers = E<FrameworkElement>("PageServers");
             pageApps = E<FrameworkElement>("PageApps");
+            pageDiag = E<FrameworkElement>("PageDiag");
             pageOptions = E<FrameworkElement>("PageOptions");
+            diagRouteBadge = E<Border>("DiagRouteBadge");
+            txtDiagRouteBadge = E<TextBlock>("TxtDiagRouteBadge");
+            cardDiagVerdict = E<Border>("CardDiagVerdict");
+            diagVerdictDot = E<Ellipse>("DiagVerdictDot");
+            txtDiagVerdict = E<TextBlock>("TxtDiagVerdict");
+            txtDiagVerdictSub = E<TextBlock>("TxtDiagVerdictSub");
+            btnDiagQuick = E<Button>("BtnDiagQuick");
+            btnDiagContinuous = E<Button>("BtnDiagContinuous");
+            btnDiagRepair = E<Button>("BtnDiagRepair");
+            btnDiagCopy = E<Button>("BtnDiagCopy");
+            cardDiagLive = E<Border>("CardDiagLive");
+            txtDiagLiveStatus = E<TextBlock>("TxtDiagLiveStatus");
+            txtDiagLiveTime = E<TextBlock>("TxtDiagLiveTime");
+            txtDiagSentLoss = E<TextBlock>("TxtDiagSentLoss");
+            txtDiagPing = E<TextBlock>("TxtDiagPing");
+            txtDiagJitter = E<TextBlock>("TxtDiagJitter");
+            txtDiagDrops = E<TextBlock>("TxtDiagDrops");
+            chkItem1Dot = E<Ellipse>("ChkItem1Dot");
+            chkItem2Dot = E<Ellipse>("ChkItem2Dot");
+            chkItem3Dot = E<Ellipse>("ChkItem3Dot");
+            chkItem4Dot = E<Ellipse>("ChkItem4Dot");
+            chkItem5Dot = E<Ellipse>("ChkItem5Dot");
+            txtChk1Detail = E<TextBlock>("TxtChk1Detail");
+            txtChk2Detail = E<TextBlock>("TxtChk2Detail");
+            txtChk3Detail = E<TextBlock>("TxtChk3Detail");
+            txtChk4Detail = E<TextBlock>("TxtChk4Detail");
+            txtChk5Detail = E<TextBlock>("TxtChk5Detail");
+            btnDiagApps = E<Button>("BtnDiagApps");
 
             // title bar
             var btnMin = E<Button>("BtnMin");
@@ -315,6 +378,7 @@ namespace VpnPanel
             tabHome.Checked += (s, e) => ShowPage(HomePage);
             tabServers.Checked += (s, e) => { ShowPage(pageServers); MeasureLatency(false); };
             tabApps.Checked += (s, e) => ShowPage(pageApps);
+            tabDiag.Checked += (s, e) => ShowPage(pageDiag);
             tabOptions.Checked += (s, e) => ShowPage(pageOptions);
 
             // setup
@@ -330,7 +394,7 @@ namespace VpnPanel
             txtScope.MouseLeftButtonUp += (s, e) =>
             {
                 if (shown == Conn.On && active != null)
-                    Dialogs.VerifyRouting(w, active, Tunnel.Ipv6Isolated, AppIcon);
+                    Dialogs.VerifyRouting(w, active, Tunnel.Ipv6Isolated, AppIcon, appsNeedReconnect);
             };
             E<Button>("BtnServerCard").Click += (s, e) => tabServers.IsChecked = true;
             E<Button>("BtnRefreshIp").Click += (s, e) => CheckIp();
@@ -377,10 +441,29 @@ namespace VpnPanel
                 if (active != null)
                 {
                     var preview = new ConfigInfo { Name = active.Name, Mode = editMode, Apps = new List<string>(editApps), Readable = true };
-                    Dialogs.VerifyRouting(w, preview, Tunnel.Ipv6Isolated || editMode != AppMode.All, AppIcon);
+                    Dialogs.VerifyRouting(w, preview, Tunnel.Ipv6Isolated || editMode != AppMode.All, AppIcon, appsNeedReconnect);
                 }
             };
             E<Button>("BtnApplyNow").Click += (s, e) => Reconnect();
+
+            // Testes & Saúde
+            btnDiagQuick.Click += (s, e) => RunQuickDiag();
+            btnDiagContinuous.Click += (s, e) => ToggleContinuousDiag();
+            btnDiagRepair.Click += (s, e) => RepairDiagNetwork();
+            btnDiagCopy.Click += (s, e) => CopyDiagReport();
+            btnDiagApps.Click += (s, e) =>
+            {
+                if (active == null) { tabApps.IsChecked = true; return; }
+                AppMode eff = EffectiveAppMode();
+                var preview = new ConfigInfo
+                {
+                    Name = active.Name,
+                    Mode = eff,
+                    Apps = settings.SharedApps ? new List<string>(settings.Apps) : new List<string>(active.Apps),
+                    Readable = active.Readable
+                };
+                Dialogs.VerifyRouting(w, preview, Tunnel.Ipv6Isolated || eff != AppMode.All, AppIcon, appsNeedReconnect);
+            };
 
             // Opções
             loading = true;
@@ -401,6 +484,7 @@ namespace VpnPanel
             };
             onToggle(chkReconnect, SaveSettings);
             onToggle(chkLock, SaveSettings);
+            UpdateLockAvailability();
             onToggle(chkMtu, () =>
             {
                 SaveSettings();
@@ -487,7 +571,7 @@ namespace VpnPanel
             ipTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(4) };
             ipTimer.Tick += (s, e) => { ipTimer.Stop(); CheckIp(); };
             reconnectTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(3) };
-            reconnectTimer.Tick += (s, e) => { reconnectTimer.Stop(); Connect(); };
+            reconnectTimer.Tick += (s, e) => { reconnectTimer.Stop(); Connect(true); };
             updateCheckTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(1200) };
             updateCheckTimer.Tick += (s, e) =>
             {
@@ -504,17 +588,27 @@ namespace VpnPanel
 
             powerModeHandler = (s, e) =>
             {
-                if (e.Mode == Microsoft.Win32.PowerModes.Resume)
+                if (e.Mode == Microsoft.Win32.PowerModes.Suspend || e.Mode == Microsoft.Win32.PowerModes.Resume)
                 {
                     var ui = Application.Current != null ? Application.Current.Dispatcher : null;
                     if (ui != null)
                     {
+                        bool isResume = e.Mode == Microsoft.Win32.PowerModes.Resume;
                         ui.BeginInvoke(new Action(() =>
                         {
-                            Latency.RouteChanged();
-                            ipTimer.Stop();
-                            ipTimer.Start();
-                            Poll();
+                            if (exiting) return;
+                            // Reset monotonic handshake/connect timers so sleep duration never counts toward timeouts
+                            if (pendingSinceTick != null) pendingSinceTick = NowTicks();
+                            if (rehandshakeSuspectTick > 0) rehandshakeSuspectTick = 0;
+                            rehandshakeConfirmedDown = false;
+                            if (connectLaunchTick > 0) connectLaunchTick = NowTicks();
+                            if (isResume)
+                            {
+                                resumeGraceUntilTick = FutureTicks(18.0);
+                                Latency.RouteChanged();
+                                ipTimer.Stop();
+                                ipTimer.Start();
+                            }
                         }));
                     }
                 }
@@ -592,7 +686,7 @@ namespace VpnPanel
                 {
                     pendingUpdatePrompt = false;
                     Updater.ReleaseInfo info = availableUpdate;
-                    w.Dispatcher.BeginInvoke(new Action(() => PromptUpdate(info, true)));
+                    w.Dispatcher.BeginInvoke(new Action(() => PromptUpdate(info, false)));
                 }
                 else if (settings.CheckUpdates && !updateDialogOpen && (DateTime.UtcNow - lastUpdateCheck).TotalSeconds >= 45)
                 {
@@ -613,7 +707,7 @@ namespace VpnPanel
         void UpdatePollInterval()
         {
             if (pollTimer == null) return;
-            bool fast = connecting || reconnectPending || WindowShowing || (wasRunning == true && monitoring && (!handshakeOk || pendingSince != null));
+            bool fast = connecting || reconnectPending || WindowShowing || (wasRunning == true && monitoring && (!handshakeOk || pendingSinceTick != null));
             TimeSpan wanted = TimeSpan.FromSeconds(fast ? 1 : (wasRunning == true ? 3 : 12));
             if (pollTimer.Interval != wanted) pollTimer.Interval = wanted;
         }
@@ -624,20 +718,56 @@ namespace VpnPanel
             pollTimer.Start();
             // WireSock is required: install it as soon as someone is looking (not on a silent tray start)
             if (w.IsVisible && !wireSockInstalled) InstallWireSock();
-            if (wasRunning == true && active != null && active.Mode != AppMode.All && (!Tunnel.Ipv6Isolated || ConfFile.HasGhostIpv6()))
+            if (wasRunning == true)
             {
-                Reconnect();
+                // Defer split-tunneling IPv6 isolation / ghost route check until async Tunnel.CommandLine + NoteCommandLine finish
+                startupIsolationCheckPending = true;
+                if (!cmdLineLookupRunning) CheckStartupIsolationAsync();
+                CheckIp();
             }
             else if (wasRunning == false)
             {
-                if (settings.AutoConnect && Ready) Connect();
+                if (settings.AutoConnect && Ready)
+                {
+                    ThreadPool.QueueUserWorkItem(_ =>
+                    {
+                        if (Tunnel.HasPendingNetworkLock || settings.NetworkLock) Tunnel.ResetNetworkLock();
+                        else ConfFile.CleanGhostNetwork();
+                        var ui = Application.Current != null ? Application.Current.Dispatcher : null;
+                        if (ui != null) ui.BeginInvoke(new Action(() => { if (!exiting && Ready) Connect(); }));
+                    });
+                }
                 else
                 {
-                    ThreadPool.QueueUserWorkItem(_ => ConfFile.CleanGhostNetwork());
+                    ThreadPool.QueueUserWorkItem(_ =>
+                    {
+                        if (Tunnel.HasPendingNetworkLock || settings.NetworkLock) Tunnel.ResetNetworkLock();
+                        else ConfFile.CleanGhostNetwork();
+                    });
                     CheckIp();
                 }
             }
             else CheckIp();
+        }
+
+        void CheckStartupIsolationAsync()
+        {
+            startupIsolationCheckPending = false;
+            if (exiting || wasRunning != true || active == null || EffectiveAppMode() == AppMode.All) return;
+            bool isolated = Tunnel.Ipv6Isolated;
+            ThreadPool.QueueUserWorkItem(_ =>
+            {
+                bool ghost = ConfFile.HasGhostIpv6();
+                if (!isolated || ghost)
+                {
+                    var ui = Application.Current != null ? Application.Current.Dispatcher : null;
+                    if (ui != null) ui.BeginInvoke(new Action(() =>
+                    {
+                        if (!exiting && wasRunning == true && !userStopped && !reconnectPending && active != null && EffectiveAppMode() != AppMode.All)
+                            Reconnect();
+                    }));
+                }
+            });
         }
 
         // A second launch of the exe signals this event instead of opening another window
@@ -778,6 +908,7 @@ namespace VpnPanel
         void Quit()
         {
             exiting = true;
+            CancelAllDiag();
             SaveWindowPosition();
             if (powerModeHandler != null) { try { Microsoft.Win32.SystemEvents.PowerModeChanged -= powerModeHandler; } catch { } }
             if (networkAddressHandler != null) { try { System.Net.NetworkInformation.NetworkChange.NetworkAddressChanged -= networkAddressHandler; } catch { } }
@@ -855,7 +986,7 @@ namespace VpnPanel
                     if (manual || WindowShowing)
                     {
                         pendingUpdatePrompt = false;
-                        PromptUpdate(info, true);
+                        PromptUpdate(info, false);
                     }
                     else
                     {
@@ -1116,13 +1247,14 @@ namespace VpnPanel
 
         void ShowPage(FrameworkElement page)
         {
-            foreach (FrameworkElement p in new[] { pageSetup, pageHome, pageServers, pageApps, pageOptions })
+            foreach (FrameworkElement p in new[] { pageSetup, pageHome, pageServers, pageApps, pageDiag, pageOptions })
                 p.Visibility = p == page ? Visibility.Visible : Visibility.Collapsed;
             page.BeginAnimation(UIElement.OpacityProperty, new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(160)));
             if (page == pageServers && serversDirty) RenderServerList();
             // pings nobody will see: drop what hasn't started (going back to Servidores queues them again)
             if (page != pageServers) Latency.CancelQueued();
             if (page == pageHome) { UpdateTraffic(); if (shown == Conn.On) UpdateUptimeText(); }
+            if (page == pageDiag) OnDiagPageShown();
         }
 
         void UpdateSetup()
@@ -1147,11 +1279,41 @@ namespace VpnPanel
             mark.Foreground = done ? B("OnAccent") : B("Text");
         }
 
+        AppMode EffectiveAppMode()
+        {
+            if (settings.SharedApps)
+                return settings.AppsMode != AppMode.All && settings.Apps.Count == 0 ? AppMode.All : settings.AppsMode;
+            return active != null ? active.Mode : AppMode.All;
+        }
+
+        void UpdateLockAvailability()
+        {
+            if (chkLock == null) return;
+            bool split = EffectiveAppMode() != AppMode.All;
+            loading = true;
+            chkLock.IsChecked = !split && settings.NetworkLock;
+            loading = false;
+            chkLock.IsEnabled = !split;
+            if (txtLockNote != null)
+            {
+                if (split)
+                {
+                    txtLockNote.Text = "Indisponível no modo Só estes / Exceto (o bloqueio impediria o DNS e apps fora da VPN).";
+                    txtLockNote.Visibility = Visibility.Visible;
+                }
+                else
+                {
+                    txtLockNote.Visibility = Visibility.Collapsed;
+                }
+            }
+            UpdateDiagRouteBadge();
+        }
+
         void SaveSettings()
         {
             settings.Config = active != null ? active.Name : null;
             settings.AutoReconnect = chkReconnect.IsChecked == true;
-            settings.NetworkLock = chkLock.IsChecked == true;
+            if (chkLock.IsEnabled) settings.NetworkLock = chkLock.IsChecked == true;
             settings.OptimizeMtu = chkMtu.IsChecked == true;
             settings.AutoConnect = chkAuto.IsChecked == true;
             settings.SkipUac = chkSkipUac.IsChecked == true;
@@ -1180,12 +1342,14 @@ namespace VpnPanel
         {
             get
             {
+                if (reconnectPending) return Conn.Connecting;
                 // being stopped: the process lingers until the next poll
-                if (wasRunning == true && userStopped) return reconnectPending ? Conn.Connecting : Conn.Off;
+                if (wasRunning == true && userStopped) return Conn.Off;
                 if (wasRunning == true)
                 {
                     if (!monitoring) return Conn.On; // started outside the app: no log to check
-                    if (pendingSince != null && (DateTime.Now - pendingSince.Value).TotalSeconds > WarnAfter) return Conn.NoResponse;
+                    if (!handshakeOk && pendingSinceTick != null && ElapsedSeconds(pendingSinceTick.Value) > WarnAfter) return Conn.NoResponse;
+                    if (rehandshakeConfirmedDown) return Conn.NoResponse;
                     return handshakeOk ? Conn.On : Conn.Connecting;
                 }
                 if (reconnectTimer != null && reconnectTimer.IsEnabled) return Conn.Retrying;
@@ -1196,11 +1360,13 @@ namespace VpnPanel
         void Toggle()
         {
             if (reconnectTimer.IsEnabled) { reconnectTimer.Stop(); UpdateState(); return; }
-            if ((wasRunning == true && !userStopped) || connecting) Disconnect(true);
+            if ((wasRunning == true && !userStopped) || connecting || reconnectPending) Disconnect(true);
             else Connect();
         }
 
-        void Connect()
+        void Connect() { Connect(false); }
+
+        void Connect(bool fromAutoReconnect)
         {
             HideBanner();
             if (!Ready)
@@ -1210,23 +1376,33 @@ namespace VpnPanel
                 ShowPage(HomePage);
                 return;
             }
-            if (connecting || (wasRunning == true && !userStopped)) return;
+            if (reconnectTimer != null && reconnectTimer.IsEnabled) reconnectTimer.Stop();
+            reconnectPending = false;
+            if (connecting || (wasRunning == true && !userStopped))
+            {
+                UpdateState();
+                return;
+            }
 
             string cfgName = active.Name;
             string wireSockExe = Paths.WireSock;
-            bool netLock = settings.NetworkLock;
+            AppMode targetMode = settings.AppsMode != AppMode.All && settings.Apps.Count == 0 ? AppMode.All : settings.AppsMode;
+            AppMode effectiveMode = settings.SharedApps ? targetMode : active.Mode;
+            bool netLock = settings.NetworkLock && effectiveMode == AppMode.All;
             bool updateApps = settings.SharedApps && !SameApps(active, settings.AppsMode, settings.Apps);
             bool updateMtu = (settings.OptimizeMtu && active.Mtu == 0) || (!settings.OptimizeMtu && active.AutoMtu);
-            AppMode targetMode = settings.AppsMode != AppMode.All && settings.Apps.Count == 0 ? AppMode.All : settings.AppsMode;
             List<string> targetApps = targetMode == AppMode.All ? new List<string>() : new List<string>(settings.Apps);
             int targetMtu = settings.OptimizeMtu ? 1380 : 0;
 
+            if (!fromAutoReconnect) reconnectAttempts = 0;
             CloseLogStream();
             Traffic.Stop();
             ResetTrafficLabels();
             userStopped = false;
             connecting = true;
-            connectRequested = DateTime.Now;
+            connectPausedForDialog = false;
+            connectLaunchTick = 0;
+            connectTotalStartTick = NowTicks();
             StartMonitoring(true);
             appsNeedReconnect = false;
             settings.AddRecent(cfgName);
@@ -1241,14 +1417,19 @@ namespace VpnPanel
                 {
                     bool confirmed = false;
                     Exception stopEx = null;
-                    w.Dispatcher.Invoke(new Action(() =>
+                    connectPausedForDialog = true;
+                    try
                     {
-                        if (seq != connectSeq) return;
-                        ShowWindow();
-                        confirmed = Dialogs.Confirm(w, "O WireSock já está conectado",
-                            "O aplicativo do WireSock está com uma conexão ativa. Para conectar pelo VPN Panel, essa conexão precisa ser desligada.",
-                            "Desligar e conectar", false);
-                    }));
+                        w.Dispatcher.Invoke(new Action(() =>
+                        {
+                            if (seq != connectSeq) return;
+                            ShowWindow();
+                            confirmed = Dialogs.Confirm(w, "O WireSock já está conectado",
+                                "O aplicativo do WireSock está com uma conexão ativa. Para conectar pelo VPN Panel, essa conexão precisa ser desligada.",
+                                "Desligar e conectar", false);
+                        }));
+                    }
+                    finally { connectPausedForDialog = false; }
                     if (seq != connectSeq) return;
                     if (!confirmed)
                     {
@@ -1256,6 +1437,7 @@ namespace VpnPanel
                         {
                             if (seq != connectSeq) return;
                             connecting = false;
+                            connectLaunchTick = 0;
                             StopMonitoring();
                             UpdateState();
                             UpdatePollInterval();
@@ -1270,6 +1452,7 @@ namespace VpnPanel
                         {
                             if (seq != connectSeq) return;
                             connecting = false;
+                            connectLaunchTick = 0;
                             StopMonitoring();
                             UpdateState();
                             UpdatePollInterval();
@@ -1301,6 +1484,7 @@ namespace VpnPanel
                             {
                                 if (seq != connectSeq) return;
                                 connecting = false;
+                                connectLaunchTick = 0;
                                 StopMonitoring();
                                 UpdateState();
                                 UpdatePollInterval();
@@ -1316,6 +1500,12 @@ namespace VpnPanel
                 {
                     Tunnel.Start(wireSockExe, cfgName, netLock);
                     settings.Save();
+                    w.Dispatcher.BeginInvoke(new Action(() =>
+                    {
+                        if (seq != connectSeq) return;
+                        connectLaunchTick = NowTicks();
+                        Poll();
+                    }));
                 }
                 catch (Exception ex)
                 {
@@ -1324,6 +1514,7 @@ namespace VpnPanel
                     {
                         if (seq != connectSeq) return;
                         connecting = false;
+                        connectLaunchTick = 0;
                         StopMonitoring();
                         UpdateState();
                         UpdatePollInterval();
@@ -1336,15 +1527,22 @@ namespace VpnPanel
         // byUser: the user asked for it (resets the auto-reconnect budget)
         void Disconnect(bool byUser)
         {
-            connectSeq++;
+            int seq = ++connectSeq;
             userStopped = true;
             connecting = false;
+            connectPausedForDialog = false;
+            connectLaunchTick = 0;
             wasRunning = false;
             runningConfig = null;
             StopMonitoring();
             Traffic.Stop();
             ResetTrafficLabels();
-            if (byUser) reconnectAttempts = 0;
+            if (byUser)
+            {
+                reconnectPending = false;
+                reconnectAttempts = 0;
+                if (reconnectTimer != null && reconnectTimer.IsEnabled) reconnectTimer.Stop();
+            }
             bool netLock = settings.NetworkLock;
             UpdateState();
             ThreadPool.QueueUserWorkItem(_ =>
@@ -1358,10 +1556,11 @@ namespace VpnPanel
                         ipTimer.Stop();
                         ipTimer.Start();
                         UpdatePollInterval();
+                        if (seq != connectSeq) return;
                         if (reconnectPending)
                         {
                             reconnectPending = false;
-                            Connect();
+                            Connect(true);
                         }
                         else
                         {
@@ -1375,7 +1574,7 @@ namespace VpnPanel
 
         void Reconnect()
         {
-            if (wasRunning != true) { Connect(); return; }
+            if (wasRunning != true && !connecting) { Connect(); return; }
             reconnectPending = true;
             Disconnect(false);
         }
@@ -1390,6 +1589,9 @@ namespace VpnPanel
         void StopMonitoring()
         {
             monitoring = false;
+            rehandshakeSuspectTick = 0;
+            rehandshakeConfirmedDown = false;
+            activeProbeRunning = false;
             CloseLogStream();
         }
 
@@ -1401,7 +1603,11 @@ namespace VpnPanel
             handshakeOk = false;
             sawHandshake = false;
             seekToTail = !fresh;
-            pendingSince = fresh ? (DateTime?)DateTime.Now : null;
+            pendingSinceTick = fresh ? (long?)NowTicks() : null;
+            rehandshakeSuspectTick = 0;
+            rehandshakeConfirmedDown = false;
+            activeProbeRunning = false;
+            lastObservedRx = 0;
             logPos = 0;
             logRest = "";
             logDecoder.Reset();
@@ -1413,14 +1619,30 @@ namespace VpnPanel
                 line.IndexOf("Receiving handshake response", StringComparison.OrdinalIgnoreCase) >= 0)
             {
                 handshakeOk = sawHandshake = true;
-                pendingSince = null;
+                pendingSinceTick = null;
+                rehandshakeSuspectTick = 0;
+                rehandshakeConfirmedDown = false;
+                activeProbeRunning = false;
             }
             else if (line.IndexOf("Handshake initiation sent", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                     line.IndexOf("Sending handshake initiation", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                     line.IndexOf("Handshake did not complete", StringComparison.OrdinalIgnoreCase) >= 0)
+                     line.IndexOf("Sending handshake initiation", StringComparison.OrdinalIgnoreCase) >= 0)
             {
                 sawHandshake = true;
-                if (pendingSince == null) pendingSince = DateTime.Now;
+                // Only track initial pre-handshake pending window; post-handshake rekeys must not flap UI due to 4KB stdout buffering
+                if (!handshakeOk && pendingSinceTick == null)
+                    pendingSinceTick = NowTicks();
+            }
+            else if (line.IndexOf("Handshake did not complete", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                sawHandshake = true;
+                if (!handshakeOk)
+                {
+                    if (pendingSinceTick == null) pendingSinceTick = NowTicks();
+                }
+                else if (rehandshakeSuspectTick == 0)
+                {
+                    rehandshakeSuspectTick = NowTicks();
+                }
             }
         }
 
@@ -1467,7 +1689,6 @@ namespace VpnPanel
                     foreach (string line in text.Substring(0, cut).Split('\n'))
                         InspectHandshakeLine(line);
                 }
-                if (logRest.Length > 0) InspectHandshakeLine(logRest);
             }
             catch
             {
@@ -1661,11 +1882,30 @@ namespace VpnPanel
 
         void Poll()
         {
-            if (wireSockInstalled != (Paths.WireSock != null))
+            if (!wireSockInstalled && !wireSockScanRunning && (lastWireSockBgCheckTick == 0 || ElapsedSeconds(lastWireSockBgCheckTick) >= 5))
             {
-                wireSockInstalled = !wireSockInstalled;
-                UpdateAbout();
-                UpdateSetup();
+                wireSockScanRunning = true;
+                lastWireSockBgCheckTick = NowTicks();
+                ThreadPool.QueueUserWorkItem(_ =>
+                {
+                    bool found = Paths.WireSock != null;
+                    var ui = Application.Current != null ? Application.Current.Dispatcher : null;
+                    if (ui != null)
+                    {
+                        ui.BeginInvoke(new Action(() =>
+                        {
+                            wireSockScanRunning = false;
+                            if (exiting) return;
+                            if (found != wireSockInstalled)
+                            {
+                                wireSockInstalled = found;
+                                UpdateAbout();
+                                UpdateSetup();
+                            }
+                        }));
+                    }
+                    else wireSockScanRunning = false;
+                });
             }
 
             double scanInterval = WindowShowing ? 2.5 : 8.5;
@@ -1680,6 +1920,7 @@ namespace VpnPanel
                 {
                     startedAt = Tunnel.StartTime;
                     connecting = false;
+                    connectLaunchTick = 0;
                     // Fast path: if this instance just launched the tunnel, skip WMI
                     if (Tunnel.LastStartedConfig != null && (DateTime.UtcNow - Tunnel.LastStartedAt).TotalSeconds < 15)
                     {
@@ -1687,13 +1928,48 @@ namespace VpnPanel
                     }
                     else
                     {
-                        string cmd = Tunnel.Pid != 0 ? Tunnel.CommandLine(Tunnel.Pid) : null;
-                        Tunnel.NoteCommandLine(cmd);
-                        runningConfig = Tunnel.ConfigOf(cmd);
-                        // a tunnel this app started before it was reopened still logs to our file
-                        if (!monitoring && cmd != null && cmd.Contains("-log-level info") && File.Exists(Paths.Log) &&
-                            File.GetLastWriteTime(Paths.Log) >= startedAt.AddSeconds(-5))
-                            StartMonitoring(false);
+                        int pid = Tunnel.Pid;
+                        DateTime procStarted = startedAt;
+                        if (pid != 0 && !cmdLineLookupRunning)
+                        {
+                            cmdLineLookupRunning = true;
+                            ThreadPool.QueueUserWorkItem(_ =>
+                            {
+                                string cmd = Tunnel.CommandLine(pid);
+                                var ui = Application.Current != null ? Application.Current.Dispatcher : null;
+                                if (ui != null)
+                                {
+                                    ui.BeginInvoke(new Action(() =>
+                                    {
+                                        cmdLineLookupRunning = false;
+                                        if (exiting || wasRunning != true || Tunnel.Pid != pid)
+                                        {
+                                            startupIsolationCheckPending = false;
+                                            return;
+                                        }
+                                        Tunnel.NoteCommandLine(cmd);
+                                        runningConfig = Tunnel.ConfigOf(cmd);
+                                        // a tunnel this app started before it was reopened still logs to our file
+                                        if (!monitoring && cmd != null && cmd.Contains("-log-level info") && File.Exists(Paths.Log) &&
+                                            File.GetLastWriteTime(Paths.Log) >= procStarted.AddSeconds(-5))
+                                            StartMonitoring(false);
+                                        if (runningConfig != null && (active == null || active.Name != runningConfig) && File.Exists(Paths.Conf(runningConfig)))
+                                        {
+                                            settings.Config = runningConfig;
+                                            RefreshConfigs();
+                                            LoadAppsEditor();
+                                        }
+                                        else if (settings.SharedApps && active != null && IsLive(active.Name))
+                                        {
+                                            appsNeedReconnect = !SameApps(active, settings.AppsMode, settings.Apps);
+                                            UpdateAppsSaved();
+                                        }
+                                        if (startupIsolationCheckPending) CheckStartupIsolationAsync();
+                                    }));
+                                }
+                                else cmdLineLookupRunning = false;
+                            });
+                        }
                     }
                     // follow tunnels started elsewhere (e.g. a .bat file)
                     if (runningConfig != null && (active == null || active.Name != runningConfig) && File.Exists(Paths.Conf(runningConfig)))
@@ -1710,6 +1986,13 @@ namespace VpnPanel
                     Traffic.Stop();
                     if (!userStopped && !reconnectPending)
                     {
+                        lastDropTick = NowTicks();
+                        // Process exited unexpectedly: clear any residual WFP kill-switch lock asynchronously
+                        ThreadPool.QueueUserWorkItem(_ =>
+                        {
+                            if (Tunnel.HasPendingNetworkLock || settings.NetworkLock) Tunnel.ResetNetworkLock();
+                            else ConfFile.CleanGhostNetwork();
+                        });
                         if (quick) ShowError("Não foi possível conectar", LogTail());
                         else if (settings.AutoReconnect && reconnectAttempts < MaxReconnects)
                         {
@@ -1733,7 +2016,7 @@ namespace VpnPanel
                 if (!running && reconnectPending)
                 {
                     reconnectPending = false;
-                    Connect();
+                    Connect(true);
                 }
                 else
                 {
@@ -1744,57 +2027,79 @@ namespace VpnPanel
             if (running && monitoring)
             {
                 ReadHandshakes();
+                if (Traffic.Running && (long)Traffic.SessionIn > lastObservedRx)
+                {
+                    lastObservedRx = (long)Traffic.SessionIn;
+                    rehandshakeSuspectTick = 0;
+                    rehandshakeConfirmedDown = false;
+                }
                 // a WireSock version that logs handshakes differently or whose 4 KB stdout buffer hasn't flushed yet:
-                // assume initial connection succeeded after the grace window, but keep monitoring open for future stalls
+                // assume initial connection succeeded after the grace window, but keep monitoring open
                 if (!sawHandshake && (DateTime.Now - startedAt).TotalSeconds > (logPos > 0 ? 10 : 25))
                 {
                     if (logPos > 0) StopMonitoring();
                     else handshakeOk = true;
-                    pendingSince = null;
+                    pendingSinceTick = null;
                 }
-                // no handshake response for too long: the server is down or frozen
-                if (pendingSince != null && (DateTime.Now - pendingSince.Value).TotalSeconds > GiveUpAfter)
+                bool pastResumeGrace = resumeGraceUntilTick == 0 || NowTicks() >= resumeGraceUntilTick;
+                // Pre-handshake initial connection timeout (monotonic clock, paused on sleep)
+                if (!handshakeOk && pendingSinceTick != null && pastResumeGrace && ElapsedSeconds(pendingSinceTick.Value) > GiveUpAfter)
                 {
-                    // it worked before: a stall, worth retrying; never worked: wrong or dead server
-                    if (handshakeOk && settings.AutoReconnect && reconnectAttempts < MaxReconnects)
+                    Disconnect(false);
+                    bool hasMultiple = Paths.ConfigNames().Length > 1;
+                    ShowBanner(false, "O servidor parou de responder",
+                        "O handshake não completou a tempo. Tente reconectar ou troque para outro servidor.",
+                        hasMultiple ? "Ir para o mais rápido" : "Tentar de novo",
+                        hasMultiple ? (Action)ConnectFastest : Connect,
+                        "Trocar servidor", () => tabServers.IsChecked = true);
+                }
+                // Post-handshake: only verify with active probe if WireSock explicitly logged "Handshake did not complete"
+                else if (handshakeOk && rehandshakeSuspectTick > 0 && pastResumeGrace)
+                {
+                    if (!rehandshakeConfirmedDown && !activeProbeRunning && ElapsedSeconds(rehandshakeSuspectTick) > 10)
                     {
-                        reconnectAttempts++;
-                        if (!WindowShowing)
-                            Balloon("O servidor " + (active != null ? active.Name : "") + " parou de responder. Reconectando...");
-                        Reconnect();
+                        ProbeRehandshakeAsync(lastObservedRx, active);
                     }
-                    else
+                    else if (rehandshakeConfirmedDown && ElapsedSeconds(rehandshakeSuspectTick) > GiveUpAfter)
                     {
-                        Disconnect(false);
-                        bool hasMultiple = Paths.ConfigNames().Length > 1;
-                        ShowBanner(false, "O servidor parou de responder",
-                            "O handshake congelou ou o servidor ficou fora do ar. Tente reconectar ou troque para o mais rápido.",
-                            hasMultiple ? "Ir para o mais rápido" : "Tentar de novo",
-                            hasMultiple ? (Action)ConnectFastest : Connect,
-                            "Trocar servidor", () => tabServers.IsChecked = true);
+                        if (settings.AutoReconnect && reconnectAttempts < MaxReconnects)
+                        {
+                            reconnectAttempts++;
+                            lastDropTick = NowTicks();
+                            if (!WindowShowing)
+                                Balloon("O servidor " + (active != null ? active.Name : "") + " parou de responder. Reconectando...");
+                            Reconnect();
+                        }
+                        else
+                        {
+                            Disconnect(false);
+                            bool hasMultiple = Paths.ConfigNames().Length > 1;
+                            ShowBanner(false, "O servidor parou de responder",
+                                "O servidor parou de responder após a conexão. Tente reconectar ou troque para o mais rápido.",
+                                hasMultiple ? "Ir para o mais rápido" : "Tentar de novo",
+                                hasMultiple ? (Action)ConnectFastest : Connect,
+                                "Trocar servidor", () => tabServers.IsChecked = true);
+                        }
                     }
                 }
             }
 
-            // the client exited before a poll saw it
-            if (!running && connecting && (DateTime.Now - connectRequested).TotalSeconds > 8)
+            // the client exited before a poll saw it (skip while user reads modal or service stops)
+            if (!running && connecting && !connectPausedForDialog)
             {
-                connecting = false;
-                ShowError("Não foi possível conectar", LogTail());
+                bool launchTimedOut = connectLaunchTick > 0 && ElapsedSeconds(connectLaunchTick) > 8;
+                bool totalTimedOut = ElapsedSeconds(connectTotalStartTick) > 35;
+                if (launchTimedOut || totalTimedOut)
+                {
+                    connecting = false;
+                    connectLaunchTick = 0;
+                    ShowError("Não foi possível conectar", LogTail());
+                }
             }
 
             Conn now = State;
             if (now != shown)
             {
-                if (now == Conn.On)
-                {
-                    HideBanner();
-                    if (!Traffic.Running) { Traffic.Start(active != null ? active.Endpoint : null); ResetTrafficLabels(); }
-                    CheckIp(); // check the new route once traffic flows
-                    Latency.RouteChanged();
-                    UpdateAllPingLabels();
-                    MeasureLatency(false);
-                }
                 if (now == Conn.NoResponse)
                     ShowBanner(true, "O servidor não está respondendo",
                         settings.NetworkLock ? "Continuo tentando. Enquanto isso, o kill switch mantém a internet bloqueada."
@@ -1808,11 +2113,13 @@ namespace VpnPanel
             {
                 UpdateTraffic();
                 if (WindowShowing) UpdateUptimeText();
-                if ((DateTime.Now - startedAt).TotalSeconds > 60 && now == Conn.On) reconnectAttempts = 0;
+                // Only reset auto-reconnect budget after sustained stability (5 min)
+                if ((DateTime.Now - startedAt).TotalSeconds > 300 && (lastDropTick == 0 || ElapsedSeconds(lastDropTick) > 300) && now == Conn.On)
+                    reconnectAttempts = 0;
             }
             if (WindowShowing && pageHome.Visibility == Visibility.Visible)
             {
-                if (active != null && !string.IsNullOrEmpty(active.Endpoint) && (DateTime.UtcNow - lastHomePing).TotalSeconds >= 15)
+                if (!diagContinuousRunning && active != null && !string.IsNullOrEmpty(active.Endpoint) && (DateTime.UtcNow - lastHomePing).TotalSeconds >= 15)
                 {
                     lastHomePing = DateTime.UtcNow;
                     Latency.Measure(new[] { active.Endpoint }, true, wasRunning == true);
@@ -1821,11 +2128,90 @@ namespace VpnPanel
                     (DateTime.UtcNow - lastHomeAppsCheck).TotalSeconds >= 3)
                 {
                     lastHomeAppsCheck = DateTime.UtcNow;
-                    string key = GetRunningAppsKey(active.Apps);
-                    if (key != lastHomeAppsRunningKey) RenderHomeApps();
+                    RefreshRunningAppsAsync(active.Apps);
                 }
             }
             UpdatePollInterval();
+        }
+
+        void ProbeRehandshakeAsync(long rxSnapshot, ConfigInfo cfgSnapshot)
+        {
+            activeProbeRunning = true;
+            AppMode effMode = EffectiveAppMode();
+            ThreadPool.QueueUserWorkItem(_ =>
+            {
+                bool ok = false;
+                try
+                {
+                    if (cfgSnapshot != null && !string.IsNullOrEmpty(cfgSnapshot.Endpoint))
+                    {
+                        var epRes = NetDiag.ProbeEndpoint(cfgSnapshot, 1500, CancellationToken.None);
+                        ok = epRes != null && epRes.Ok;
+                    }
+                    // In All/Except modes VPN Panel's own DNS traffic traverses the tunnel, so DNS success proves tunnel liveness
+                    // even if the VPN server drops ICMP and TCP 443. In Only mode DNS goes outside the tunnel.
+                    if (!ok && effMode != AppMode.Only)
+                    {
+                        var dnsRes = NetDiag.ProbeDns("cloudflare.com", CancellationToken.None);
+                        ok = dnsRes != null && dnsRes.Ok;
+                    }
+                }
+                catch { ok = false; }
+                var ui = Application.Current != null ? Application.Current.Dispatcher : null;
+                if (ui != null)
+                {
+                    ui.BeginInvoke(new Action(() =>
+                    {
+                        activeProbeRunning = false;
+                        if (exiting || !monitoring || !handshakeOk) return;
+                        if (ok || (Traffic.Running && (long)Traffic.SessionIn > rxSnapshot))
+                        {
+                            rehandshakeSuspectTick = 0;
+                            rehandshakeConfirmedDown = false;
+                        }
+                        else
+                        {
+                            rehandshakeConfirmedDown = true;
+                        }
+                    }));
+                }
+                else activeProbeRunning = false;
+            });
+        }
+
+        void RefreshRunningAppsAsync(IList<string> apps)
+        {
+            if (runningAppsScanRunning) return;
+            runningAppsScanRunning = true;
+            var snapshot = new List<string>(apps);
+            ThreadPool.QueueUserWorkItem(_ =>
+            {
+                var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                try
+                {
+                    Process[] all = Process.GetProcesses();
+                    for (int i = 0; i < all.Length; i++)
+                    {
+                        try { names.Add(all[i].ProcessName); } catch { }
+                        finally { try { all[i].Dispose(); } catch { } }
+                    }
+                }
+                catch { }
+                var ui = Application.Current != null ? Application.Current.Dispatcher : null;
+                if (ui != null)
+                {
+                    ui.BeginInvoke(new Action(() =>
+                    {
+                        runningAppsScanRunning = false;
+                        if (exiting) return;
+                        runningProcNames = names;
+                        appScanTime = DateTime.UtcNow;
+                        string key = GetRunningAppsKey(snapshot);
+                        if (key != lastHomeAppsRunningKey) RenderHomeApps();
+                    }));
+                }
+                else runningAppsScanRunning = false;
+            });
         }
 
         void UpdateState()
@@ -1893,7 +2279,7 @@ namespace VpnPanel
             bool stoppable = wasRunning == true || busy;
             btnPower.ToolTip = stoppable ? "Desconectar" : "Conectar";
 
-            tray.Icon = on ? trayOn : st == Conn.NoResponse ? trayWarn : trayOff;
+            tray.Icon = on ? trayOn : busy ? trayWarn : trayOff;
             string tip = "VPN Panel: " + status.TrimEnd('.').ToLowerInvariant() + (on && active != null ? " (" + active.Name + ")" : "");
             tray.Text = tip.Length > 63 ? tip.Substring(0, 63) : tip;
             miStatus.Text = on && active != null ? "Conectado · " + active.Name : status;
@@ -1904,6 +2290,7 @@ namespace VpnPanel
             txtIpNote.Text = partial ? "Este é o IP dos apps fora da VPN. " + JoinPt(active.Apps) + " usa o IP do servidor." : "";
             txtIpNote.Visibility = partial ? Visibility.Visible : Visibility.Collapsed;
             UpdateAppsSaved();
+            UpdateDiagRouteBadge();
         }
 
         static DateTime appScanTime = DateTime.MinValue;
@@ -2141,7 +2528,7 @@ namespace VpnPanel
                 pill.MouseLeftButtonUp += (s, e) =>
                 {
                     if (shown == Conn.On && active != null)
-                        Dialogs.VerifyRouting(w, active, Tunnel.Ipv6Isolated, AppIcon);
+                        Dialogs.VerifyRouting(w, active, Tunnel.Ipv6Isolated, AppIcon, appsNeedReconnect);
                 };
                 homeAppsPanel.Children.Add(pill);
             }
@@ -2166,7 +2553,7 @@ namespace VpnPanel
                 morePill.MouseLeftButtonUp += (s, e) =>
                 {
                     if (shown == Conn.On && active != null)
-                        Dialogs.VerifyRouting(w, active, Tunnel.Ipv6Isolated, AppIcon);
+                        Dialogs.VerifyRouting(w, active, Tunnel.Ipv6Isolated, AppIcon, appsNeedReconnect);
                     else
                         tabApps.IsChecked = true;
                 };
@@ -2248,6 +2635,8 @@ namespace VpnPanel
             txtSrvDetail.ToolTip = active == null ? null : active.Detail;
             UpdateHomePing();
             SyncDownloadsWatcher();
+            UpdateLockAvailability();
+            UpdateDiagRouteBadge();
             if (txtStatus != null && wasRunning != null) UpdateState();
         }
 
@@ -2521,6 +2910,7 @@ namespace VpnPanel
         void SelectConfig(string name)
         {
             if (active != null && active.Name == name) { tabHome.IsChecked = true; return; }
+            StopContinuousDiag("Interrompido: servidor alterado");
             settings.Config = name;
             settings.Save();
             RefreshConfigs();
@@ -2537,6 +2927,7 @@ namespace VpnPanel
             bool same = active != null && active.Name.Equals(name, StringComparison.OrdinalIgnoreCase);
             if (!same)
             {
+                StopContinuousDiag("Interrompido: servidor alterado");
                 settings.Config = name;
                 settings.Save();
                 RefreshConfigs();
@@ -3087,6 +3478,7 @@ namespace VpnPanel
                 settings.Save();
                 if (IsLive(active.Name)) appsNeedReconnect = !SameApps(active, settings.AppsMode, settings.Apps);
                 UpdateAppsSaved();
+                UpdateLockAvailability();
                 return;
             }
             try { ConfFile.WriteApps(Paths.Conf(active.Name), editMode, editMode == AppMode.All ? new List<string>() : editApps); }
@@ -3437,7 +3829,8 @@ namespace VpnPanel
         {
             if (statusRing == null || shieldBg == null) return;
 
-            if (isBusy || st == Conn.Connecting)
+            bool wantSpin = isBusy || st == Conn.Connecting;
+            if (wantSpin)
             {
                 statusRing.Stroke = B("Line");
                 statusSpinner.Visibility = Visibility.Visible;
@@ -3448,13 +3841,20 @@ namespace VpnPanel
                 ravenTail.Fill = B("Warn");
                 glow.Visibility = Visibility.Visible;
                 glow.Opacity = 0.5;
-                if (spinnerRotate != null)
+                if (spinnerRotate != null && !powerSpinnerRunning)
+                {
+                    powerSpinnerRunning = true;
                     spinnerRotate.BeginAnimation(RotateTransform.AngleProperty,
                         new DoubleAnimation(0, 360, TimeSpan.FromMilliseconds(1100)) { RepeatBehavior = RepeatBehavior.Forever });
+                }
             }
             else if (st == Conn.On)
             {
-                if (spinnerRotate != null) spinnerRotate.BeginAnimation(RotateTransform.AngleProperty, null);
+                if (spinnerRotate != null && powerSpinnerRunning)
+                {
+                    powerSpinnerRunning = false;
+                    spinnerRotate.BeginAnimation(RotateTransform.AngleProperty, null);
+                }
                 statusSpinner.Visibility = Visibility.Collapsed;
                 statusRing.Stroke = B("Secure");
                 shieldBg.Stroke = B("Secure");
@@ -3467,7 +3867,11 @@ namespace VpnPanel
             }
             else
             {
-                if (spinnerRotate != null) spinnerRotate.BeginAnimation(RotateTransform.AngleProperty, null);
+                if (spinnerRotate != null && powerSpinnerRunning)
+                {
+                    powerSpinnerRunning = false;
+                    spinnerRotate.BeginAnimation(RotateTransform.AngleProperty, null);
+                }
                 statusSpinner.Visibility = Visibility.Collapsed;
                 statusRing.Stroke = B("Line");
                 shieldBg.Stroke = B("Line");
@@ -3796,6 +4200,610 @@ namespace VpnPanel
                 g.FillPath(bTail, tp);
             }
             g.Restore(st);
+        }
+
+        // ---------- diagnostics (Testes & Saúde) ----------
+
+        void OnDiagPageShown()
+        {
+            UpdateDiagRouteBadge();
+            if (!diagQuickRunning && string.IsNullOrEmpty(lastDiagSummary))
+                RunQuickDiag();
+        }
+
+        void UpdateDiagRouteBadge()
+        {
+            if (diagRouteBadge == null || txtDiagRouteBadge == null) return;
+            AppMode eff = EffectiveAppMode();
+            string srvName = active != null ? active.Name : "sem servidor";
+            if (wasRunning == true)
+            {
+                if (eff == AppMode.Only)
+                {
+                    txtDiagRouteBadge.Text = "Modo Só estes — testes vão por fora · VPN (" + srvName + "): " + (handshakeOk ? "ativa" : "conectando");
+                    diagRouteBadge.Background = B("WarnSoft");
+                    txtDiagRouteBadge.Foreground = B("Warn");
+                }
+                else if (eff == AppMode.Except)
+                {
+                    txtDiagRouteBadge.Text = "Rota do teste: Pela VPN (" + srvName + " · Exceto lista)";
+                    diagRouteBadge.Background = handshakeOk ? B("SecureSoft") : B("WarnSoft");
+                    txtDiagRouteBadge.Foreground = handshakeOk ? B("SecureText") : B("Warn");
+                }
+                else
+                {
+                    txtDiagRouteBadge.Text = "Rota do teste: Pela VPN (" + srvName + " · Todos)";
+                    diagRouteBadge.Background = handshakeOk ? B("SecureSoft") : B("WarnSoft");
+                    txtDiagRouteBadge.Foreground = handshakeOk ? B("SecureText") : B("Warn");
+                }
+            }
+            else
+            {
+                txtDiagRouteBadge.Text = "Rota do teste: Internet direta (VPN desconectada)";
+                diagRouteBadge.Background = B("Surface2");
+                txtDiagRouteBadge.Foreground = B("Muted");
+            }
+        }
+
+        void CancelAllDiag()
+        {
+            diagEpoch++;
+            diagContEpoch++;
+            diagQuickRunning = false;
+            diagContinuousRunning = false;
+            if (diagQuickCts != null)
+            {
+                try { diagQuickCts.Cancel(); } catch { }
+                diagQuickCts = null;
+            }
+            if (diagContCts != null)
+            {
+                try { diagContCts.Cancel(); } catch { }
+                diagContCts = null;
+            }
+        }
+
+        static void SetDiagDot(Ellipse dot, string brushKey)
+        {
+            if (dot != null) dot.Fill = B(brushKey);
+        }
+
+        static NetDiag.AuditItem FindAudit(List<NetDiag.AuditItem> items, string key)
+        {
+            if (items == null) return null;
+            foreach (var item in items)
+                if (item.Key == key) return item;
+            return null;
+        }
+
+        void RunQuickDiag()
+        {
+            if (exiting || pageDiag == null) return;
+            UpdateDiagRouteBadge();
+
+            if (diagQuickCts != null)
+            {
+                try { diagQuickCts.Cancel(); } catch { }
+            }
+            CancellationTokenSource myCts = new CancellationTokenSource();
+            diagQuickCts = myCts;
+            CancellationToken ct = myCts.Token;
+            int myEpoch = ++diagEpoch;
+
+            diagQuickRunning = true;
+            btnDiagQuick.IsEnabled = false;
+            btnDiagQuick.Content = "Testando...";
+            btnDiagRepair.Visibility = Visibility.Collapsed;
+            btnDiagApps.Visibility = active != null ? Visibility.Visible : Visibility.Collapsed;
+
+            SetDiagDot(diagVerdictDot, "Muted");
+            txtDiagVerdict.Foreground = B("Text");
+            txtDiagVerdict.Text = "Analisando conexão...";
+            txtDiagVerdictSub.Text = "Testando internet, DNS, servidor VPN, kill switch e configuração...";
+            SetDiagDot(chkItem1Dot, "Muted"); txtChk1Detail.Text = "Testando acesso HTTPS...";
+            SetDiagDot(chkItem2Dot, "Muted"); txtChk2Detail.Text = "Testando resolução de nomes...";
+            SetDiagDot(chkItem3Dot, "Muted"); txtChk3Detail.Text = "Verificando servidor e túnel...";
+            SetDiagDot(chkItem4Dot, "Muted"); txtChk4Detail.Text = "Verificando kill switch e IPv6...";
+            SetDiagDot(chkItem5Dot, "Muted"); txtChk5Detail.Text = "Auditando configuração e apps...";
+
+            ConfigInfo cfgSnap = active;
+            var sSnap = new Settings
+            {
+                NetworkLock = settings.NetworkLock,
+                OptimizeMtu = settings.OptimizeMtu,
+                SharedApps = settings.SharedApps,
+                AppsMode = settings.AppsMode,
+                Apps = new List<string>(settings.Apps)
+            };
+            bool tunnelRunning = wasRunning == true;
+            bool hsOk = handshakeOk;
+            bool appsPending = appsNeedReconnect;
+            AppMode effMode = EffectiveAppMode();
+            TimeSpan up = (tunnelRunning && hsOk) ? (DateTime.Now - startedAt) : TimeSpan.Zero;
+            string uptimeStr = (tunnelRunning && hsOk)
+                ? string.Format("{0:00}:{1:00}:{2:00}", (int)up.TotalHours, up.Minutes, up.Seconds)
+                : "";
+            string logHint = (!hsOk || !tunnelRunning) ? LogTail() : "";
+
+            ThreadPool.QueueUserWorkItem(_ =>
+            {
+                try
+                {
+                    if (ct.IsCancellationRequested) return;
+                    bool hasGhostV6 = ConfFile.HasGhostIpv6();
+                    bool pendingLock = Tunnel.HasPendingNetworkLock;
+                    List<NetDiag.AuditItem> audit = NetDiag.AuditConfig(cfgSnap, sSnap, hasGhostV6, tunnelRunning, appsPending);
+                    NetDiag.ProbeResult httpRes = NetDiag.ProbeHttp204(3000, ct);
+                    NetDiag.ProbeResult dnsRes = NetDiag.ProbeDns("cloudflare.com", ct);
+                    NetDiag.ProbeResult epRes = cfgSnap != null ? NetDiag.ProbeEndpoint(cfgSnap, 2000, ct) : null;
+
+                    var ui = Application.Current != null ? Application.Current.Dispatcher : null;
+                    if (ui == null) return;
+                    ui.BeginInvoke(new Action(() =>
+                    {
+                        if (exiting || myEpoch != diagEpoch || ct.IsCancellationRequested) return;
+                        diagQuickRunning = false;
+                        btnDiagQuick.IsEnabled = true;
+                        btnDiagQuick.Content = "Testar agora";
+                        UpdateDiagRouteBadge();
+
+                        // 1. Internet real (HTTP 204)
+                        string d1;
+                        if (httpRes.Ok)
+                        {
+                            SetDiagDot(chkItem1Dot, "SecureText");
+                            d1 = "OK em " + httpRes.LatencyMs + " ms (" + httpRes.Target + ")" +
+                                 (tunnelRunning && effMode == AppMode.Only ? " — fora da VPN" : "");
+                        }
+                        else if (!tunnelRunning && pendingLock)
+                        {
+                            SetDiagDot(chkItem1Dot, "Danger");
+                            d1 = "Sem acesso (" + httpRes.Detail + ") — bloqueio de rede pendente detectado.";
+                        }
+                        else
+                        {
+                            SetDiagDot(chkItem1Dot, "Danger");
+                            d1 = "Falhou (" + httpRes.Detail + ")";
+                        }
+                        txtChk1Detail.Text = d1;
+
+                        // 2. DNS
+                        string d2;
+                        if (dnsRes.Ok)
+                        {
+                            SetDiagDot(chkItem2Dot, "SecureText");
+                            d2 = "Resolvido em " + dnsRes.LatencyMs + " ms (" + dnsRes.Target + ")";
+                        }
+                        else
+                        {
+                            SetDiagDot(chkItem2Dot, "Danger");
+                            d2 = "Falhou (" + dnsRes.Detail + ")";
+                        }
+                        txtChk2Detail.Text = d2;
+
+                        // 3. Servidor VPN & Túnel
+                        string d3;
+                        if (cfgSnap == null)
+                        {
+                            SetDiagDot(chkItem3Dot, "Warn");
+                            d3 = "Nenhum servidor selecionado.";
+                        }
+                        else if (tunnelRunning && hsOk)
+                        {
+                            if (epRes != null && epRes.Ok)
+                            {
+                                SetDiagDot(chkItem3Dot, "SecureText");
+                                d3 = "Conectado há " + uptimeStr + " · endpoint respondeu em " + epRes.LatencyMs + " ms";
+                            }
+                            else
+                            {
+                                SetDiagDot(chkItem3Dot, "Warn");
+                                d3 = "Túnel ativo há " + uptimeStr + " (endpoint não respondeu a ICMP/TCP: " +
+                                     (epRes != null ? epRes.Detail : "sem resposta") + ")";
+                            }
+                        }
+                        else if (tunnelRunning)
+                        {
+                            SetDiagDot(chkItem3Dot, "Warn");
+                            d3 = "WireSock aberto, aguardando handshake · endpoint: " +
+                                 (epRes != null && epRes.Ok ? epRes.LatencyMs + " ms" : (epRes != null ? epRes.Detail : "sem resposta"));
+                        }
+                        else
+                        {
+                            if (epRes != null && epRes.Ok)
+                            {
+                                SetDiagDot(chkItem3Dot, "SecureText");
+                                d3 = "Desconectado · endpoint acessível em " + epRes.LatencyMs + " ms (" + epRes.Target + ")";
+                            }
+                            else
+                            {
+                                SetDiagDot(chkItem3Dot, "Danger");
+                                d3 = "Desconectado · endpoint inacessível (" + (epRes != null ? epRes.Detail : "erro") + ")";
+                            }
+                        }
+                        txtChk3Detail.Text = d3;
+
+                        // 4. Kill Switch & IPv6
+                        NetDiag.AuditItem lockFlagItem = FindAudit(audit, "lock_flag");
+                        NetDiag.AuditItem ghostV6Item = FindAudit(audit, "ghost_v6");
+                        NetDiag.AuditItem lockSplitItem = FindAudit(audit, "lock_split");
+                        bool item4HasErr = false;
+                        bool item4HasWarn = false;
+                        string d4;
+                        if (lockFlagItem != null || (!tunnelRunning && pendingLock))
+                        {
+                            item4HasErr = true;
+                            SetDiagDot(chkItem4Dot, "Danger");
+                            d4 = lockFlagItem != null ? lockFlagItem.Detail : "Bloqueio residual do Kill Switch (WFP) ativo sem VPN.";
+                        }
+                        else if (ghostV6Item != null && ghostV6Item.Severity != NetDiag.AuditSeverity.Ok)
+                        {
+                            item4HasWarn = true;
+                            SetDiagDot(chkItem4Dot, "Warn");
+                            d4 = ghostV6Item.Detail;
+                        }
+                        else if (lockSplitItem != null && lockSplitItem.Severity != NetDiag.AuditSeverity.Ok)
+                        {
+                            item4HasWarn = true;
+                            SetDiagDot(chkItem4Dot, "Warn");
+                            d4 = lockSplitItem.Detail;
+                        }
+                        else
+                        {
+                            SetDiagDot(chkItem4Dot, "SecureText");
+                            d4 = (tunnelRunning && sSnap.NetworkLock && effMode == AppMode.All)
+                                ? "Kill switch ativo com VPN conectada; sem rotas IPv6 fantasmas."
+                                : "Sem bloqueio residual (WFP) e sem rota IPv6 fantasma.";
+                        }
+                        txtChk4Detail.Text = d4;
+
+                        // 5. Configuração & Apps (config, keepalive, mtu, lan, apps_pending)
+                        var item5Problems = new List<string>();
+                        bool item5HasErr = false;
+                        bool item5HasWarn = false;
+                        foreach (string k in new[] { "config", "keepalive", "mtu", "lan", "apps_pending" })
+                        {
+                            NetDiag.AuditItem it = FindAudit(audit, k);
+                            if (it != null && it.Severity != NetDiag.AuditSeverity.Ok)
+                            {
+                                if (it.Severity == NetDiag.AuditSeverity.Error) item5HasErr = true;
+                                else item5HasWarn = true;
+                                item5Problems.Add(it.Detail);
+                            }
+                        }
+                        int appCount = settings.SharedApps ? sSnap.Apps.Count : (cfgSnap != null ? cfgSnap.Apps.Count : 0);
+                        string modeLabel = effMode == AppMode.All ? "Todos os apps"
+                                         : effMode == AppMode.Only ? "Só estes (" + appCount + ")"
+                                         : "Exceto (" + appCount + ")";
+                        string d5;
+                        if (item5Problems.Count > 0)
+                        {
+                            SetDiagDot(chkItem5Dot, item5HasErr ? "Danger" : "Warn");
+                            d5 = modeLabel + ". " + string.Join(" ", item5Problems.ToArray());
+                        }
+                        else
+                        {
+                            SetDiagDot(chkItem5Dot, "SecureText");
+                            d5 = "Configuração saudável (" + modeLabel + ", keepalive e MTU OK).";
+                        }
+                        txtChk5Detail.Text = d5;
+
+                        bool showRepair = (!tunnelRunning && pendingLock) || hasGhostV6 || (!httpRes.Ok && !dnsRes.Ok && !tunnelRunning);
+                        btnDiagRepair.Visibility = showRepair ? Visibility.Visible : Visibility.Collapsed;
+
+                        // Veredito consolidado
+                        string vColor = "SecureText";
+                        string vTitle, vSub;
+                        if (!tunnelRunning && pendingLock)
+                        {
+                            vColor = "Danger";
+                            vTitle = "Internet bloqueada pelo Kill Switch";
+                            vSub = "Um bloqueio residual (WFP) permaneceu ativo sem a VPN. Clique em \"Reparar internet agora\".";
+                        }
+                        else if (!httpRes.Ok && !dnsRes.Ok)
+                        {
+                            vColor = "Danger";
+                            vTitle = "Sem acesso à internet";
+                            vSub = hasGhostV6
+                                ? "Nem DNS nem HTTPS responderam e há rota IPv6 fantasma. Clique em \"Reparar internet agora\"."
+                                : "Nem DNS nem conexão externa responderam. Verifique sua rede ou clique em \"Reparar internet agora\".";
+                        }
+                        else if (!dnsRes.Ok)
+                        {
+                            vColor = "Danger";
+                            vTitle = "Falha na resolução DNS";
+                            vSub = "A rede responde, mas nomes de domínio não estão resolvendo (" + dnsRes.Detail + ").";
+                        }
+                        else if (!httpRes.Ok)
+                        {
+                            vColor = "Warn";
+                            vTitle = "Internet instável ou bloqueada";
+                            vSub = "O DNS respondeu, mas o teste HTTPS falhou (" + httpRes.Detail + ").";
+                        }
+                        else if (tunnelRunning && !hsOk)
+                        {
+                            vColor = "Warn";
+                            vTitle = "Túnel aguardando resposta do servidor";
+                            vSub = "O WireSock está em execução, mas o handshake ainda não completou." +
+                                   (string.IsNullOrEmpty(logHint) ? "" : " " + logHint);
+                        }
+                        else if (hasGhostV6)
+                        {
+                            vColor = "Warn";
+                            vTitle = "Internet OK, mas há rota IPv6 fantasma";
+                            vSub = "Uma rota ::/0 residual pode causar travamentos ou vazamentos. Clique em \"Reparar internet agora\".";
+                        }
+                        else if (item4HasErr || item4HasWarn || item5HasErr || item5HasWarn)
+                        {
+                            vColor = "Warn";
+                            vTitle = tunnelRunning ? "Conexão ativa com avisos" : "Rede OK com avisos de configuração";
+                            vSub = item5Problems.Count > 0 ? item5Problems[0]
+                                 : (item4HasErr || item4HasWarn) ? d4
+                                 : "Revise os itens marcados em amarelo abaixo.";
+                        }
+                        else
+                        {
+                            vColor = "SecureText";
+                            vTitle = "Tudo funcionando normalmente";
+                            vSub = tunnelRunning
+                                ? "Internet, DNS, servidor VPN e configuração aprovados."
+                                : "Internet, DNS e servidor acessíveis (VPN desconectada no momento).";
+                        }
+
+                        SetDiagDot(diagVerdictDot, vColor);
+                        txtDiagVerdict.Foreground = vColor == "Danger" ? B("Danger") : vColor == "Warn" ? B("Warn") : B("Text");
+                        txtDiagVerdict.Text = vTitle;
+                        txtDiagVerdictSub.Text = vSub;
+
+                        var sb = new StringBuilder();
+                        sb.AppendLine("VPN Panel v" + Program.Version + " — Diagnóstico (" + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + ")");
+                        sb.AppendLine("Estado: " + (tunnelRunning ? (hsOk ? "Conectado" : "Conectando") : "Desconectado") +
+                                      " | Servidor: " + (cfgSnap != null ? cfgSnap.Name : "nenhum") +
+                                      " | Modo: " + effMode);
+                        sb.AppendLine("Veredito: " + vTitle + " — " + vSub);
+                        sb.AppendLine("1. Internet Base: " + d1);
+                        sb.AppendLine("2. DNS do Windows: " + d2);
+                        sb.AppendLine("3. Túnel & Servidor VPN: " + d3);
+                        sb.AppendLine("4. Kill Switch & IPv6: " + d4);
+                        sb.AppendLine("5. Configuração & Apps: " + d5);
+                        lastDiagSummary = sb.ToString().TrimEnd();
+                    }));
+                }
+                finally
+                {
+                    try { myCts.Dispose(); } catch { }
+                }
+            });
+        }
+
+        void ToggleContinuousDiag()
+        {
+            if (diagContinuousRunning)
+            {
+                StopContinuousDiag("Teste contínuo parado pelo usuário");
+                return;
+            }
+            if (exiting || pageDiag == null) return;
+
+            if (diagContCts != null)
+            {
+                try { diagContCts.Cancel(); } catch { }
+            }
+            CancellationTokenSource myCts = new CancellationTokenSource();
+            diagContCts = myCts;
+            CancellationToken ct = myCts.Token;
+            int myContEpoch = ++diagContEpoch;
+
+            diagContinuousRunning = true;
+            btnDiagContinuous.Content = "Parar teste";
+            txtDiagLiveStatus.Text = "Executando (0/60s)";
+            txtDiagLiveTime.Text = "00:00";
+            txtDiagSentLoss.Text = "0 / 0%";
+            txtDiagPing.Text = "— / —";
+            txtDiagJitter.Text = "—";
+            txtDiagDrops.Text = "0";
+
+            ConfigInfo cfgSnap = active;
+            AppMode effMode = EffectiveAppMode();
+            bool tunnelRunning = wasRunning == true;
+
+            ThreadPool.QueueUserWorkItem(_ =>
+            {
+                try
+                {
+                    int sent = 0;
+                    int lost = 0;
+                    int consecFail = 0;
+                    int drops = 0;
+                    var latencies = new List<int>(60);
+
+                    for (int sec = 1; sec <= 60; sec++)
+                    {
+                        if (ct.IsCancellationRequested) break;
+                        Stopwatch sw = Stopwatch.StartNew();
+
+                        NetDiag.ProbeResult res;
+                        if (effMode == AppMode.Only && tunnelRunning && cfgSnap != null && !string.IsNullOrEmpty(cfgSnap.Endpoint))
+                        {
+                            res = NetDiag.ProbeEndpoint(cfgSnap, 1500, ct);
+                        }
+                        else
+                        {
+                            res = NetDiag.ProbeTcp("1.1.1.1", 443, 1500, ct);
+                            if (res.Ok && sec % 5 == 0)
+                            {
+                                NetDiag.ProbeResult dnsCheck = NetDiag.ProbeDns("cloudflare.com", ct);
+                                if (!dnsCheck.Ok) res = dnsCheck;
+                            }
+                        }
+
+                        if (ct.IsCancellationRequested) break;
+
+                        sent++;
+                        if (res.Ok)
+                        {
+                            consecFail = 0;
+                            latencies.Add(res.LatencyMs);
+                        }
+                        else
+                        {
+                            lost++;
+                            consecFail++;
+                            if (consecFail == 2) drops++;
+                        }
+
+                        int avgMs = 0, maxMs = 0, jitterMs = 0;
+                        if (latencies.Count > 0)
+                        {
+                            long sum = 0;
+                            long jitterSum = 0;
+                            for (int i = 0; i < latencies.Count; i++)
+                            {
+                                int val = latencies[i];
+                                sum += val;
+                                if (val > maxMs) maxMs = val;
+                                if (i > 0) jitterSum += Math.Abs(val - latencies[i - 1]);
+                            }
+                            avgMs = (int)Math.Round((double)sum / latencies.Count);
+                            if (latencies.Count >= 2)
+                                jitterMs = (int)Math.Round((double)jitterSum / (latencies.Count - 1));
+                        }
+
+                        int curSec = sec;
+                        int curSent = sent;
+                        int curLost = lost;
+                        int curDrops = drops;
+                        int latCount = latencies.Count;
+                        int curAvg = avgMs;
+                        int curMax = maxMs;
+                        int curJitter = jitterMs;
+
+                        var ui = Application.Current != null ? Application.Current.Dispatcher : null;
+                        if (ui != null)
+                        {
+                            ui.BeginInvoke(new Action(() =>
+                            {
+                                if (exiting || myContEpoch != diagContEpoch || ct.IsCancellationRequested) return;
+                                txtDiagLiveTime.Text = string.Format("{0:00}:{1:00}", curSec / 60, curSec % 60);
+                                txtDiagLiveStatus.Text = "Executando (" + curSec + "/60s)";
+                                int lossPct = curSent > 0 ? (int)Math.Round(100.0 * curLost / curSent) : 0;
+                                txtDiagSentLoss.Text = curSent + " / " + lossPct + "%";
+                                txtDiagPing.Text = latCount > 0 ? (curAvg + " / " + curMax + " ms") : "— / —";
+                                txtDiagJitter.Text = latCount >= 2 ? (curJitter + " ms") : (latCount == 1 ? "0 ms" : "—");
+                                txtDiagDrops.Text = curDrops.ToString();
+                            }));
+                        }
+
+                        int waitMs = 1000 - (int)sw.ElapsedMilliseconds;
+                        if (waitMs > 0)
+                        {
+                            try { ct.WaitHandle.WaitOne(waitMs); }
+                            catch { break; }
+                        }
+                    }
+
+                    var uiDone = Application.Current != null ? Application.Current.Dispatcher : null;
+                    if (uiDone != null)
+                    {
+                        uiDone.BeginInvoke(new Action(() =>
+                        {
+                            if (exiting || myContEpoch != diagContEpoch) return;
+                            diagContinuousRunning = false;
+                            btnDiagContinuous.Content = "Teste contínuo";
+                            if (!ct.IsCancellationRequested)
+                            {
+                                txtDiagLiveStatus.Text = drops == 0 && lost == 0
+                                    ? "Concluído — estável"
+                                    : drops > 0
+                                        ? "Concluído — " + drops + " queda(s)"
+                                        : "Concluído — " + lost + " falha(s)";
+                            }
+                        }));
+                    }
+                }
+                finally
+                {
+                    try { myCts.Dispose(); } catch { }
+                }
+            });
+        }
+
+        void StopContinuousDiag(string statusText)
+        {
+            diagContEpoch++;
+            if (diagContCts != null)
+            {
+                try { diagContCts.Cancel(); } catch { }
+                diagContCts = null;
+            }
+            if (!diagContinuousRunning) return;
+            diagContinuousRunning = false;
+            if (btnDiagContinuous != null) btnDiagContinuous.Content = "Teste contínuo";
+            if (txtDiagLiveStatus != null && !string.IsNullOrEmpty(statusText)) txtDiagLiveStatus.Text = statusText;
+        }
+
+        void RepairDiagNetwork()
+        {
+            if (exiting) return;
+            StopContinuousDiag("Interrompido para reparo");
+            btnDiagRepair.IsEnabled = false;
+            btnDiagRepair.Content = "Reparando...";
+            SetDiagDot(diagVerdictDot, "Muted");
+            txtDiagVerdict.Foreground = B("Text");
+            txtDiagVerdict.Text = "Reparando bloqueio e rotas...";
+            txtDiagVerdictSub.Text = "Removendo kill switch residual (WFP) e rotas IPv6 fantasmas...";
+
+            ThreadPool.QueueUserWorkItem(_ =>
+            {
+                Tunnel.ResetNetworkLock();
+                var ui = Application.Current != null ? Application.Current.Dispatcher : null;
+                if (ui == null) return;
+                ui.BeginInvoke(new Action(() =>
+                {
+                    if (exiting) return;
+                    btnDiagRepair.IsEnabled = true;
+                    btnDiagRepair.Content = "Reparar internet agora";
+                    CheckIp();
+                    RunQuickDiag();
+                }));
+            });
+        }
+
+        void CopyDiagReport()
+        {
+            var sb = new StringBuilder();
+            if (!string.IsNullOrEmpty(lastDiagSummary))
+            {
+                sb.AppendLine(lastDiagSummary);
+            }
+            else
+            {
+                sb.AppendLine("VPN Panel v" + Program.Version + " — Diagnóstico");
+                sb.AppendLine("Veredito: " + (txtDiagVerdict != null ? txtDiagVerdict.Text : ""));
+                if (txtChk1Detail != null) sb.AppendLine("1. Internet Base: " + txtChk1Detail.Text);
+                if (txtChk2Detail != null) sb.AppendLine("2. DNS do Windows: " + txtChk2Detail.Text);
+                if (txtChk3Detail != null) sb.AppendLine("3. Túnel & Servidor VPN: " + txtChk3Detail.Text);
+                if (txtChk4Detail != null) sb.AppendLine("4. Kill Switch & IPv6: " + txtChk4Detail.Text);
+                if (txtChk5Detail != null) sb.AppendLine("5. Configuração & Apps: " + txtChk5Detail.Text);
+            }
+            if (txtDiagSentLoss != null && txtDiagSentLoss.Text != "0 / 0%")
+            {
+                sb.AppendLine("Teste contínuo (" + txtDiagLiveStatus.Text + "): " +
+                              "Enviados/Perda=" + txtDiagSentLoss.Text +
+                              " | Ping(méd/máx)=" + txtDiagPing.Text +
+                              " | Jitter=" + txtDiagJitter.Text +
+                              " | Quedas=" + txtDiagDrops.Text);
+            }
+
+            try
+            {
+                Clipboard.SetText(sb.ToString().TrimEnd());
+                btnDiagCopy.Content = "Copiado!";
+                var t = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1.8) };
+                t.Tick += (s, e) => { t.Stop(); if (!exiting && btnDiagCopy != null) btnDiagCopy.Content = "Copiar resultado"; };
+                t.Start();
+            }
+            catch { }
         }
 
         class DarkMenuRenderer : WF.ToolStripProfessionalRenderer
