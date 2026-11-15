@@ -34,8 +34,8 @@ using System.Windows.Shell;
 [assembly: AssemblyTrademark("VPN Panel")]
 [assembly: ComVisible(false)]
 [assembly: Guid("b7c93e48-8120-4a87-8d2b-65c71d798a21")]
-[assembly: AssemblyVersion("3.0.5.0")]
-[assembly: AssemblyFileVersion("3.0.5.0")]
+[assembly: AssemblyVersion("3.0.6.0")]
+[assembly: AssemblyFileVersion("3.0.6.0")]
 
 namespace VpnPanel
 {
@@ -44,7 +44,7 @@ namespace VpnPanel
         // Same mutex as the old vpn-panel.ps1, so they never run together
         const string MutexName = @"Global\VpnPanelWireSock";
         public const string ShowEventName = @"Global\VpnPanelWireSockShow";
-        public const string Version = "3.0.5";
+        public const string Version = "3.0.6";
 
         [STAThread]
         static void Main(string[] args)
@@ -2942,6 +2942,9 @@ namespace VpnPanel
         [DllImport("iphlpapi.dll")]
         static extern int GetIpInterfaceEntry(ref MIB_IPINTERFACE_ROW row);
 
+        [DllImport("iphlpapi.dll")]
+        static extern int GetIpForwardTable(IntPtr pIpForwardTable, ref int pdwSize, bool bOrder);
+
         [StructLayout(LayoutKind.Sequential)]
         struct MIB_IPINTERFACE_ROW
         {
@@ -3256,7 +3259,104 @@ namespace VpnPanel
             public List<string> ConflictingAdapters = new List<string>();
             public List<string> LowMetricAdapters = new List<string>();
             public List<string> ConflictingServices = new List<string>();
+            public List<string> PassiveAdapters = new List<string>();
+            public List<string> PassiveServices = new List<string>();
+            public List<string> PassiveNotes = new List<string>();
             public List<string> Warnings = new List<string>();
+        }
+
+        public static HashSet<int> GetIpv4DefaultRouteIndices()
+        {
+            var set = new HashSet<int>();
+            const int ErrorInsufficientBuffer = 122;
+            int size = 0;
+            try
+            {
+                int rc = GetIpForwardTable(IntPtr.Zero, ref size, false);
+                if (rc != ErrorInsufficientBuffer && rc != 0) return set;
+                for (int attempt = 0; attempt < 3 && size > 0; attempt++)
+                {
+                    IntPtr buf = Marshal.AllocHGlobal(size);
+                    try
+                    {
+                        rc = GetIpForwardTable(buf, ref size, false);
+                        if (rc == 0)
+                        {
+                            if (size >= 4)
+                            {
+                                int count = Marshal.ReadInt32(buf, 0);
+                                int maxRows = (size - 4) / 56;
+                                if (count > maxRows) count = maxRows;
+                                for (int i = 0; i < count; i++)
+                                {
+                                    int off = 4 + i * 56;
+                                    uint dest = unchecked((uint)Marshal.ReadInt32(buf, off));
+                                    uint mask = unchecked((uint)Marshal.ReadInt32(buf, off + 4));
+                                    int ifIdx = Marshal.ReadInt32(buf, off + 16);
+                                    // Match 0.0.0.0/0 OR WireGuard/Tailscale split default 0.0.0.0/1 & 128.0.0.0/1
+                                    // (in x86/x64 little-endian memory, 128.0.0.0 in network byte order is 0x00000080)
+                                    bool isDefault = (dest == 0u && mask == 0u) ||
+                                                     (dest == 0u && mask == 0x00000080u) ||
+                                                     (dest == 0x00000080u && mask == 0x00000080u);
+                                    if (isDefault && ifIdx > 0) set.Add(ifIdx);
+                                }
+                            }
+                            return set;
+                        }
+                        if (rc != ErrorInsufficientBuffer) return set;
+                    }
+                    finally { Marshal.FreeHGlobal(buf); }
+                }
+            }
+            catch { }
+            return set;
+        }
+
+        public static bool HasActiveDefaultGateway(IPInterfaceProperties props, int v4IfIndex, HashSet<int> v4DefaultRoutes, out bool isApipaOnly)
+        {
+            isApipaOnly = false;
+            bool hasGw = v4IfIndex > 0 && v4DefaultRoutes != null && v4DefaultRoutes.Contains(v4IfIndex);
+            if (props == null) return hasGw;
+            if (!hasGw)
+            {
+                try
+                {
+                    foreach (GatewayIPAddressInformation gw in props.GatewayAddresses)
+                    {
+                        if (gw == null || gw.Address == null) continue;
+                        if (gw.Address.AddressFamily == AddressFamily.InterNetwork)
+                        {
+                            if (!IPAddress.Any.Equals(gw.Address)) { hasGw = true; break; }
+                        }
+                        else if (gw.Address.AddressFamily == AddressFamily.InterNetworkV6)
+                        {
+                            if (!gw.Address.IsIPv6LinkLocal && !IPAddress.IPv6None.Equals(gw.Address)) { hasGw = true; break; }
+                        }
+                    }
+                }
+                catch { }
+            }
+
+            try
+            {
+                bool anyV4 = false;
+                bool allApipa = true;
+                foreach (UnicastIPAddressInformation ua in props.UnicastAddresses)
+                {
+                    if (ua == null || ua.Address == null || ua.Address.AddressFamily != AddressFamily.InterNetwork) continue;
+                    anyV4 = true;
+                    byte[] b = ua.Address.GetAddressBytes();
+                    if (!(b.Length == 4 && b[0] == 169 && b[1] == 254))
+                    {
+                        allApipa = false;
+                        break;
+                    }
+                }
+                isApipaOnly = anyV4 && allApipa;
+            }
+            catch { }
+
+            return hasGw;
         }
 
         public static ConflictReport DetectConflicts()
@@ -3296,6 +3396,107 @@ namespace VpnPanel
             }
             catch { }
 
+            bool exitLagUiRunning = false;
+            try
+            {
+                Process[] elProcs = Process.GetProcessesByName("ExitLag");
+                exitLagUiRunning = elProcs.Length > 0;
+                for (int i = 0; i < elProcs.Length; i++) { try { elProcs[i].Dispose(); } catch { } }
+            }
+            catch { }
+
+            // Scan adapters first so services (e.g., Tailscale) know whether a default route / Exit Node is active
+            HashSet<int> v4DefaultRoutes = GetIpv4DefaultRouteIndices();
+            string[] vpnAdapterTokens = new[]
+            {
+                "wintun", "wireguard", "tap-windows", "openvpn", "tailscale",
+                "proton", "cloudflare", "cloudflarewarp", "cloudflare warp", "mullvad",
+                "exitlag", "radmin", "hamachi", "zerotier"
+            };
+            bool tunnelActive = Tunnel.Active(true);
+            bool tailscaleDefaultGw = false;
+            try
+            {
+                var upPhysical = new List<string>();
+                foreach (NetworkInterface ni in NetworkInterface.GetAllNetworkInterfaces())
+                {
+                    try
+                    {
+                        if (ni.OperationalStatus != OperationalStatus.Up || ni.NetworkInterfaceType == NetworkInterfaceType.Loopback) continue;
+                        string combined = ((ni.Description ?? "") + " " + (ni.Name ?? "")).ToLowerInvariant();
+                        uint metric = 0;
+                        bool hasMetric = false;
+                        IPInterfaceProperties props = null;
+                        bool isApipaOnly = false;
+                        bool hasDefaultGw = false;
+                        try
+                        {
+                            props = ni.GetIPProperties();
+                            if (props != null)
+                            {
+                                int v4Idx = 0;
+                                IPv4InterfaceProperties v4 = props.GetIPv4Properties();
+                                if (v4 != null)
+                                {
+                                    v4Idx = v4.Index;
+                                    hasMetric = TryGetIpv4InterfaceMetric(v4.Index, out metric);
+                                }
+                                hasDefaultGw = HasActiveDefaultGateway(props, v4Idx, v4DefaultRoutes, out isApipaOnly);
+                            }
+                        }
+                        catch { }
+
+                        bool isWsAdapter = combined.Contains("wiresock");
+                        bool isOtherVpn = false;
+                        for (int i = 0; i < vpnAdapterTokens.Length; i++)
+                        {
+                            if (combined.Contains(vpnAdapterTokens[i])) { isOtherVpn = true; break; }
+                        }
+
+                        if (isWsAdapter && !tunnelActive)
+                        {
+                            string info = hasMetric ? ni.Name + " (métrica " + metric + ")" : ni.Name;
+                            if (!r.ConflictingAdapters.Contains(info)) r.ConflictingAdapters.Add(info);
+                            if (hasMetric && metric <= 15 && !r.LowMetricAdapters.Contains(info))
+                                r.LowMetricAdapters.Add(info);
+                        }
+                        else if (isOtherVpn)
+                        {
+                            bool isOverlay = combined.Contains("tailscale") || combined.Contains("radmin") ||
+                                             combined.Contains("hamachi") || combined.Contains("zerotier") ||
+                                             combined.Contains("exitlag");
+                            if (combined.Contains("tailscale") && hasDefaultGw) tailscaleDefaultGw = true;
+
+                            if (!hasDefaultGw && (isOverlay || isApipaOnly))
+                            {
+                                string tag = isApipaOnly ? "em espera · APIPA" : "sem Exit Node / gateway";
+                                string info = ni.Name + " (" + tag + ")";
+                                if (!r.PassiveAdapters.Contains(info)) r.PassiveAdapters.Add(info);
+                            }
+                            else
+                            {
+                                string info = hasMetric ? ni.Name + " (métrica " + metric + ")" : ni.Name;
+                                if (!r.ConflictingAdapters.Contains(info)) r.ConflictingAdapters.Add(info);
+                                if (hasMetric && metric <= 15 && !r.LowMetricAdapters.Contains(info))
+                                    r.LowMetricAdapters.Add(info);
+                            }
+                        }
+                        else if (!IsVirtualOrTunnelAdapter(ni))
+                        {
+                            string info = hasMetric ? ni.Name + " (métrica " + metric + ")" : ni.Name;
+                            if (hasMetric && metric <= 15 && hasDefaultGw) upPhysical.Add(info);
+                        }
+                    }
+                    catch { }
+                }
+                if (upPhysical.Count > 1)
+                {
+                    for (int i = 0; i < upPhysical.Count; i++)
+                        if (!r.LowMetricAdapters.Contains(upPhysical[i])) r.LowMetricAdapters.Add(upPhysical[i]);
+                }
+            }
+            catch { }
+
             string[] badSvcTokens = new[]
             {
                 "tailscale", "wireguard", "cloudflarewarp", "cloudflare warp", "cloudflare", "warp-svc",
@@ -3320,7 +3521,28 @@ namespace VpnPanel
                                 if (low.Contains(badSvcTokens[i]))
                                 {
                                     string label = string.IsNullOrEmpty(s.DisplayName) ? s.ServiceName : s.DisplayName;
-                                    if (!r.ConflictingServices.Contains(label)) r.ConflictingServices.Add(label);
+                                    if (s.ServiceName.Equals("ExitLagPmService", StringComparison.OrdinalIgnoreCase))
+                                    {
+                                        if (exitLagUiRunning)
+                                        {
+                                            string warnMsg = "ExitLag em execução (evite otimizar o mesmo jogo na VPN e no ExitLag ao mesmo tempo).";
+                                            if (!r.Warnings.Contains(warnMsg)) r.Warnings.Add(warnMsg);
+                                        }
+                                        else
+                                        {
+                                            string tag = "ExitLagPmService (em espera)";
+                                            if (!r.PassiveServices.Contains(tag)) r.PassiveServices.Add(tag);
+                                        }
+                                    }
+                                    else if (low.Contains("tailscale") && !tailscaleDefaultGw)
+                                    {
+                                        string tag = label + " (sem Exit Node)";
+                                        if (!r.PassiveServices.Contains(tag)) r.PassiveServices.Add(tag);
+                                    }
+                                    else
+                                    {
+                                        if (!r.ConflictingServices.Contains(label)) r.ConflictingServices.Add(label);
+                                    }
                                     break;
                                 }
                             }
@@ -3331,61 +3553,6 @@ namespace VpnPanel
                 finally
                 {
                     foreach (var s in svcs) { try { s.Dispose(); } catch { } }
-                }
-            }
-            catch { }
-
-            string[] vpnAdapterTokens = new[]
-            {
-                "wintun", "wireguard", "tap-windows", "openvpn", "tailscale",
-                "proton", "cloudflare", "cloudflarewarp", "cloudflare warp", "mullvad",
-                "exitlag", "radmin", "hamachi", "zerotier"
-            };
-            bool tunnelActive = Tunnel.Active(true);
-            try
-            {
-                var upPhysical = new List<string>();
-                foreach (NetworkInterface ni in NetworkInterface.GetAllNetworkInterfaces())
-                {
-                    try
-                    {
-                        if (ni.OperationalStatus != OperationalStatus.Up || ni.NetworkInterfaceType == NetworkInterfaceType.Loopback) continue;
-                        string combined = ((ni.Description ?? "") + " " + (ni.Name ?? "")).ToLowerInvariant();
-                        uint metric = 0;
-                        bool hasMetric = false;
-                        try
-                        {
-                            IPv4InterfaceProperties v4 = ni.GetIPProperties().GetIPv4Properties();
-                            if (v4 != null) hasMetric = TryGetIpv4InterfaceMetric(v4.Index, out metric);
-                        }
-                        catch { }
-
-                        bool isWsAdapter = combined.Contains("wiresock");
-                        bool isOtherVpn = false;
-                        for (int i = 0; i < vpnAdapterTokens.Length; i++)
-                        {
-                            if (combined.Contains(vpnAdapterTokens[i])) { isOtherVpn = true; break; }
-                        }
-
-                        if (isOtherVpn || (isWsAdapter && !tunnelActive))
-                        {
-                            string info = hasMetric ? ni.Name + " (métrica " + metric + ")" : ni.Name;
-                            if (!r.ConflictingAdapters.Contains(info)) r.ConflictingAdapters.Add(info);
-                            if (hasMetric && metric <= 15 && !r.LowMetricAdapters.Contains(info))
-                                r.LowMetricAdapters.Add(info);
-                        }
-                        else if (!IsVirtualOrTunnelAdapter(ni))
-                        {
-                            string info = hasMetric ? ni.Name + " (métrica " + metric + ")" : ni.Name;
-                            if (hasMetric && metric <= 15) upPhysical.Add(info);
-                        }
-                    }
-                    catch { }
-                }
-                if (upPhysical.Count > 1)
-                {
-                    for (int i = 0; i < upPhysical.Count; i++)
-                        if (!r.LowMetricAdapters.Contains(upPhysical[i])) r.LowMetricAdapters.Add(upPhysical[i]);
                 }
             }
             catch { }
@@ -3402,6 +3569,16 @@ namespace VpnPanel
                 r.Warnings.Add("Métrica de rota <= 15 concorrente (pode confundir o roteamento do WireSock): " + string.Join(", ", r.LowMetricAdapters.ToArray()) + ".");
             if (r.ConflictingServices.Count > 0)
                 r.Warnings.Add("Serviço VPN/rede concorrente ativo: " + string.Join(", ", r.ConflictingServices.ToArray()) + ".");
+
+            if (r.PassiveAdapters.Count > 0 || r.PassiveServices.Count > 0)
+            {
+                var passiveList = new List<string>(r.PassiveServices);
+                for (int i = 0; i < r.PassiveAdapters.Count; i++)
+                {
+                    if (!passiveList.Contains(r.PassiveAdapters[i])) passiveList.Add(r.PassiveAdapters[i]);
+                }
+                r.PassiveNotes.Add("Em espera (compatível sem Exit Node / uso simultâneo): " + string.Join(", ", passiveList.ToArray()) + ".");
+            }
 
             return r;
         }

@@ -5079,8 +5079,20 @@ namespace VpnPanel
                         Interlocked.Exchange(ref suppressMtuLogUntilTick, FutureTicks(1.5));
                     }
                     NetDiag.ConflictReport conflicts = NetDiag.DetectConflicts();
+                    int tunnelMtuCap = sSnap.OptimizeMtu ? (sSnap.AdaptiveMtu > 0 ? sSnap.AdaptiveMtu : 1380) : 0;
+                    int cfgMtu = cfgSnap != null && cfgSnap.Mtu > 0 ? cfgSnap.Mtu : 0;
+                    int actualTunnelMtu = tunnelMtuCap > 0
+                        ? (cfgMtu > 0 && cfgMtu < tunnelMtuCap ? cfgMtu : tunnelMtuCap)
+                        : (cfgMtu > 0 ? cfgMtu : 1420);
+                    IPAddress epIpAddr;
+                    bool ipv6Endpoint = (cfgSnap != null && !string.IsNullOrEmpty(cfgSnap.Endpoint) && cfgSnap.Endpoint.Contains(":")) ||
+                                        (epRes != null && !string.IsNullOrEmpty(epRes.Target) && IPAddress.TryParse(epRes.Target, out epIpAddr) && epIpAddr.AddressFamily == System.Net.Sockets.AddressFamily.InterNetworkV6);
+                    int wgOverhead = ipv6Endpoint ? 80 : 60;
+                    bool mtuPhysicalNormal = (!tunnelRunning || effMode != AppMode.All) && !logMtuErr &&
+                                             mtuRes.Ok && mtuRes.MaxPayload >= 1392 && mtuRes.MaxPayload < 1472 &&
+                                             sSnap.OptimizeMtu && tunnelMtuCap > 0 && (actualTunnelMtu + wgOverhead <= mtuRes.MaxPayload + 28);
                     int suggestedMtu = AutoHealer.SuggestSafeMtu(mtuRes, logMtuErr, effMtuSnap);
-                    bool canFixMtu = suggestedMtu > 0 && (!sSnap.OptimizeMtu || effMtuSnap == 0 || suggestedMtu < effMtuSnap);
+                    bool canFixMtu = suggestedMtu > 0 && !mtuPhysicalNormal && (!sSnap.OptimizeMtu || effMtuSnap == 0 || suggestedMtu < effMtuSnap);
 
                     // Recent NetMon events (last 5 minutes)
                     DateTime cutoff = DateTime.Now.AddMinutes(-5);
@@ -5261,12 +5273,17 @@ namespace VpnPanel
                         bool mtuIntentionalCap = sSnap.OptimizeMtu && effMtuSnap > 0 && !logMtuErr &&
                                                  mtuRes.Ok && mtuRes.MaxPayload >= effMtuSnap - 28;
                         bool mtuBlockedOnly = !mtuRes.Ok && mtuRes.Detail != null && mtuRes.Detail.IndexOf("ICMP bloqueado", StringComparison.OrdinalIgnoreCase) >= 0;
-                        bool mtuFrag = !mtuIntentionalCap && ((!mtuRes.Ok && !mtuBlockedOnly) || (mtuRes.Ok && mtuRes.MaxPayload < 1472) || logMtuErr);
+                        bool mtuFrag = !mtuIntentionalCap && !mtuPhysicalNormal && ((!mtuRes.Ok && !mtuBlockedOnly) || (mtuRes.Ok && mtuRes.MaxPayload < 1472) || logMtuErr);
                         string d6;
                         if (mtuIntentionalCap)
                         {
                             d6 = (sSnap.AdaptiveMtu > 0 ? "MTU adaptativo (" + effMtuSnap + " B)" : "MTU otimizado (" + effMtuSnap + " B)") +
                                  " ativo e sem fragmentação (" + mtuRes.Detail + ").";
+                            SetDiagDot(chkItem6Dot, udpRes.Ok ? "SecureText" : "Warn");
+                        }
+                        else if (mtuPhysicalNormal)
+                        {
+                            d6 = "Rede física em MTU " + (mtuRes.MaxPayload + 28) + " (" + mtuRes.MaxPayload + " B · túnel ajustado em " + actualTunnelMtu + " B sem fragmentação).";
                             SetDiagDot(chkItem6Dot, udpRes.Ok ? "SecureText" : "Warn");
                         }
                         else
@@ -5287,18 +5304,29 @@ namespace VpnPanel
                         bool hardConflict = conflicts.WireSockServiceRunning || conflicts.WireSockProcessCount > 1 ||
                                             conflicts.ConflictingAdapters.Count > 0 || conflicts.ConflictingServices.Count > 0;
                         bool driverMissing = wsInstalledSnap && !conflicts.NdisDriverPresent;
-                        bool anyConflictWarn = hardConflict || driverMissing || conflicts.LowMetricAdapters.Count > 0 || logBypassFail || logAdapterFlap;
+                        bool hasPassiveTools = conflicts.PassiveNotes != null && conflicts.PassiveNotes.Count > 0;
+                        bool passiveToolDuringFault = hasPassiveTools && (!udpRes.Ok || logBypassFail || recentDriverWarns > 0);
+                        bool anyConflictWarn = hardConflict || driverMissing || conflicts.Warnings.Count > 0 || conflicts.LowMetricAdapters.Count > 0 || logBypassFail || logAdapterFlap || passiveToolDuringFault;
                         string d7;
                         if (conflicts.Warnings.Count > 0)
                         {
                             SetDiagDot(chkItem7Dot, (hardConflict || driverMissing) ? "Danger" : "Warn");
                             d7 = string.Join(" ", conflicts.Warnings.ToArray());
+                            if (hasPassiveTools) d7 += " " + string.Join(" ", conflicts.PassiveNotes.ToArray());
                         }
                         else if (logBypassFail || logAdapterFlap)
                         {
                             SetDiagDot(chkItem7Dot, logBypassFail ? "Danger" : "Warn");
                             d7 = logBypassFail ? "Sem conflitos externos, mas o driver falhou ao reinjetar pacotes (bypass)."
                                                : "Sem conflitos externos, mas houve oscilação/reinício de adaptador no log.";
+                            if (hasPassiveTools) d7 += " " + string.Join(" ", conflicts.PassiveNotes.ToArray());
+                        }
+                        else if (hasPassiveTools)
+                        {
+                            SetDiagDot(chkItem7Dot, passiveToolDuringFault ? "Warn" : "SecureText");
+                            d7 = (passiveToolDuringFault
+                                ? "Driver ndiswgc ativo, mas houve falha durante uso com programas em espera: "
+                                : "Driver ndiswgc ativo · ") + string.Join(" ", conflicts.PassiveNotes.ToArray());
                         }
                         else
                         {
@@ -5364,7 +5392,7 @@ namespace VpnPanel
                                 ? "O driver ndiswgc do WireSock não está ativo. Reinstale o WireSock e reinicie o PC."
                                 : "O filtro do WireSock na placa física teve falha de bypass/reinício (" + (driverLogErr ?? udpRes.Detail) + ").";
                         }
-                        else if ((!mtuIntentionalCap && ((!mtuRes.Ok && !mtuBlockedOnly) || logMtuErr)) || (httpRes.Ok && !udpRes.Ok))
+                        else if ((!mtuIntentionalCap && !mtuPhysicalNormal && ((!mtuRes.Ok && !mtuBlockedOnly) || logMtuErr)) || (httpRes.Ok && !udpRes.Ok))
                         {
                             vColor = "Warn";
                             vTitle = "Fragmentação de MTU / perda UDP para jogos";
@@ -5403,12 +5431,13 @@ namespace VpnPanel
                             vTitle = "Internet OK, mas há rota IPv6 fantasma";
                             vSub = "Uma rota ::/0 residual pode causar travamentos. Clique em \"Reparar internet agora\".";
                         }
-                        else if (anyConflictWarn || item4HasErr || item4HasWarn || item5HasErr || item5HasWarn || (!mtuIntentionalCap && mtuRes.Ok && mtuRes.MaxPayload < 1472))
+                        else if (anyConflictWarn || item4HasErr || item4HasWarn || item5HasErr || item5HasWarn || (!mtuIntentionalCap && !mtuPhysicalNormal && mtuRes.Ok && mtuRes.MaxPayload < 1472))
                         {
                             vColor = "Warn";
                             vTitle = tunnelRunning ? "Conexão ativa com avisos" : "Rede OK com avisos";
                             vSub = conflicts.Warnings.Count > 0 ? conflicts.Warnings[0]
-                                 : (mtuRes.Ok && mtuRes.MaxPayload < 1472) ? mtuRes.Detail
+                                 : passiveToolDuringFault ? string.Join(" ", conflicts.PassiveNotes.ToArray())
+                                 : (!mtuPhysicalNormal && mtuRes.Ok && mtuRes.MaxPayload < 1472) ? mtuRes.Detail
                                  : item5Problems.Count > 0 ? item5Problems[0]
                                  : d4;
                         }
@@ -5419,8 +5448,12 @@ namespace VpnPanel
                             vSub = (recentNetFlaps > 0 || recentDriverWarns > 0)
                                 ? "Sem falhas agora, mas houve oscilações nos últimos 5 min (veja Linha do Tempo ou rode o Teste contínuo)."
                                 : tunnelRunning
-                                    ? "Internet, UDP, DNS, MTU, driver e servidor VPN aprovados."
-                                    : "Internet, UDP, DNS, MTU e servidor acessíveis (VPN desconectada).";
+                                    ? (hasPassiveTools
+                                        ? "Internet, UDP, DNS, driver e túnel aprovados (serviços em espera compatíveis sem Exit Node/uso simultâneo)."
+                                        : "Internet, UDP, DNS, MTU, driver e servidor VPN aprovados.")
+                                    : (hasPassiveTools
+                                        ? "Internet, UDP, DNS, MTU e driver OK (VPN desconectada; serviços em espera compatíveis)."
+                                        : "Internet, UDP, DNS, MTU e servidor acessíveis (VPN desconectada).");
                         }
 
                         if (!string.IsNullOrEmpty(postFixNote))
