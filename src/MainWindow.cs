@@ -51,7 +51,7 @@ namespace VpnPanel
         readonly RotateTransform spinnerRotate;
         readonly System.Windows.Shapes.Path shieldBg, ravenBeak, ravenHead, ravenBody, ravenTail;
         readonly Ellipse ravenEye;
-        int connectSeq;
+        volatile int connectSeq;
         readonly TextBlock txtStatus, txtScope, txtUptime, txtDown, txtUp, txtDownIcon;
         readonly WrapPanel homeAppsPanel;
         readonly FrameworkElement trafficRow;
@@ -92,7 +92,8 @@ namespace VpnPanel
         DateTime cachedPreMtuAtUtc = DateTime.MinValue;
         readonly TextBlock txtLockNote;
         readonly Border cardUpdate;
-        readonly Button btnApplyUpdate, btnCheckUpdate, btnResetLock;
+        readonly Button btnApplyUpdate, btnCheckUpdate, btnResetLock, btnCleanLegacy;
+        bool cleanLegacyRunning;
         readonly TextBlock txtUpdateFoundTitle, txtUpdateFoundDetail, txtUpdateBadge;
         Updater.ReleaseInfo availableUpdate;
         bool pendingUpdatePrompt, updateDialogOpen, checkingForUpdates;
@@ -406,6 +407,7 @@ namespace VpnPanel
             btnApplyUpdate = E<Button>("BtnApplyUpdate");
             btnCheckUpdate = E<Button>("BtnCheckUpdate");
             btnResetLock = E<Button>("BtnResetLock");
+            btnCleanLegacy = E<Button>("BtnCleanLegacy");
             txtUpdateFoundTitle = E<TextBlock>("TxtUpdateFoundTitle");
             txtUpdateFoundDetail = E<TextBlock>("TxtUpdateFoundDetail");
             txtUpdateBadge = E<TextBlock>("TxtUpdateBadge");
@@ -689,6 +691,7 @@ namespace VpnPanel
             btnCheckUpdate.Click += (s, e) => CheckForUpdates(true);
             btnApplyUpdate.Click += (s, e) => InstallUpdate();
             btnResetLock.Click += (s, e) => ResetNetworkLockAction();
+            if (btnCleanLegacy != null) btnCleanLegacy.Click += (s, e) => CleanLegacyAction();
             E<Button>("BtnBackup").Click += (s, e) => ExportBackup();
             E<Button>("BtnLog").Click += (s, e) => OpenLog();
             E<Button>("BtnDataDir").Click += (s, e) => Process.Start("explorer.exe", "\"" + Paths.Data + "\"");
@@ -713,7 +716,7 @@ namespace VpnPanel
             allDrop.ShowCheckMargin = true;
             miServersEnd = new WF.ToolStripSeparator();
             menu.Items.Add(miServersEnd);
-            menu.Items.Add("Liberar internet (reset do bloqueio)", null, (s, e) => ResetNetworkLockAction());
+            menu.Items.Add("Restaurar internet padrão", null, (s, e) => ResetNetworkLockAction());
             menu.Items.Add("Abrir VPN Panel", null, (s, e) => ShowWindow());
             menu.Items.Add(new WF.ToolStripSeparator());
             menu.Items.Add("Sair (a VPN continua como está)", null, (s, e) => Quit());
@@ -789,6 +792,8 @@ namespace VpnPanel
                                 ipTimer.Start();
                                 if (settings.AutoHeal && wasRunning != true && !connecting && Tunnel.HasPendingNetworkLock)
                                     QueueBackgroundAutoHeal(false, false);
+                                if (settings.AutoHeal)
+                                    VerifyPostResumeInternetAsync(settings.NetworkLock);
                                 if (waitingForNetworkRestore)
                                     WakeAutoReconnectOnNetworkReturn();
                             }
@@ -2307,10 +2312,18 @@ namespace VpnPanel
                 ResetAutoReconnectState();
             }
             bool netLock = settings.NetworkLock;
+            bool autoHealSnap = settings.AutoHeal;
+            bool willReconnect = reconnectPending || scheduleReconnectAfterStop;
             UpdateState();
             ThreadPool.QueueUserWorkItem(_ =>
             {
                 Tunnel.Stop(netLock);
+                if (!willReconnect && autoHealSnap && !exiting && !Tunnel.Connecting && !Tunnel.Active(true))
+                {
+                    List<string> restoredDns;
+                    AutoHealer.RestoreStuckPhysicalDns(out restoredDns);
+                    ConfFile.FlushDnsCache();
+                }
                 var ui = Application.Current != null ? Application.Current.Dispatcher : null;
                 if (ui != null)
                 {
@@ -4989,30 +5002,65 @@ namespace VpnPanel
             });
         }
 
+        void VerifyPostResumeInternetAsync(bool netLockConfigured)
+        {
+            var resumeTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(2500) };
+            resumeTimer.Tick += (s, e) =>
+            {
+                resumeTimer.Stop();
+                if (exiting || connecting || Tunnel.Connecting || Tunnel.Active(true) ||
+                    wasRunning == true || reconnectPending || reconnectTimer.IsEnabled ||
+                    waitingForNetworkRestore || reconnectProbeRunning)
+                    return;
+                int seq = connectSeq;
+                ThreadPool.QueueUserWorkItem(_ =>
+                {
+                    try
+                    {
+                        if (exiting || seq != connectSeq || Tunnel.Connecting || Tunnel.Active(true)) return;
+                        AutoHealer.TryPostDropRecovery(netLockConfigured, true,
+                            () => exiting || seq != connectSeq || Tunnel.Connecting || Tunnel.Active(true));
+                    }
+                    catch { }
+                });
+            };
+            resumeTimer.Start();
+        }
+
         void ResetNetworkLockAction()
         {
+            bool stopExternalWs = false;
+            if (Paths.WireSockServiceRunning)
+            {
+                if (!WindowShowing) ShowWindow();
+                stopExternalWs = Dialogs.Confirm(w, "Encerrar serviço WireSock nativo?",
+                    "O serviço nativo do WireSock (outro aplicativo WireSock) também está ativo. Deseja encerrá-lo junto com a restauração?",
+                    "Encerrar também", true);
+            }
             if (HasActiveOrPendingTunnel)
             {
                 if (WindowShowing)
                 {
-                    bool ok = Dialogs.Confirm(w, "Túnel ativo",
-                        "Para liberar a internet e resetar o bloqueio com segurança, é preciso desconectar a VPN antes.",
-                        "Desconectar e liberar", true);
+                    bool ok = Dialogs.Confirm(w, "Restaurar internet padrão?",
+                        "Para limpar bloqueios WFP, IPv6 fantasma e DNS preso com segurança, a VPN será desconectada antes.",
+                        "Desconectar e restaurar", true);
                     if (!ok) return;
                 }
-                DisconnectAndResetLock(() =>
-                {
-                    if (WindowShowing)
-                        Dialogs.Info(w, "Internet liberada", "A VPN foi desconectada e o bloqueio de rede do WireSock foi desativado.");
-                    else if (tray != null)
-                        tray.ShowBalloonTip(3000, "Internet liberada", "VPN desconectada e bloqueio de rede desativado.", WF.ToolTipIcon.Info);
-                });
+                DisconnectAndResetLock(() => RunFullRestoreAfterStop(stopExternalWs));
                 return;
             }
-            NetMon.Record("Bloqueio", NetMon.EventKind.Warn, "Reset manual do bloqueio de rede (WFP)");
+            RunFullRestoreAfterStop(stopExternalWs);
+        }
+
+        void RunFullRestoreAfterStop(bool stopExternalWs)
+        {
+            NetMon.Record("Bloqueio", NetMon.EventKind.Warn, "Restauração completa da internet padrão iniciada");
             ThreadPool.QueueUserWorkItem(_ =>
             {
-                Tunnel.ResetNetworkLock();
+                bool hasUplink;
+                NetDiag.ProbeResult udp, tcp;
+                List<string> actions;
+                AutoHealer.RestoreDefaultInternet(stopExternalWs, out hasUplink, out udp, out tcp, out actions);
                 var ui = Application.Current != null ? Application.Current.Dispatcher : null;
                 if (ui != null)
                 {
@@ -5020,11 +5068,79 @@ namespace VpnPanel
                     {
                         ipTimer.Stop();
                         ipTimer.Start();
-                        if (WindowShowing)
-                            Dialogs.Info(w, "Internet liberada", "O bloqueio de rede do WireSock foi desativado com sucesso.\nO tráfego de internet foi normalizado.");
-                        else if (tray != null)
-                            tray.ShowBalloonTip(3000, "Internet liberada", "O bloqueio de rede do WireSock foi desativado.", WF.ToolTipIcon.Info);
+                        var sb = new StringBuilder();
+                        if (actions != null && actions.Count > 0)
+                        {
+                            sb.AppendLine("Ações aplicadas:");
+                            for (int i = 0; i < actions.Count; i++) sb.AppendLine("• " + actions[i]);
+                            sb.AppendLine();
+                        }
+                        if (!hasUplink)
+                        {
+                            sb.Append("Sem link físico ativo no momento (verifique cabo/Wi-Fi). Bloqueios da VPN foram limpos.");
+                        }
+                        else if ((udp != null && udp.Ok) || (tcp != null && tcp.Ok))
+                        {
+                            string lat = (udp != null && udp.Ok ? "UDP " + udp.LatencyMs + " ms" : "UDP falhou") +
+                                         " · " + (tcp != null && tcp.Ok ? "TCP " + tcp.LatencyMs + " ms" : "TCP falhou");
+                            sb.Append("Internet base respondendo normalmente (" + lat + ").");
+                        }
+                        else
+                        {
+                            sb.Append("O VPN Panel limpou todos os bloqueios e rotas, mas 1.1.1.1 não respondeu. Verifique seu roteador ou outro serviço VPN.");
+                        }
+                        string msg = sb.ToString();
+                        if (WindowShowing) Dialogs.Info(w, "Internet padrão restaurada", msg);
+                        else if (tray != null) tray.ShowBalloonTip(3500, "Internet restaurada", msg.Replace("\n", " "), WF.ToolTipIcon.Info);
                     }));
+                }
+            });
+        }
+
+        void CleanLegacyAction()
+        {
+            if (cleanLegacyRunning) return;
+            if (!Dialogs.Confirm(w, "Limpar versões antigas e resíduos?",
+                "Isso remove arquivos temporários antigos, scripts legados (C:\\VPN), entradas/tarefas obsoletas de versões anteriores e comentários de DNS acidentais em servidores (com backup ZIP antes).\n\nSeus servidores e preferências atuais são preservados.",
+                "Limpar agora", false))
+                return;
+
+            cleanLegacyRunning = true;
+            if (btnCleanLegacy != null) btnCleanLegacy.IsEnabled = false;
+            bool allowNet = !HasActiveOrPendingTunnel;
+            ThreadPool.QueueUserWorkItem(_ =>
+            {
+                LegacyCleanup.LegacyCleanReport rep = null;
+                try
+                {
+                    rep = LegacyCleanup.Run(true, allowNet);
+                }
+                catch { }
+                var ui = Application.Current != null ? Application.Current.Dispatcher : null;
+                if (ui != null)
+                {
+                    ui.BeginInvoke(new Action(() =>
+                    {
+                        cleanLegacyRunning = false;
+                        if (btnCleanLegacy != null) btnCleanLegacy.IsEnabled = true;
+                        RefreshConfigs();
+                        LoadAppsEditor();
+                        if (rep == null || rep.CleanedCount == 0)
+                        {
+                            Dialogs.Info(w, "Tudo limpo", "Nenhum vestígio de versão antiga ou resíduo encontrado.");
+                            return;
+                        }
+                        var sb = new StringBuilder();
+                        sb.AppendLine("Itens limpos (" + rep.CleanedCount + "):");
+                        for (int i = 0; i < rep.Items.Count; i++) sb.AppendLine("• " + rep.Items[i]);
+                        if (!string.IsNullOrEmpty(rep.BackupZipPath))
+                            sb.AppendLine("\nBackup ZIP salvo em:\n" + rep.BackupZipPath);
+                        Dialogs.Info(w, "Limpeza concluída", sb.ToString());
+                    }));
+                }
+                else
+                {
+                    cleanLegacyRunning = false;
                 }
             });
         }

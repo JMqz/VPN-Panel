@@ -34,8 +34,8 @@ using System.Windows.Shell;
 [assembly: AssemblyTrademark("VPN Panel")]
 [assembly: ComVisible(false)]
 [assembly: Guid("b7c93e48-8120-4a87-8d2b-65c71d798a21")]
-[assembly: AssemblyVersion("3.1.1.0")]
-[assembly: AssemblyFileVersion("3.1.1.0")]
+[assembly: AssemblyVersion("3.2.0.0")]
+[assembly: AssemblyFileVersion("3.2.0.0")]
 
 namespace VpnPanel
 {
@@ -44,7 +44,7 @@ namespace VpnPanel
         // Same mutex as the old vpn-panel.ps1, so they never run together
         const string MutexName = @"Global\VpnPanelWireSock";
         public const string ShowEventName = @"Global\VpnPanelWireSockShow";
-        public const string Version = "3.1.1";
+        public const string Version = "3.2.0";
 
         static int RunProbeCli(string[] args)
         {
@@ -1819,6 +1819,174 @@ namespace VpnPanel
         {
             return lastWriteName != null && lastWriteName.Equals(name, StringComparison.OrdinalIgnoreCase) &&
                    (DateTime.UtcNow - lastWriteAt).TotalSeconds < 2;
+        }
+
+        // Collects private/CGNAT DNS IPs configured inside WireGuard configs (excluding public DNS 1.1.1.1/9.9.9.9/8.8.8.8).
+        public static HashSet<string> CollectVpnPrivateDns()
+        {
+            var dns = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var files = new List<string>();
+            try
+            {
+                if (Directory.Exists(Paths.Configs)) files.AddRange(Directory.GetFiles(Paths.Configs, "*.conf"));
+                if (Directory.Exists(Paths.Runtime)) files.AddRange(Directory.GetFiles(Paths.Runtime, "*.conf"));
+            }
+            catch { }
+            foreach (string f in files)
+            {
+                try
+                {
+                    foreach (string line in File.ReadAllLines(f))
+                    {
+                        if (!DnsLine.IsMatch(line)) continue;
+                        int eq = line.IndexOf('=');
+                        if (eq < 0) continue;
+                        int cmt = line.IndexOf('#');
+                        string raw = cmt > eq ? line.Substring(eq + 1, cmt - eq - 1) : line.Substring(eq + 1);
+                        foreach (string part in raw.Split(','))
+                        {
+                            string item = part.Trim();
+                            IPAddress ip;
+                            if (!IPAddress.TryParse(item, out ip)) continue;
+                            if (IsPrivateOrCgnatVpnDns(ip)) dns.Add(ip.ToString());
+                        }
+                    }
+                }
+                catch { }
+            }
+            return dns;
+        }
+
+        static bool IsPrivateOrCgnatVpnDns(IPAddress ip)
+        {
+            if (ip == null || IPAddress.IsLoopback(ip)) return false;
+            byte[] b = ip.GetAddressBytes();
+            if (ip.AddressFamily == AddressFamily.InterNetwork && b.Length == 4)
+            {
+                if (b[0] == 10) return true;
+                if (b[0] == 100 && b[1] >= 64 && b[1] <= 127) return true;
+                if (b[0] == 172 && b[1] >= 16 && b[1] <= 31) return true;
+                if (b[0] == 192 && b[1] == 168) return true;
+                return false;
+            }
+            if (ip.AddressFamily == AddressFamily.InterNetworkV6 && b.Length == 16)
+            {
+                return (b[0] & 0xFE) == 0xFC; // ULA fc00::/7
+            }
+            return false;
+        }
+
+        // Creates a unique ZIP backup and restores accidentally persisted split-tunnel DNS comments in user .conf files.
+        public static int SanitizeLegacyConfs(out string backupZipPath)
+        {
+            backupZipPath = null;
+            const string legacyDnsComment = "# vpn-panel: DNS local mantido em split tunneling";
+            var dirty = new List<string>();
+            try
+            {
+                if (!Directory.Exists(Paths.Configs)) return 0;
+                foreach (string f in Directory.GetFiles(Paths.Configs, "*.conf"))
+                {
+                    try
+                    {
+                        string text = File.ReadAllText(f);
+                        if (text.IndexOf(legacyDnsComment, StringComparison.OrdinalIgnoreCase) >= 0)
+                            dirty.Add(f);
+                    }
+                    catch { }
+                }
+            }
+            catch { return 0; }
+            if (dirty.Count == 0) return 0;
+
+            string zip = null;
+            try
+            {
+                string backupsDir = Path.Combine(Paths.Data, "backups");
+                Directory.CreateDirectory(backupsDir);
+                zip = Path.Combine(backupsDir, "configs-pre-clean-" +
+                    DateTime.Now.ToString("yyyyMMdd-HHmmss-fff") + "-" + Guid.NewGuid().ToString("N").Substring(0, 6) + ".zip");
+                using (var arch = System.IO.Compression.ZipFile.Open(zip, System.IO.Compression.ZipArchiveMode.Create))
+                {
+                    foreach (string f in dirty)
+                    {
+                        byte[] raw = File.ReadAllBytes(f);
+                        var entry = arch.CreateEntry(Path.GetFileName(f), System.IO.Compression.CompressionLevel.Optimal);
+                        using (var es = entry.Open()) es.Write(raw, 0, raw.Length);
+                    }
+                }
+                if (File.Exists(zip)) backupZipPath = zip;
+            }
+            catch
+            {
+                backupZipPath = null;
+                if (!string.IsNullOrEmpty(zip) && File.Exists(zip)) { try { File.Delete(zip); } catch { } }
+            }
+
+            if (string.IsNullOrEmpty(backupZipPath)) return 0; // never modify user configs if backup failed
+
+            int count = 0;
+            foreach (string f in dirty)
+            {
+                string tmp = null;
+                try
+                {
+                    byte[] raw = File.ReadAllBytes(f);
+                    bool bom = raw.Length >= 3 && raw[0] == 0xEF && raw[1] == 0xBB && raw[2] == 0xBF;
+                    int offset = bom ? 3 : 0;
+                    int byteLen = raw.Length - offset;
+                    Encoding enc = new UTF8Encoding(false, true);
+                    string text;
+                    try { text = enc.GetString(raw, offset, byteLen); }
+                    catch (DecoderFallbackException)
+                    {
+                        enc = Encoding.Default;
+                        text = enc.GetString(raw, offset, byteLen);
+                    }
+                    string nl = text.Contains("\r\n") ? "\r\n" : "\n";
+                    string[] srcLines = text.Split('\n');
+                    var outLines = new List<string>(srcLines.Length);
+                    bool modified = false;
+                    for (int i = 0; i < srcLines.Length; i++)
+                    {
+                        string l = srcLines[i].TrimEnd('\r');
+                        int idx = l.IndexOf(legacyDnsComment, StringComparison.OrdinalIgnoreCase);
+                        if (idx >= 0 && l.TrimStart().StartsWith("#"))
+                        {
+                            string unwrapped = l.TrimStart().Substring(1).TrimStart();
+                            int commentPos = unwrapped.IndexOf(legacyDnsComment, StringComparison.OrdinalIgnoreCase);
+                            if (commentPos >= 0) unwrapped = unwrapped.Substring(0, commentPos).TrimEnd();
+                            if (DnsLine.IsMatch(unwrapped))
+                            {
+                                outLines.Add(unwrapped);
+                                modified = true;
+                                continue;
+                            }
+                        }
+                        outLines.Add(l);
+                    }
+                    if (!modified) continue;
+                    byte[] body = enc.GetBytes(string.Join(nl, outLines.ToArray()));
+                    tmp = f + "." + Guid.NewGuid().ToString("N").Substring(0, 6) + ".tmp";
+                    using (var fs = File.Create(tmp))
+                    {
+                        if (bom) fs.Write(new byte[] { 0xEF, 0xBB, 0xBF }, 0, 3);
+                        fs.Write(body, 0, body.Length);
+                    }
+                    try { File.Replace(tmp, f, null); }
+                    catch (IOException) { File.Copy(tmp, f, true); File.Delete(tmp); }
+                    tmp = null;
+                    ConfigInfo.Invalidate(Path.GetFileNameWithoutExtension(f));
+                    count++;
+                }
+                catch { }
+                finally
+                {
+                    if (!string.IsNullOrEmpty(tmp) && File.Exists(tmp)) { try { File.Delete(tmp); } catch { } }
+                }
+            }
+            if (count > 0) Paths.ConfigsChanged();
+            return count;
         }
 
         // Returns an error message, or null when the name can be used
@@ -4080,6 +4248,33 @@ namespace VpnPanel
             return false;
         }
 
+        public static bool IsPhysicalAdapter(NetworkInterface ni)
+        {
+            return ni != null && ni.OperationalStatus == OperationalStatus.Up && !IsVirtualOrTunnelAdapter(ni);
+        }
+
+        public static bool HasExternalActiveVpnAdapter()
+        {
+            try
+            {
+                foreach (NetworkInterface ni in NetworkInterface.GetAllNetworkInterfaces())
+                {
+                    if (ni.OperationalStatus != OperationalStatus.Up) continue;
+                    if (ni.NetworkInterfaceType == NetworkInterfaceType.Loopback) continue;
+                    if (ni.Name != null && ni.Name.Equals(Tunnel.WintunTunnelName, StringComparison.OrdinalIgnoreCase)) continue;
+                    string combined = ((ni.Description ?? "") + " " + (ni.Name ?? "")).ToLowerInvariant();
+                    if (combined.Contains("wiresock") || combined.Contains("wg_tunnel")) continue;
+                    if (combined.Contains("tailscale") || combined.Contains("wireguard") || combined.Contains("wintun") ||
+                        combined.Contains("openvpn") || combined.Contains("tap-windows") || combined.Contains("proton") ||
+                        combined.Contains("cloudflare") || combined.Contains("mullvad") || combined.Contains("exitlag") ||
+                        combined.Contains("zerotier") || combined.Contains("radmin") || combined.Contains("hamachi"))
+                        return true;
+                }
+            }
+            catch { }
+            return false;
+        }
+
         public class MtuResult
         {
             public int MaxPayload;
@@ -5044,6 +5239,12 @@ namespace VpnPanel
                             NetMon.Record("Autocura", NetMon.EventKind.Info, "Cache DNS renovado e rotas IPv6 fantasmas limpas.");
                         }
                     }
+                    List<string> restoredDns;
+                    if (RestoreStuckPhysicalDns(out restoredDns))
+                    {
+                        report.Applied.Add("DNS preso em IP de VPN restaurado para DHCP em: " + string.Join(", ", restoredDns.ToArray()));
+                        NetMon.Record("Autocura", NetMon.EventKind.Warn, "DNS de VPN preso na placa física restaurado: " + string.Join(", ", restoredDns.ToArray()));
+                    }
                 }
                 else
                 {
@@ -5187,6 +5388,12 @@ namespace VpnPanel
                             NetMon.Record("Autocura", NetMon.EventKind.Warn, "Rotas IPv6 fantasmas e cache DNS limpos em segundo plano.");
                         }
                     }
+                    List<string> restoredDns;
+                    if (RestoreStuckPhysicalDns(out restoredDns))
+                    {
+                        report.Applied.Add("DNS preso de VPN restaurado para automático em: " + string.Join(", ", restoredDns.ToArray()));
+                        NetMon.Record("Autocura", NetMon.EventKind.Warn, "DNS preso em placa física restaurado em segundo plano: " + string.Join(", ", restoredDns.ToArray()));
+                    }
                 }
 
                 if (repeatedMtuError && allowMtuStep && optimizeMtu &&
@@ -5259,6 +5466,12 @@ namespace VpnPanel
                     report.Applied.Add("Cache DNS renovado e rotas IPv6 fantasmas limpas");
                     NetMon.Record("Autocura", NetMon.EventKind.Info, "Cache DNS renovado após encerramento do túnel.");
                 }
+                List<string> restoredDns;
+                if (RestoreStuckPhysicalDns(out restoredDns))
+                {
+                    report.Applied.Add("DNS preso de VPN restaurado para DHCP em: " + string.Join(", ", restoredDns.ToArray()));
+                    NetMon.Record("Autocura", NetMon.EventKind.Warn, "DNS preso na placa física restaurado após queda: " + string.Join(", ", restoredDns.ToArray()));
+                }
                 lastBgNetHealUtc = DateTime.UtcNow;
             }
 
@@ -5299,6 +5512,435 @@ namespace VpnPanel
 
             report.FixedCount = report.Applied.Count;
             return report;
+        }
+
+        static bool IsSameIpv4Subnet(IPAddress a, IPAddress b, IPAddress mask)
+        {
+            if (a == null || b == null || mask == null) return false;
+            if (a.AddressFamily != AddressFamily.InterNetwork || b.AddressFamily != AddressFamily.InterNetwork || mask.AddressFamily != AddressFamily.InterNetwork)
+                return false;
+            byte[] ba = a.GetAddressBytes(), bb = b.GetAddressBytes(), bm = mask.GetAddressBytes();
+            for (int i = 0; i < 4; i++)
+                if ((ba[i] & bm[i]) != (bb[i] & bm[i])) return false;
+            return true;
+        }
+
+        sealed class TaintedDnsNic
+        {
+            public string Name;
+            public readonly List<string> V4Ips = new List<string>();
+            public readonly List<string> V6Ips = new List<string>();
+        }
+
+        static HashSet<string> ReadStaticDnsFromRegistry(string adapterId, bool ipv6)
+        {
+            var res = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            if (string.IsNullOrEmpty(adapterId)) return res;
+            try
+            {
+                string sub = (ipv6 ? @"SYSTEM\CurrentControlSet\Services\Tcpip6\Parameters\Interfaces\"
+                                   : @"SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces\") + adapterId;
+                using (var k = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(sub))
+                {
+                    string raw = k != null ? k.GetValue("NameServer") as string : null;
+                    if (!string.IsNullOrWhiteSpace(raw))
+                    {
+                        foreach (string part in raw.Split(new[] { ',', ' ', ';' }, StringSplitOptions.RemoveEmptyEntries))
+                        {
+                            IPAddress ip;
+                            if (IPAddress.TryParse(part.Trim(), out ip)) res.Add(ip.ToString());
+                        }
+                    }
+                }
+            }
+            catch { }
+            return res;
+        }
+
+        // Detects active physical adapters left with a statically configured private/ULA DNS IP
+        // from a WireGuard config (ignoring DHCP-provided DNS, gateway IPs, and same-subnet LAN IPs).
+        public static List<string> FindStuckVpnDnsAdapters(HashSet<string> vpnPrivateDns, NetworkInterface[] nics)
+        {
+            var names = new List<string>();
+            List<TaintedDnsNic> details = ScanStuckVpnDnsAdapters(vpnPrivateDns, nics);
+            for (int i = 0; i < details.Count; i++) names.Add(details[i].Name);
+            return names;
+        }
+
+        static List<TaintedDnsNic> ScanStuckVpnDnsAdapters(HashSet<string> vpnPrivateDns, NetworkInterface[] nics)
+        {
+            var tainted = new List<TaintedDnsNic>();
+            if (vpnPrivateDns == null || vpnPrivateDns.Count == 0 || nics == null) return tainted;
+            foreach (NetworkInterface ni in nics)
+            {
+                try
+                {
+                    if (!NetDiag.IsPhysicalAdapter(ni) || string.IsNullOrEmpty(ni.Name)) continue;
+                    HashSet<string> staticV4 = ReadStaticDnsFromRegistry(ni.Id, false);
+                    HashSet<string> staticV6 = ReadStaticDnsFromRegistry(ni.Id, true);
+                    if (staticV4.Count == 0 && staticV6.Count == 0) continue; // DHCP-managed DNS: never touch
+
+                    IPInterfaceProperties props = ni.GetIPProperties();
+                    if (props == null) continue;
+                    var gws = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    foreach (GatewayIPAddressInformation gw in props.GatewayAddresses)
+                        if (gw != null && gw.Address != null) gws.Add(gw.Address.ToString());
+
+                    var entry = new TaintedDnsNic { Name = ni.Name };
+                    foreach (IPAddress dns in props.DnsAddresses)
+                    {
+                        if (dns == null) continue;
+                        string ds = dns.ToString();
+                        if (!vpnPrivateDns.Contains(ds) || gws.Contains(ds)) continue;
+                        if (dns.AddressFamily == AddressFamily.InterNetwork)
+                        {
+                            if (!staticV4.Contains(ds)) continue; // came from DHCP, not static
+                            bool inLocalSubnet = false;
+                            foreach (UnicastIPAddressInformation ua in props.UnicastAddresses)
+                            {
+                                if (ua.Address != null && ua.IPv4Mask != null &&
+                                    IsSameIpv4Subnet(dns, ua.Address, ua.IPv4Mask))
+                                {
+                                    inLocalSubnet = true;
+                                    break;
+                                }
+                            }
+                            if (!inLocalSubnet && !entry.V4Ips.Contains(ds)) entry.V4Ips.Add(ds);
+                        }
+                        else if (dns.AddressFamily == AddressFamily.InterNetworkV6 && staticV6.Contains(ds))
+                        {
+                            if (!entry.V6Ips.Contains(ds)) entry.V6Ips.Add(ds);
+                        }
+                    }
+                    if ((entry.V4Ips.Count > 0 || entry.V6Ips.Count > 0) &&
+                        !tainted.Any(x => x.Name.Equals(ni.Name, StringComparison.OrdinalIgnoreCase)))
+                    {
+                        tainted.Add(entry);
+                    }
+                }
+                catch { }
+            }
+            return tainted;
+        }
+
+        public static bool RestoreStuckPhysicalDns(out List<string> restoredAdapters)
+        {
+            restoredAdapters = new List<string>();
+            try
+            {
+                if (Tunnel.Connecting || Tunnel.Active(true) || Tunnel.IsWintunServiceRunning() ||
+                    Paths.WireSockServiceRunning || NetDiag.HasExternalActiveVpnAdapter())
+                    return false;
+                HashSet<string> vpnDns = ConfFile.CollectVpnPrivateDns();
+                if (vpnDns.Count == 0) return false;
+                List<TaintedDnsNic> tainted = ScanStuckVpnDnsAdapters(vpnDns, NetworkInterface.GetAllNetworkInterfaces());
+                for (int i = 0; i < tainted.Count; i++)
+                {
+                    string name = tainted[i].Name.Replace("\"", "");
+                    string o, e;
+                    bool removedAny = false;
+                    for (int j = 0; j < tainted[i].V4Ips.Count; j++)
+                    {
+                        string ip = tainted[i].V4Ips[j].Replace("\"", "");
+                        if (ProcUtil.RunBounded("netsh.exe", "interface ip delete dnsservers name=\"" + name + "\" address=" + ip + " validate=no", 4000, out o, out e) == 0)
+                            removedAny = true;
+                    }
+                    for (int j = 0; j < tainted[i].V6Ips.Count; j++)
+                    {
+                        string ip = tainted[i].V6Ips[j].Replace("\"", "");
+                        if (ProcUtil.RunBounded("netsh.exe", "interface ipv6 delete dnsservers name=\"" + name + "\" address=" + ip + " validate=no", 3000, out o, out e) == 0)
+                            removedAny = true;
+                    }
+                    if (removedAny) restoredAdapters.Add(tainted[i].Name);
+                }
+                if (restoredAdapters.Count > 0) ConfFile.FlushDnsCache();
+            }
+            catch { }
+            return restoredAdapters.Count > 0;
+        }
+
+        public static void RestoreDefaultInternet(
+            out bool hasUplink,
+            out NetDiag.ProbeResult udpProbe,
+            out NetDiag.ProbeResult tcpProbe,
+            out List<string> actions)
+        {
+            RestoreDefaultInternet(false, out hasUplink, out udpProbe, out tcpProbe, out actions);
+        }
+
+        // Unconditional emergency/guarantee restore: stops VPN Panel tunnel, removes all WFP locks/runtime copies,
+        // clears ghost IPv6/DNS, restores stuck physical DNS, and verifies direct internet reachability.
+        public static void RestoreDefaultInternet(
+            bool stopExternalWireSockService,
+            out bool hasUplink,
+            out NetDiag.ProbeResult udpProbe,
+            out NetDiag.ProbeResult tcpProbe,
+            out List<string> actions)
+        {
+            actions = new List<string>();
+            try
+            {
+                if (Tunnel.Active(true) || Tunnel.IsWintunServiceRunning())
+                {
+                    Tunnel.Stop(true);
+                    actions.Add("Túnel VPN desconectado");
+                }
+            }
+            catch { }
+            try
+            {
+                if (stopExternalWireSockService && Paths.WireSockServiceRunning)
+                {
+                    Paths.StopWireSockService();
+                    actions.Add("Serviço WireSock nativo encerrado");
+                }
+            }
+            catch { }
+
+            int orphansKilled;
+            bool lockReset, ghostOrDnsCleaned;
+            if (Tunnel.TryIdleCleanup(true, true, true, true, true, () => false,
+                out orphansKilled, out lockReset, out ghostOrDnsCleaned))
+            {
+                if (orphansKilled > 0) actions.Add("Processos órfãos encerrados (" + orphansKilled + ")");
+                if (lockReset) actions.Add("Bloqueio de rede WFP / Kill Switch resetado");
+                if (ghostOrDnsCleaned) actions.Add("Rotas IPv6 fantasmas e cache DNS limpos");
+            }
+            else
+            {
+                Tunnel.ResetNetworkLock();
+                ConfFile.CleanGhostNetwork(true);
+                actions.Add("Bloqueio WFP e cache DNS resetados diretamente");
+            }
+
+            List<string> restoredDns;
+            if (RestoreStuckPhysicalDns(out restoredDns))
+                actions.Add("DNS restaurado para automático em: " + string.Join(", ", restoredDns.ToArray()));
+
+            ConfFile.FlushDnsCache();
+            hasUplink = NetDiag.HasPhysicalUplink();
+            udpProbe = hasUplink ? NetDiag.ProbeUdpDns("1.1.1.1", 53, 1500, CancellationToken.None) : null;
+            tcpProbe = hasUplink ? NetDiag.ProbeTcp("1.1.1.1", 443, 1500, CancellationToken.None) : null;
+        }
+    }
+
+    // Safely purges obsolete pre-v3.2 scripts, duplicate portable binaries, stale temp/tasks/Run keys,
+    // accidentally persisted split-tunnel DNS comments (with ZIP backup), and orphan network residue without harming user data.
+    static class LegacyCleanup
+    {
+        public class LegacyCleanReport
+        {
+            public int CleanedCount;
+            public string BackupZipPath;
+            public readonly List<string> Items = new List<string>();
+        }
+
+        static readonly string[] LegacyCvnFiles = new[]
+        {
+            "vpn-panel.ps1", "ligar-vpn.bat", "vpn-panel.json", "VpnPanel.exe", "VpnPanelProbe.exe"
+        };
+
+        public static LegacyCleanReport Run(bool sanitizeUserConfs, bool includeNetworkCleanup)
+        {
+            return Run(sanitizeUserConfs, includeNetworkCleanup, false);
+        }
+
+        public static LegacyCleanReport Run(bool sanitizeUserConfs, bool includeNetworkCleanup, bool assumeInstalled)
+        {
+            var r = new LegacyCleanReport();
+            bool isInstalledContext = assumeInstalled || Paths.IsInstalled;
+
+            // 1. Legacy runtime/LocalAppData probe copies & stale temp/update staging files
+            try
+            {
+                string rtProbe = Path.Combine(Paths.Runtime, ConfFile.ProbeProcessName + ".exe");
+                if (File.Exists(rtProbe))
+                {
+                    File.Delete(rtProbe);
+                    r.Items.Add("Removida sonda legada em runtime\\");
+                }
+            }
+            catch { }
+            try
+            {
+                if (isInstalledContext)
+                {
+                    string localProbe = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                        "VPN Panel", ConfFile.ProbeProcessName + ".exe");
+                    if (File.Exists(localProbe))
+                    {
+                        File.Delete(localProbe);
+                        r.Items.Add("Removida sonda legada em LocalAppData");
+                    }
+                }
+            }
+            catch { }
+            foreach (string sub in new[] { "temp", "update" })
+            {
+                try
+                {
+                    string dir = Path.Combine(Paths.Data, sub);
+                    if (!Directory.Exists(dir)) continue;
+                    DateTime cutoff = DateTime.UtcNow.AddMinutes(-5);
+                    foreach (string f in Directory.GetFiles(dir))
+                    {
+                        try
+                        {
+                            if (File.GetLastWriteTimeUtc(f) < cutoff)
+                            {
+                                File.Delete(f);
+                                r.Items.Add("Temporário antigo removido: " + Path.GetFileName(f));
+                            }
+                        }
+                        catch { }
+                    }
+                }
+                catch { }
+            }
+
+            // 2. Legacy C:\VPN & LocalAppData\Programs\VPN Panel remnants only after migration to Program Files
+            if (isInstalledContext && File.Exists(Paths.Settings))
+            {
+                try
+                {
+                    string legacyCvn = @"C:\VPN";
+                    if (Directory.Exists(legacyCvn))
+                    {
+                        int removedHere = 0;
+                        foreach (string fname in LegacyCvnFiles)
+                        {
+                            string fp = Path.Combine(legacyCvn, fname);
+                            if (File.Exists(fp))
+                            {
+                                try { File.Delete(fp); removedHere++; } catch { }
+                            }
+                        }
+                        if (Directory.GetFileSystemEntries(legacyCvn).Length == 0)
+                            try { Directory.Delete(legacyCvn); removedHere++; } catch { }
+                        if (removedHere > 0) r.Items.Add("Removidos vestígios antigos em C:\\VPN (" + removedHere + ")");
+                    }
+                }
+                catch { }
+
+                try
+                {
+                    string oldLocalProg = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                        "Programs", "VPN Panel");
+                    if (Directory.Exists(oldLocalProg) && !oldLocalProg.Equals(Paths.ExeDir, StringComparison.OrdinalIgnoreCase))
+                    {
+                        int removedHere = 0;
+                        foreach (string fname in new[] { "VpnPanel.exe", "VpnPanelProbe.exe" })
+                        {
+                            string fp = Path.Combine(oldLocalProg, fname);
+                            if (File.Exists(fp)) { try { File.Delete(fp); removedHere++; } catch { } }
+                        }
+                        if (Directory.GetFileSystemEntries(oldLocalProg).Length == 0)
+                            try { Directory.Delete(oldLocalProg); removedHere++; } catch { }
+                        if (removedHere > 0) r.Items.Add("Removida instalação antiga em LocalAppData\\Programs");
+                    }
+                }
+                catch { }
+            }
+
+            // 3. Legacy Windows Run registry keys (modern versions use Task Scheduler)
+            foreach (var hive in new[] { Microsoft.Win32.RegistryHive.CurrentUser, Microsoft.Win32.RegistryHive.LocalMachine })
+            {
+                try
+                {
+                    using (var baseKey = Microsoft.Win32.RegistryKey.OpenBaseKey(hive, Microsoft.Win32.RegistryView.Default))
+                    using (var runKey = baseKey.OpenSubKey(@"SOFTWARE\Microsoft\Windows\CurrentVersion\Run", true))
+                    {
+                        if (runKey == null) continue;
+                        foreach (string valName in runKey.GetValueNames())
+                        {
+                            string val = Convert.ToString(runKey.GetValue(valName)) ?? "";
+                            bool matchName = valName.Equals("VPN Panel", StringComparison.OrdinalIgnoreCase) ||
+                                             valName.Equals("VPNPanel", StringComparison.OrdinalIgnoreCase) ||
+                                             valName.Equals("vpn-panel", StringComparison.OrdinalIgnoreCase);
+                            bool matchOurTarget = val.IndexOf("vpn-panel.ps1", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                                                  val.IndexOf("VpnPanel.exe", StringComparison.OrdinalIgnoreCase) >= 0;
+                            if ((matchName && (matchOurTarget || val.IndexOf(@"C:\VPN\", StringComparison.OrdinalIgnoreCase) >= 0)) ||
+                                val.IndexOf("vpn-panel.ps1", StringComparison.OrdinalIgnoreCase) >= 0)
+                            {
+                                try
+                                {
+                                    runKey.DeleteValue(valName, false);
+                                    r.Items.Add("Entrada de inicialização legada removida (" + hive + "): " + valName);
+                                }
+                                catch { }
+                            }
+                        }
+                    }
+                }
+                catch { }
+            }
+
+            // 4. Obsolete scheduled tasks (older scripts only; never delete Tasks.Logon / Tasks.Open so startup setting is preserved)
+            try
+            {
+                dynamic service = Activator.CreateInstance(Type.GetTypeFromProgID("Schedule.Service"));
+                service.Connect();
+                dynamic folder = service.GetFolder("\\");
+                var toDelete = new List<string>();
+                foreach (dynamic t in folder.GetTasks(1))
+                {
+                    try
+                    {
+                        string tname = (string)t.Name;
+                        if (string.IsNullOrEmpty(tname)) continue;
+                        if (tname.Equals(Tasks.Logon, StringComparison.OrdinalIgnoreCase) ||
+                            tname.Equals(Tasks.Open, StringComparison.OrdinalIgnoreCase))
+                            continue;
+                        bool isVpnTask = tname.StartsWith("VPN Panel", StringComparison.OrdinalIgnoreCase) ||
+                                         tname.StartsWith("VPNPanel", StringComparison.OrdinalIgnoreCase) ||
+                                         tname.StartsWith("vpn-panel", StringComparison.OrdinalIgnoreCase);
+                        if (isVpnTask) toDelete.Add(tname);
+                    }
+                    catch { }
+                }
+                foreach (string name in toDelete)
+                {
+                    try
+                    {
+                        folder.DeleteTask(name, 0);
+                        r.Items.Add("Tarefa agendada obsoleta removida: " + name);
+                    }
+                    catch { }
+                }
+            }
+            catch { }
+
+            // 5. Sanitize accidentally persisted split-tunnel DNS comments in user configs (with automatic ZIP backup)
+            if (sanitizeUserConfs)
+            {
+                string backupZip;
+                int sanitized = ConfFile.SanitizeLegacyConfs(out backupZip);
+                r.BackupZipPath = backupZip;
+                if (sanitized > 0)
+                    r.Items.Add("Comentários antigos de DNS restaurados em " + sanitized + " servidor(es)");
+            }
+
+            // 6. Our own network leftovers when no tunnel is currently active (never stops external WireSock service unasked)
+            if (includeNetworkCleanup && !Tunnel.Active(true) && !Tunnel.IsWintunServiceRunning())
+            {
+                int orphans;
+                bool lockReset, ghostCleaned;
+                if (Tunnel.TryIdleCleanup(true, true, false, true, true, () => false,
+                    out orphans, out lockReset, out ghostCleaned))
+                {
+                    if (orphans > 0) r.Items.Add("Processos órfãos encerrados (" + orphans + ")");
+                    if (lockReset) r.Items.Add("Kill Switch residual (WFP) liberado");
+                    if (ghostCleaned) r.Items.Add("Rotas IPv6 fantasmas e cache DNS limpos");
+                }
+                List<string> restoredDns;
+                if (AutoHealer.RestoreStuckPhysicalDns(out restoredDns))
+                    r.Items.Add("DNS preso em placa física restaurado: " + string.Join(", ", restoredDns.ToArray()));
+            }
+
+            r.CleanedCount = r.Items.Count;
+            if (r.CleanedCount > 0)
+                NetMon.Record("Limpeza", NetMon.EventKind.Info, "Limpeza de legado concluída (" + r.CleanedCount + " item(ns))");
+            return r;
         }
     }
 

@@ -182,6 +182,9 @@ namespace VpnPanel
             }
             catch { }
 
+            // Silently purge obsolete pre-v3.2 scripts, old binaries, stale tasks, and Run entries on upgrade
+            try { LegacyCleanup.Run(false, false, true); } catch { }
+
             // Invalidate Windows Shell icon cache so taskbar and start menu refresh immediately
             try { SHChangeNotify(0x08000000 /* SHCNE_ASSOCCHANGED */, 0 /* SHCNF_IDLIST */, IntPtr.Zero, IntPtr.Zero); } catch { }
 

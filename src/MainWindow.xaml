@@ -586,11 +586,18 @@
                   <TextBlock Text="Abrir pasta de dados" VerticalAlignment="Center"/>
                 </DockPanel>
               </Button>
-              <Button x:Name="BtnResetLock" AutomationProperties.Name="Liberar internet (reset do bloqueio)" Style="{StaticResource GhostButton}" Background="Transparent" HorizontalContentAlignment="Stretch" Padding="10,9" ToolTip="Desativa o bloqueio de rede do WireSock e restaura o acesso à internet">
+              <Button x:Name="BtnResetLock" AutomationProperties.Name="Restaurar internet padrão" Style="{StaticResource GhostButton}" Background="Transparent" HorizontalContentAlignment="Stretch" Padding="10,9" ToolTip="Desativa bloqueios WFP, limpa IPv6 fantasma, restaura DNS preso de VPN, limpa cache DNS e testa a internet base">
                 <DockPanel>
                   <TextBlock DockPanel.Dock="Right" Text="&#xE76C;" FontFamily="{StaticResource Icons}" FontSize="11" Foreground="{StaticResource Muted}" VerticalAlignment="Center"/>
                   <TextBlock Text="&#xE72C;" FontFamily="{StaticResource Icons}" FontSize="14" Foreground="{StaticResource Muted}" VerticalAlignment="Center" Margin="0,0,12,0"/>
-                  <TextBlock Text="Liberar internet (reset do bloqueio)" VerticalAlignment="Center"/>
+                  <TextBlock Text="Restaurar internet padrão (liberar bloqueio)" VerticalAlignment="Center"/>
+                </DockPanel>
+              </Button>
+              <Button x:Name="BtnCleanLegacy" AutomationProperties.Name="Limpar versões antigas e resíduos" Style="{StaticResource GhostButton}" Background="Transparent" HorizontalContentAlignment="Stretch" Padding="10,9" ToolTip="Remove scripts antigos, tarefas/registros obsoletos e limpa marcações antigas dos servidores após backup">
+                <DockPanel>
+                  <TextBlock DockPanel.Dock="Right" Text="&#xE76C;" FontFamily="{StaticResource Icons}" FontSize="11" Foreground="{StaticResource Muted}" VerticalAlignment="Center"/>
+                  <TextBlock Text="&#xE74D;" FontFamily="{StaticResource Icons}" FontSize="14" Foreground="{StaticResource Muted}" VerticalAlignment="Center" Margin="0,0,12,0"/>
+                  <TextBlock Text="Limpar versões antigas e resíduos" VerticalAlignment="Center"/>
                 </DockPanel>
               </Button>
               <Button x:Name="BtnQuit" AutomationProperties.Name="Sair do VPN Panel" Style="{StaticResource GhostButton}" Background="Transparent" HorizontalContentAlignment="Stretch" Padding="10,9">
