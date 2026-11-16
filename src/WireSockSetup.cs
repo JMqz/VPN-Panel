@@ -12,65 +12,15 @@ using System.Security.Cryptography.X509Certificates;
 
 namespace VpnPanel
 {
-    static class WireSockSetup
+    static class SetupUtil
     {
-        const string WingetId = "NTKERNEL.WireSockVPNClientCLI";
-        const string DownloadUrl = "https://wiresock.net/_api/download-release.php?product=wiresock-secure-connect-sdk&platform={0}&version=latest";
-        // Who signs the WireSock installers (the company behind NT Kernel)
-        static readonly string[] Publishers = { "The Anti-Cloud Corporation", "NT Kernel" };
-
-        // Returns null when WireSock ends up installed, otherwise a message for the user.
-        // status gets short progress lines; it is called from this (background) thread.
-        public static string Install(Action<string> status)
-        {
-            string wingetError = null;
-            try
-            {
-                status("Instalando o WireSock...");
-                int code = Run(Winget(), "install --id " + WingetId + " --exact --source winget --silent" +
-                                         " --accept-package-agreements --accept-source-agreements --disable-interactivity", 10);
-                if (Installed()) return null;
-                wingetError = "winget terminou com o código 0x" + code.ToString("X8") + ".";
-            }
-            catch (Exception ex) { wingetError = ex.Message; }
-
-            try
-            {
-                status("Baixando o WireSock...");
-                string dir = Path.Combine(Paths.Data, "temp");
-                Directory.CreateDirectory(dir);
-                string file = Path.Combine(dir, "wiresock-setup-" + Guid.NewGuid().ToString("N").Substring(0, 8) + ".exe");
-                using (var web = new WebClient())
-                    web.DownloadFile(string.Format(DownloadUrl, Platform()), file);
-                try
-                {
-                    var fi = new FileInfo(file);
-                    if (!fi.Exists || fi.Length < 100 * 1024) return "O arquivo do WireSock baixado é inválido ou está incompleto.";
-                    if (!SignedByWireSock(file)) return "O arquivo baixado não tem a assinatura do WireSock, então não foi instalado.";
-                    status("Instalando o WireSock...");
-                    Run(file, "/S /NCRC", 5);
-                }
-                finally { try { File.Delete(file); } catch { } }
-                if (Installed()) return null;
-                return "A instalação do WireSock não terminou. " + wingetError;
-            }
-            catch (Exception ex) { return "Não deu para baixar o WireSock: " + ex.Message; }
-        }
-
-        static bool Installed()
-        {
-            Paths.ForgetWireSock();
-            return Paths.WireSock != null;
-        }
-
-        // The winget alias is per user; it's on PATH, and in WindowsApps when PATH was trimmed
-        static string Winget()
+        public static string Winget()
         {
             string alias = Environment.ExpandEnvironmentVariables(@"%LOCALAPPDATA%\Microsoft\WindowsApps\winget.exe");
             return File.Exists(alias) ? alias : "winget.exe";
         }
 
-        static string Platform()
+        public static string Platform()
         {
             string arch = Environment.GetEnvironmentVariable("PROCESSOR_ARCHITEW6432") ??
                           Environment.GetEnvironmentVariable("PROCESSOR_ARCHITECTURE") ?? "";
@@ -78,7 +28,7 @@ namespace VpnPanel
             return Environment.Is64BitOperatingSystem ? "x64" : "x86";
         }
 
-        static int Run(string exe, string args, int minutes)
+        public static int Run(string exe, string args, int minutes)
         {
             var psi = new ProcessStartInfo(exe, args) { UseShellExecute = false, CreateNoWindow = true };
             using (Process p = Process.Start(psi))
@@ -92,13 +42,13 @@ namespace VpnPanel
             }
         }
 
-        static bool SignedByWireSock(string file)
+        public static bool SignedBy(string file, string[] publishers)
         {
             if (!TrustedSignature(file)) return false;
             try
             {
                 string subject = X509Certificate.CreateFromSignedFile(file).Subject;
-                foreach (string name in Publishers)
+                foreach (string name in publishers)
                     if (subject.IndexOf("O=" + name, StringComparison.OrdinalIgnoreCase) >= 0) return true;
             }
             catch { }
@@ -153,5 +103,142 @@ namespace VpnPanel
 
         [DllImport("wintrust.dll", CharSet = CharSet.Unicode)]
         static extern int WinVerifyTrust(IntPtr hwnd, [MarshalAs(UnmanagedType.LPStruct)] Guid action, ref WinTrustData data);
+    }
+
+    static class WireSockSetup
+    {
+        const string WingetId = "NTKERNEL.WireSockVPNClientCLI";
+        const string DownloadUrl = "https://wiresock.net/_api/download-release.php?product=wiresock-secure-connect-sdk&platform={0}&version=latest";
+        // Who signs the WireSock installers (the company behind NT Kernel)
+        static readonly string[] Publishers = { "The Anti-Cloud Corporation", "NT Kernel" };
+
+        // Returns null when WireSock ends up installed, otherwise a message for the user.
+        // status gets short progress lines; it is called from this (background) thread.
+        public static string Install(Action<string> status)
+        {
+            string wingetError = null;
+            try
+            {
+                status("Instalando o WireSock...");
+                int code = SetupUtil.Run(SetupUtil.Winget(), "install --id " + WingetId + " --exact --source winget --silent" +
+                                          " --accept-package-agreements --accept-source-agreements --disable-interactivity", 10);
+                if (Installed()) return null;
+                wingetError = "winget terminou com o código 0x" + code.ToString("X8") + ".";
+            }
+            catch (Exception ex) { wingetError = ex.Message; }
+
+            try
+            {
+                status("Baixando o WireSock...");
+                string dir = Path.Combine(Paths.Data, "temp");
+                Directory.CreateDirectory(dir);
+                string file = Path.Combine(dir, "wiresock-setup-" + Guid.NewGuid().ToString("N").Substring(0, 8) + ".exe");
+                using (var web = new WebClient())
+                    web.DownloadFile(string.Format(DownloadUrl, SetupUtil.Platform()), file);
+                try
+                {
+                    var fi = new FileInfo(file);
+                    if (!fi.Exists || fi.Length < 100 * 1024) return "O arquivo do WireSock baixado é inválido ou está incompleto.";
+                    using (var lockStream = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.Read))
+                    {
+                        if (!SetupUtil.SignedBy(file, Publishers)) return "O arquivo baixado não tem a assinatura do WireSock, então não foi instalado.";
+                        status("Instalando o WireSock...");
+                        SetupUtil.Run(file, "/S /NCRC", 5);
+                    }
+                }
+                finally { try { File.Delete(file); } catch { } }
+                if (Installed()) return null;
+                return "A instalação do WireSock não terminou. " + wingetError;
+            }
+            catch (Exception ex) { return "Não deu para baixar o WireSock: " + ex.Message; }
+        }
+
+        static bool Installed()
+        {
+            Paths.ForgetWireSock();
+            return Paths.WireSock != null;
+        }
+    }
+
+    static class WireGuardSetup
+    {
+        const string WingetId = "WireGuard.WireGuard";
+        const string IndexUrl = "https://download.wireguard.com/windows-client/";
+        const string FallbackMsiUrl = "https://download.wireguard.com/windows-client/wireguard-{0}-1.1.1.msi";
+        static readonly string[] Publishers = { "WireGuard LLC", "Jason A. Donenfeld" };
+
+        static string ResolveMsiUrl(WebClient web, string archTag)
+        {
+            try
+            {
+                string html = web.DownloadString(IndexUrl);
+                string bestName = null;
+                Version bestVer = null;
+                var m = System.Text.RegularExpressions.Regex.Matches(html,
+                    "wireguard-" + System.Text.RegularExpressions.Regex.Escape(archTag) + @"-(\d+(?:\.\d+)+)\.msi",
+                    System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                foreach (System.Text.RegularExpressions.Match item in m)
+                {
+                    Version v;
+                    if (Version.TryParse(item.Groups[1].Value, out v) && (bestVer == null || v > bestVer))
+                    {
+                        bestVer = v;
+                        bestName = item.Value;
+                    }
+                }
+                if (bestName != null) return IndexUrl + bestName;
+            }
+            catch { }
+            return string.Format(FallbackMsiUrl, archTag);
+        }
+
+        public static string Install(Action<string> status)
+        {
+            string wingetError = null;
+            try
+            {
+                status("Instalando WireGuard (Wintun)...");
+                int code = SetupUtil.Run(SetupUtil.Winget(), "install --id " + WingetId + " --exact --source winget --silent" +
+                                          " --accept-package-agreements --accept-source-agreements --disable-interactivity" +
+                                          " --custom \"DO_NOT_LAUNCH=1\"", 10);
+                if (Installed()) return null;
+                wingetError = "winget terminou com o código 0x" + code.ToString("X8") + ".";
+            }
+            catch (Exception ex) { wingetError = ex.Message; }
+
+            try
+            {
+                string plat = SetupUtil.Platform();
+                string archTag = plat.Equals("ARM64", StringComparison.OrdinalIgnoreCase) ? "arm64"
+                               : plat.Equals("x86", StringComparison.OrdinalIgnoreCase) ? "x86" : "amd64";
+                status("Baixando WireGuard (Wintun)...");
+                string dir = Path.Combine(Paths.Data, "temp");
+                Directory.CreateDirectory(dir);
+                string file = Path.Combine(dir, "wireguard-setup-" + Guid.NewGuid().ToString("N").Substring(0, 8) + ".msi");
+                using (var web = new WebClient())
+                    web.DownloadFile(ResolveMsiUrl(web, archTag), file);
+                try
+                {
+                    var fi = new FileInfo(file);
+                    if (!fi.Exists || fi.Length < 100 * 1024) return "O instalador do WireGuard baixado é inválido.";
+                    using (var lockStream = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.Read))
+                    {
+                        if (!SetupUtil.SignedBy(file, Publishers)) return "O instalador baixado não tem assinatura oficial do WireGuard LLC.";
+                        status("Instalando driver Wintun...");
+                        SetupUtil.Run("msiexec.exe", "/i \"" + file + "\" DO_NOT_LAUNCH=1 /qn /norestart", 5);
+                    }
+                }
+                finally { try { File.Delete(file); } catch { } }
+                if (Installed()) return null;
+                return "A instalação do WireGuard não concluiu. " + wingetError;
+            }
+            catch (Exception ex) { return "Não foi possível baixar o WireGuard: " + ex.Message; }
+        }
+
+        static bool Installed()
+        {
+            Paths.ForgetWireGuard();
+            return Paths.WireGuard != null;
+        }
     }
 }

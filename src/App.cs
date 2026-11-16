@@ -34,8 +34,8 @@ using System.Windows.Shell;
 [assembly: AssemblyTrademark("VPN Panel")]
 [assembly: ComVisible(false)]
 [assembly: Guid("b7c93e48-8120-4a87-8d2b-65c71d798a21")]
-[assembly: AssemblyVersion("3.0.6.0")]
-[assembly: AssemblyFileVersion("3.0.6.0")]
+[assembly: AssemblyVersion("3.1.0.0")]
+[assembly: AssemblyFileVersion("3.1.0.0")]
 
 namespace VpnPanel
 {
@@ -44,11 +44,61 @@ namespace VpnPanel
         // Same mutex as the old vpn-panel.ps1, so they never run together
         const string MutexName = @"Global\VpnPanelWireSock";
         public const string ShowEventName = @"Global\VpnPanelWireSockShow";
-        public const string Version = "3.0.6";
+        public const string Version = "3.1.0";
+
+        static int RunProbeCli(string[] args)
+        {
+            if (args == null || args.Length == 0) return -1;
+            if (args[0].Equals("--probe-udp", StringComparison.OrdinalIgnoreCase))
+            {
+                string host = args.Length > 1 ? args[1] : "1.1.1.1";
+                int port = 53;
+                int timeoutMs = 1500;
+                if (args.Length > 2) int.TryParse(args[2], out port);
+                if (args.Length > 3) int.TryParse(args[3], out timeoutMs);
+                NetDiag.ProbeResult res = NetDiag.ProbeUdpDns(host, port > 0 ? port : 53, Math.Max(200, timeoutMs), CancellationToken.None);
+                if (res != null && res.Ok)
+                {
+                    Console.WriteLine("OK " + res.LatencyMs);
+                    return 0;
+                }
+                Console.WriteLine("ERR " + (res != null && !string.IsNullOrEmpty(res.Detail) ? res.Detail : "Falha UDP"));
+                return 1;
+            }
+            if (args[0].Equals("--probe-udp-loop", StringComparison.OrdinalIgnoreCase))
+            {
+                string line;
+                while ((line = Console.ReadLine()) != null)
+                {
+                    string trimmed = line.Trim();
+                    if (trimmed.Length == 0) continue;
+                    if (trimmed.Equals("QUIT", StringComparison.OrdinalIgnoreCase)) break;
+                    string[] parts = trimmed.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+                    string host = parts.Length > 0 ? parts[0] : "1.1.1.1";
+                    int port = 53;
+                    int timeoutMs = 400;
+                    if (parts.Length > 1) int.TryParse(parts[1], out port);
+                    if (parts.Length > 2) int.TryParse(parts[2], out timeoutMs);
+                    NetDiag.ProbeResult res = NetDiag.ProbeUdpDns(host, port > 0 ? port : 53, Math.Max(200, timeoutMs), CancellationToken.None);
+                    if (res != null && res.Ok) Console.WriteLine("OK " + res.LatencyMs);
+                    else Console.WriteLine("ERR " + (res != null && !string.IsNullOrEmpty(res.Detail) ? res.Detail : "Falha UDP"));
+                    Console.Out.Flush();
+                }
+                return 0;
+            }
+            return -1;
+        }
 
         [STAThread]
         static void Main(string[] args)
         {
+            int cliExit = RunProbeCli(args);
+            if (cliExit >= 0)
+            {
+                Environment.ExitCode = cliExit;
+                return;
+            }
+
             AppDomain.CurrentDomain.UnhandledException += (s, e) =>
             {
                 LogCrash("AppDomain", e.ExceptionObject as Exception);
@@ -152,6 +202,9 @@ namespace VpnPanel
         public static readonly string Data = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "VPN Panel");
         public static readonly string Configs = Path.Combine(Data, "configs");
         public static readonly string Runtime = Path.Combine(Data, "runtime");
+        public static readonly string WintunRuntimeDir = Path.Combine(Runtime, "wintun");
+        public static readonly string WintunRuntimeConf = Path.Combine(WintunRuntimeDir, "VpnPanel.conf");
+        public static readonly string WintunActiveFlag = Path.Combine(Data, "wintun.active");
         public static readonly string Settings = Path.Combine(Data, "settings.json");
         public static readonly string Log = Path.Combine(Data, "wiresock.log");
         public static readonly string GeoCache = Path.Combine(Data, "locations.json");
@@ -323,6 +376,57 @@ namespace VpnPanel
             }
         }
 
+        static readonly string[] WireGuardCandidates = new[]
+        {
+            @"%ProgramFiles%\WireGuard\wireguard.exe",
+            @"%ProgramFiles(x86)%\WireGuard\wireguard.exe",
+        }.Select(Environment.ExpandEnvironmentVariables).ToArray();
+
+        static string wireGuardFound;
+        static DateTime wireGuardSearched;
+        static DateTime wireGuardVerified;
+
+        public static void ForgetWireGuard()
+        {
+            wireGuardFound = null;
+            wireGuardSearched = DateTime.MinValue;
+            wireGuardVerified = DateTime.MinValue;
+        }
+
+        public static string WireGuard
+        {
+            get
+            {
+                DateTime now = DateTime.UtcNow;
+                if (wireGuardFound != null)
+                {
+                    if ((now - wireGuardVerified).TotalSeconds < 30) return wireGuardFound;
+                    if (File.Exists(wireGuardFound)) { wireGuardVerified = now; return wireGuardFound; }
+                    wireGuardFound = null;
+                }
+                if ((now - wireGuardSearched).TotalSeconds < 30) return null;
+                wireGuardSearched = now;
+                wireGuardFound = WireGuardCandidates.FirstOrDefault(File.Exists);
+                if (wireGuardFound != null) wireGuardVerified = now;
+                return wireGuardFound;
+            }
+        }
+
+        public static string WgCli
+        {
+            get
+            {
+                string wg = WireGuard;
+                if (wg == null) return null;
+                try
+                {
+                    string cli = Path.Combine(Path.GetDirectoryName(wg), "wg.exe");
+                    return File.Exists(cli) ? cli : null;
+                }
+                catch { return null; }
+            }
+        }
+
         static bool IsConf(string f)
         {
             return Path.GetExtension(f).Equals(".conf", StringComparison.OrdinalIgnoreCase);
@@ -379,6 +483,9 @@ namespace VpnPanel
         public bool AutoConnect;
         public bool AutoReconnect = true;
         public bool AutoHeal = true;
+        public bool GameStabilityMode = true;
+        public string CustomDns = "";
+        public VpnEnginePreference EnginePreference = VpnEnginePreference.Auto;
         public int AdaptiveMtu = 0;
         public bool OptimizeMtu = true;
         public bool SkipUac = true;
@@ -393,6 +500,8 @@ namespace VpnPanel
         public double WindowLeft = double.NaN;
         public double WindowTop = double.NaN;
         public List<string> Recent = new List<string>(); // servers connected to, newest first
+        // Not serialized: preserves user's preferred server on disk during temporary auto-failover
+        public string PreferredConfigOverride;
 
         const int MaxRecent = 5;
 
@@ -424,6 +533,19 @@ namespace VpnPanel
                 if (d.TryGetValue("autoConnect", out v) && v is bool) s.AutoConnect = (bool)v;
                 if (d.TryGetValue("autoReconnect", out v) && v is bool) s.AutoReconnect = (bool)v;
                 if (d.TryGetValue("autoHeal", out v) && v is bool) s.AutoHeal = (bool)v;
+                if (d.TryGetValue("gameStabilityMode", out v) && v is bool) s.GameStabilityMode = (bool)v;
+                if (d.TryGetValue("customDns", out v) && v is string)
+                {
+                    string dns = ((string)v).Trim();
+                    IPAddress parsedDns;
+                    if (dns.Length == 0 || (IPAddress.TryParse(dns, out parsedDns) && parsedDns.AddressFamily == AddressFamily.InterNetwork))
+                        s.CustomDns = dns;
+                }
+                if (d.TryGetValue("enginePreference", out v) && v is string)
+                {
+                    VpnEnginePreference ep;
+                    if (Enum.TryParse((string)v, true, out ep)) s.EnginePreference = ep;
+                }
                 if (d.TryGetValue("adaptiveMtu", out v) && (v is int || v is decimal || v is double))
                 {
                     int am = Convert.ToInt32(v);
@@ -471,10 +593,12 @@ namespace VpnPanel
         {
             try
             {
+                string savedCfg = !string.IsNullOrEmpty(PreferredConfigOverride) ? PreferredConfigOverride : Config;
                 var d = new Dictionary<string, object>
                 {
-                    { "config", Config }, { "networkLock", NetworkLock }, { "autoConnect", AutoConnect },
-                    { "autoReconnect", AutoReconnect }, { "autoHeal", AutoHeal }, { "adaptiveMtu", AdaptiveMtu },
+                    { "config", savedCfg }, { "networkLock", NetworkLock }, { "autoConnect", AutoConnect },
+                    { "autoReconnect", AutoReconnect }, { "autoHeal", AutoHeal }, { "gameStabilityMode", GameStabilityMode },
+                    { "customDns", CustomDns ?? "" }, { "enginePreference", EnginePreference.ToString() }, { "adaptiveMtu", AdaptiveMtu },
                     { "optimizeMtu", OptimizeMtu }, { "skipUac", SkipUac },
                     { "recent", Recent }, { "sharedApps", SharedApps }, { "appsMode", AppsMode.ToString() },
                     { "apps", Apps }, { "hotkey", Hotkey }, { "checkUpdates", CheckUpdates },
@@ -493,6 +617,8 @@ namespace VpnPanel
     }
 
     enum AppMode { All, Only, Except }
+    enum VpnEnginePreference { Auto, WireSock }
+    enum TunnelEngine { None, WireSock, Wintun }
 
     // What the UI shows about one config
     class ConfigInfo
@@ -765,32 +891,255 @@ namespace VpnPanel
             return string.Join(", ", list);
         }
 
+        public const string ProbeProcessName = "VpnPanelProbe";
+        public static string ProbeBinaryPath
+        {
+            get
+            {
+                string nextToExe = Path.Combine(Paths.ExeDir, ProbeProcessName + ".exe");
+                if (File.Exists(nextToExe)) return nextToExe;
+                return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                    "VPN Panel", ProbeProcessName + ".exe");
+            }
+        }
+
+        static bool FilesIdenticalSha256(string pathA, string pathB)
+        {
+            if (!File.Exists(pathA) || !File.Exists(pathB)) return false;
+            var aInfo = new FileInfo(pathA);
+            var bInfo = new FileInfo(pathB);
+            if (aInfo.Length != bInfo.Length) return false;
+            using (var sha = System.Security.Cryptography.SHA256.Create())
+            using (var fa = File.OpenRead(pathA))
+            using (var fb = File.OpenRead(pathB))
+            {
+                byte[] ha = sha.ComputeHash(fa);
+                byte[] hb = sha.ComputeHash(fb);
+                if (ha.Length != hb.Length) return false;
+                for (int i = 0; i < ha.Length; i++) if (ha[i] != hb[i]) return false;
+                return true;
+            }
+        }
+
+        static bool SyncCopyIfNeeded(string src, string dst, bool checkHash)
+        {
+            try
+            {
+                string dir = Path.GetDirectoryName(dst);
+                if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
+                var sInfo = new FileInfo(src);
+                var dInfo = new FileInfo(dst);
+                if (dInfo.Exists && dInfo.Length == sInfo.Length && dInfo.LastWriteTimeUtc == sInfo.LastWriteTimeUtc)
+                {
+                    if (!checkHash || FilesIdenticalSha256(src, dst)) return true;
+                }
+                File.Copy(src, dst, true);
+                try { File.SetLastWriteTimeUtc(dst, sInfo.LastWriteTimeUtc); } catch { }
+                return checkHash ? FilesIdenticalSha256(src, dst) : File.Exists(dst);
+            }
+            catch { return false; }
+        }
+
+        public static string EnsureProbeBinary()
+        {
+            try
+            {
+                string src = Paths.Exe;
+                if (string.IsNullOrEmpty(src) || !File.Exists(src)) return null;
+                string besideExe = Path.Combine(Paths.ExeDir, ProbeProcessName + ".exe");
+                bool isAdmin = new WindowsPrincipal(WindowsIdentity.GetCurrent()).IsInRole(WindowsBuiltInRole.Administrator);
+                if (SyncCopyIfNeeded(src, besideExe, false)) return besideExe;
+                if (File.Exists(besideExe)) return besideExe;
+                // Only fall back to LocalAppData when running non-elevated (e.g. dev tests); elevated always uses ExeDir
+                if (!isAdmin)
+                {
+                    string localFallback = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                        "VPN Panel", ProbeProcessName + ".exe");
+                    if (SyncCopyIfNeeded(src, localFallback, true)) return localFallback;
+                }
+                return null;
+            }
+            catch { return null; }
+        }
+
+        static readonly HashSet<string> StandardWgInterfaceKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "PrivateKey", "Address", "ListenPort", "MTU", "DNS", "Table", "PreUp", "PostUp", "PreDown", "PostDown"
+        };
+
+        static readonly HashSet<string> StandardWgPeerKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "PublicKey", "PresharedKey", "Endpoint", "AllowedIPs", "PersistentKeepalive"
+        };
+
+        static readonly HashSet<string> WintunIncompatibleKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "Socks5Proxy", "Socks5ProxyUsername", "Socks5ProxyPassword", "BypassLanTraffic",
+            "Jc", "Jmin", "Jmax", "S1", "S2", "H1", "H2", "H3", "H4"
+        };
+
+        static string ExtractIniKey(string line)
+        {
+            if (string.IsNullOrWhiteSpace(line)) return null;
+            string t = line.TrimStart();
+            if (t.StartsWith("#") || t.StartsWith(";") || t.StartsWith("[")) return null;
+            int eq = t.IndexOf('=');
+            return eq > 0 ? t.Substring(0, eq).Trim() : null;
+        }
+
+        // Returns false when a config relies on WireSock/AmneziaWG extensions or explicit DisallowedIPs
+        // that standard official WireGuard (Wintun) does not support cleanly.
+        public static bool IsWintunCompatible(string name)
+        {
+            ConfigInfo info = ConfigInfo.Read(name);
+            if (info == null || !info.Readable) return false;
+            try
+            {
+                foreach (string line in File.ReadAllLines(Paths.Conf(name)))
+                {
+                    string key = ExtractIniKey(line);
+                    if (key == null) continue;
+                    if (WintunIncompatibleKeys.Contains(key) || DisallowedIpsLine.IsMatch(line))
+                        return false;
+                }
+                return true;
+            }
+            catch { return false; }
+        }
+
+        // True when the active/target Wintun config routes all IPv4 internet (0.0.0.0/0 or 0.0.0.0/1+128.0.0.0/1),
+        // making a 1.1.1.1:53 UDP probe valid as a tunnel handshake fallback.
+        public static bool WintunRoutesInternet(string configName)
+        {
+            try
+            {
+                string path = File.Exists(Paths.WintunRuntimeConf) ? Paths.WintunRuntimeConf
+                            : (!string.IsNullOrEmpty(configName) ? Paths.Conf(configName) : null);
+                if (path == null || !File.Exists(path)) return false;
+                bool hasDefault = false, hasLow = false, hasHigh = false;
+                foreach (string line in File.ReadAllLines(path))
+                {
+                    string key = ExtractIniKey(line);
+                    if (!"AllowedIPs".Equals(key, StringComparison.OrdinalIgnoreCase)) continue;
+                    int eq = line.IndexOf('=');
+                    int cmt = line.IndexOf('#');
+                    if (eq < 0) continue;
+                    string raw = (cmt > eq ? line.Substring(eq + 1, cmt - eq - 1) : line.Substring(eq + 1));
+                    foreach (string part in raw.Split(','))
+                    {
+                        string cidr = part.Trim();
+                        if (cidr.Equals("0.0.0.0/0", StringComparison.OrdinalIgnoreCase)) hasDefault = true;
+                        else if (cidr.Equals("0.0.0.0/1", StringComparison.OrdinalIgnoreCase)) hasLow = true;
+                        else if (cidr.Equals("128.0.0.0/1", StringComparison.OrdinalIgnoreCase)) hasHigh = true;
+                    }
+                }
+                return hasDefault || (hasLow && hasHigh);
+            }
+            catch { return false; }
+        }
+
+        static string RewriteWintunAllowedIpsNoLock(string line)
+        {
+            int eq = line.IndexOf('=');
+            if (eq < 0) return line;
+            int cmt = line.IndexOf('#');
+            string prefix = line.Substring(0, eq + 1) + " ";
+            string raw = cmt >= 0 ? line.Substring(eq + 1, cmt - eq - 1) : line.Substring(eq + 1);
+            string tail = cmt >= 0 ? " " + line.Substring(cmt).TrimStart() : "";
+            var outParts = new List<string>();
+            foreach (string part in raw.Split(','))
+            {
+                string item = part.Trim();
+                if (item.Length == 0) continue;
+                if (item.Equals("0.0.0.0/0", StringComparison.OrdinalIgnoreCase))
+                {
+                    outParts.Add("0.0.0.0/1");
+                    outParts.Add("128.0.0.0/1");
+                }
+                else if (item.Equals("::/0", StringComparison.OrdinalIgnoreCase))
+                {
+                    outParts.Add("::/1");
+                    outParts.Add("8000::/1");
+                }
+                else
+                {
+                    outParts.Add(item);
+                }
+            }
+            return prefix + string.Join(", ", outParts.ToArray()) + tail;
+        }
+
         // Normalizes the config into Paths.Runtime before launching WireSock:
-        // - All modes: ensures PersistentKeepalive = 25 in [Peer] when absent or 0 (prevents NAT timeout drops)
+        // - All modes: ensures PersistentKeepalive (25s or custom e.g. 15s for GameStabilityMode) in [Peer]
         //   and strips legacy inline "# vpn-panel-mtu" comments from MTU lines.
+        // - Custom DNS (when set): overrides/inserts [Interface] DNS = <customDns> cleanly in both All and Split modes.
         // - Split-tunneling modes (Only / Except):
-        //   1. Strips IPv6 addresses/routes (even IPv6-only lines) so WireSock does not bind IPv6/::0 onto the physical NIC.
-        //   2. Comments out [Interface] DNS = ... so Windows Dnscache (svchost.exe) stays on local DNS instead of stalling.
+        //   1. Strips IPv6 addresses/routes so WireSock does not bind IPv6/::0 onto the physical NIC.
+        //   2. Without CustomDns, comments out [Interface] DNS = ... so Windows Dnscache stays on local DNS.
         //   3. Ensures DisallowedIPs excludes loopback/LAN/multicast from the tunnel.
+        //   4. In Only mode, appends VpnPanelProbe to runtime AllowedApps so diagnostics can test inside the tunnel.
         public static string EffectivePath(string name, out bool ipv6Stripped)
         {
-            return EffectivePath(name, 0, out ipv6Stripped);
+            bool dummy;
+            return EffectivePath(name, 0, 0, null, false, true, out ipv6Stripped, out dummy);
         }
 
         public static string EffectivePath(string name, int maxMtu, out bool ipv6Stripped)
         {
+            bool dummy;
+            return EffectivePath(name, maxMtu, 0, null, false, true, out ipv6Stripped, out dummy);
+        }
+
+        public static string EffectivePath(string name, int maxMtu, int keepaliveSec, string customDns, out bool ipv6Stripped)
+        {
+            bool dummy;
+            return EffectivePath(name, maxMtu, keepaliveSec, customDns, false, true, out ipv6Stripped, out dummy);
+        }
+
+        public static string EffectivePath(string name, int maxMtu, int keepaliveSec, string customDns, out bool ipv6Stripped, out bool probeInjected)
+        {
+            return EffectivePath(name, maxMtu, keepaliveSec, customDns, false, true, out ipv6Stripped, out probeInjected);
+        }
+
+        public static string WintunPath(string name, int maxMtu, int keepaliveSec, string customDns)
+        {
+            return WintunPath(name, maxMtu, keepaliveSec, customDns, true);
+        }
+
+        public static string WintunPath(string name, int maxMtu, int keepaliveSec, string customDns, bool networkLock)
+        {
+            bool dummyV6, dummyProbe;
+            return EffectivePath(name, maxMtu, keepaliveSec, customDns, true, networkLock, out dummyV6, out dummyProbe);
+        }
+
+        static string EffectivePath(string name, int maxMtu, int keepaliveSec, string customDns, bool forWintun, bool wintunNetworkLock, out bool ipv6Stripped, out bool probeInjected)
+        {
             ipv6Stripped = false;
+            probeInjected = false;
             if (maxMtu > 0 && maxMtu < 1200) maxMtu = 1200;
+            int targetKeepalive = keepaliveSec > 0 ? keepaliveSec : 25;
+            string cleanDns = "";
+            if (!string.IsNullOrEmpty(customDns))
+            {
+                IPAddress parsedDns;
+                if (IPAddress.TryParse(customDns.Trim(), out parsedDns) && parsedDns.AddressFamily == AddressFamily.InterNetwork)
+                    cleanDns = parsedDns.ToString();
+            }
             string src = Paths.Conf(name);
             ConfigInfo info = ConfigInfo.Read(name);
-            if (!info.Readable) return src;
-            bool splitMode = info.Mode != AppMode.All;
+            if (!info.Readable)
+            {
+                if (forWintun) throw new InvalidDataException("Configuração ilegível para Wintun.");
+                return src;
+            }
+            bool splitMode = !forWintun && info.Mode != AppMode.All;
+            bool needProbeApp = !forWintun && info.Mode == AppMode.Only && !string.IsNullOrEmpty(EnsureProbeBinary());
             try
             {
                 string[] rawLines = File.ReadAllLines(src);
                 var lines = new List<string>(rawLines.Length + 4);
                 bool anyChanged = false, inInterface = false, inPeer = false;
-                bool hasDisallowedIps = false, hasKeepalive = false, keepaliveInserted = false, mtuHandled = false;
+                bool hasDisallowedIps = false, hasKeepalive = false, keepaliveInserted = false, mtuHandled = false, dnsHandled = false;
                 int peerCount = 0;
                 string tunnelIpv4 = null;
 
@@ -840,6 +1189,12 @@ namespace VpnPanel
                     Match sec = SectionLine.Match(line);
                     if (sec.Success)
                     {
+                        if (inInterface && cleanDns.Length > 0 && !dnsHandled)
+                        {
+                            lines.Add("DNS = " + cleanDns);
+                            dnsHandled = true;
+                            anyChanged = true;
+                        }
                         if (inInterface && maxMtu > 0 && !mtuHandled)
                         {
                             lines.Add("MTU = " + maxMtu);
@@ -848,7 +1203,7 @@ namespace VpnPanel
                         }
                         if (inPeer && peerCount == 1 && !hasKeepalive && !keepaliveInserted)
                         {
-                            lines.Add("PersistentKeepalive = 25");
+                            lines.Add("PersistentKeepalive = " + targetKeepalive);
                             keepaliveInserted = true;
                             anyChanged = true;
                         }
@@ -881,28 +1236,98 @@ namespace VpnPanel
                             }
                         }
                     }
+                    if (forWintun)
+                    {
+                        string iniKey = ExtractIniKey(line);
+                        if (iniKey != null)
+                        {
+                            bool allowed = (inInterface && StandardWgInterfaceKeys.Contains(iniKey)) ||
+                                           (inPeer && StandardWgPeerKeys.Contains(iniKey));
+                            if (!allowed)
+                            {
+                                anyChanged = true;
+                                continue; // strip all WireSock/non-standard keys across every section and peer
+                            }
+                            if (!wintunNetworkLock && inPeer && AllowedIpsLine.IsMatch(line))
+                            {
+                                string rewritten = RewriteWintunAllowedIpsNoLock(line);
+                                if (!rewritten.Equals(line, StringComparison.Ordinal)) anyChanged = true;
+                                line = rewritten;
+                            }
+                        }
+                    }
+                    if (!forWintun && inPeer && (AppsLine.IsMatch(line) || DisallowedIpsLine.IsMatch(line)))
+                    {
+                        if (needProbeApp && peerCount == 1)
+                        {
+                            Match am = AppsLine.Match(line);
+                            if (am.Success && am.Groups[1].Value.Equals("AllowedApps", StringComparison.OrdinalIgnoreCase))
+                            {
+                                string rawList = am.Groups[2].Value ?? "";
+                                bool already = false;
+                                foreach (string part in rawList.Split(','))
+                                {
+                                    string pt = part.Trim();
+                                    if (pt.Equals(ProbeProcessName, StringComparison.OrdinalIgnoreCase) ||
+                                        pt.Equals(ProbeBinaryPath, StringComparison.OrdinalIgnoreCase))
+                                    {
+                                        already = true;
+                                        probeInjected = true;
+                                        break;
+                                    }
+                                }
+                                if (!already)
+                                {
+                                    int cmt = line.IndexOf('#');
+                                    string head = (cmt >= 0 ? line.Substring(0, cmt) : line).TrimEnd();
+                                    string tail = cmt >= 0 ? " " + line.Substring(cmt).TrimStart() : "";
+                                    line = head + (head.EndsWith("=") ? " " : ", ") + ProbeProcessName + tail;
+                                    probeInjected = true;
+                                    anyChanged = true;
+                                }
+                            }
+                        }
+                    }
                     if (inPeer && peerCount == 1)
                     {
                         Match km = KeepaliveLine.Match(line);
                         if (km.Success)
                         {
                             int ka;
-                            if (!int.TryParse(km.Groups[1].Value, out ka) || ka <= 0)
+                            if (!int.TryParse(km.Groups[1].Value, out ka) || ka <= 0 || (keepaliveSec > 0 && ka > keepaliveSec))
                             {
-                                line = "PersistentKeepalive = 25";
+                                line = "PersistentKeepalive = " + targetKeepalive;
                                 anyChanged = true;
                             }
                             keepaliveInserted = true;
                         }
                     }
-                    if (splitMode)
+                    if (inInterface && DnsLine.IsMatch(line))
                     {
-                        if (inInterface && DnsLine.IsMatch(line))
+                        if (cleanDns.Length > 0)
+                        {
+                            if (!dnsHandled)
+                            {
+                                string wanted = "DNS = " + cleanDns;
+                                if (!line.Trim().Equals(wanted, StringComparison.OrdinalIgnoreCase)) anyChanged = true;
+                                lines.Add(wanted);
+                                dnsHandled = true;
+                            }
+                            else
+                            {
+                                anyChanged = true;
+                            }
+                            continue;
+                        }
+                        else if (splitMode)
                         {
                             lines.Add("# " + line.Trim() + " # vpn-panel: DNS local mantido em split tunneling");
                             anyChanged = true;
                             continue;
                         }
+                    }
+                    if (splitMode)
+                    {
                         Match m = V6KeyLine.Match(line);
                         if (m.Success)
                         {
@@ -920,6 +1345,12 @@ namespace VpnPanel
                         anyChanged = true;
                     }
                 }
+                if (inInterface && cleanDns.Length > 0 && !dnsHandled)
+                {
+                    lines.Add("DNS = " + cleanDns);
+                    dnsHandled = true;
+                    anyChanged = true;
+                }
                 if (inInterface && maxMtu > 0 && !mtuHandled)
                 {
                     lines.Add("MTU = " + maxMtu);
@@ -928,13 +1359,19 @@ namespace VpnPanel
                 }
                 if (inPeer && peerCount == 1 && !hasKeepalive && !keepaliveInserted)
                 {
-                    lines.Add("PersistentKeepalive = 25");
+                    lines.Add("PersistentKeepalive = " + targetKeepalive);
                     anyChanged = true;
                 }
                 if (splitMode && inPeer && !hasDisallowedIps)
                 {
                     lines.Add("DisallowedIPs = " + BuildDisallowedIps(tunnelIpv4));
                     anyChanged = true;
+                }
+                if (forWintun)
+                {
+                    Directory.CreateDirectory(Paths.WintunRuntimeDir);
+                    File.WriteAllLines(Paths.WintunRuntimeConf, lines.ToArray(), new UTF8Encoding(false));
+                    return Paths.WintunRuntimeConf;
                 }
                 if (!splitMode && !anyChanged) return src;
                 Directory.CreateDirectory(Paths.Runtime);
@@ -943,7 +1380,11 @@ namespace VpnPanel
                 ipv6Stripped = splitMode;
                 return dst;
             }
-            catch { return src; }
+            catch
+            {
+                if (forWintun) throw;
+                return src;
+            }
         }
 
         static string Prefix64(IPAddress addr)
@@ -1059,6 +1500,11 @@ namespace VpnPanel
 
         static readonly Regex DefaultV6RouteLine = new Regex(@"(?:^|\s)::/0\s+(\d+)\s+(\S+)", RegexOptions.Compiled);
 
+        public static void FlushDnsCache()
+        {
+            try { DnsFlushResolverCache(); } catch { }
+        }
+
         // Purges any lingering VPN IPv6 addresses/routes stuck on physical NICs (from v2.6 or full-tunnel runs)
         // and flushes the Windows DNS resolver cache only when tainted state is purged or forceFlush is requested.
         public static void CleanGhostNetwork()
@@ -1068,10 +1514,7 @@ namespace VpnPanel
 
         public static void CleanGhostNetwork(bool forceFlush)
         {
-            if (forceFlush)
-            {
-                try { DnsFlushResolverCache(); } catch { }
-            }
+            if (forceFlush) FlushDnsCache();
             try
             {
                 HashSet<string> addrs, gws, prefixes;
@@ -1937,9 +2380,12 @@ namespace VpnPanel
         public class Result
         {
             public int Ms = -1;         // -1: no ICMP reply (many WireGuard servers filter ping)
+            public int JitterMs;
+            public int LossPct;
             public bool ViaTunnel;      // measured while a tunnel was up: other servers' traffic goes through the VPN
             public DateTime At;
             public bool Ok { get { return Ms >= 0; } }
+            public int Score { get { return !Ok ? int.MaxValue : Ms + JitterMs * 2 + LossPct * 8; } }
         }
 
         const int MaxConcurrent = 4;
@@ -1977,7 +2423,7 @@ namespace VpnPanel
                 int gen = generation;
                 queue.Enqueue(new KeyValuePair<string, Action>(h, () =>
                 {
-                    int ms = Probe(h);
+                    Result measured = Probe(h);
                     ui.BeginInvoke(new Action(() =>
                     {
                         active--;
@@ -1985,7 +2431,9 @@ namespace VpnPanel
                         if (gen == generation)
                         {
                             pending.Remove(h);
-                            cache[h] = new Result { Ms = ms, ViaTunnel = viaTunnel, At = DateTime.UtcNow };
+                            measured.ViaTunnel = viaTunnel;
+                            measured.At = DateTime.UtcNow;
+                            cache[h] = measured;
                             if (Measured != null) Measured(h);
                         }
                         Pump();
@@ -2020,8 +2468,8 @@ namespace VpnPanel
             }
         }
 
-        // Best of two echoes (the first can include ARP/route setup); a host that ignores the first isn't asked again
-        static int Probe(string host)
+        // Measures 4 echoes when responsive to compute average latency, jitter, and packet loss.
+        static Result Probe(string host)
         {
             try
             {
@@ -2039,20 +2487,39 @@ namespace VpnPanel
                     }, null);
                     bool signaled = done.Wait(1500);
                     done.Dispose();
-                    if (!signaled || dnsEx != null || addrs == null || addrs.Length == 0) return -1;
+                    if (!signaled || dnsEx != null || addrs == null || addrs.Length == 0) return new Result();
                     ip = addrs[0];
                 }
                 using (var ping = new System.Net.NetworkInformation.Ping())
                 {
-                    var first = ping.Send(ip, FirstTimeoutMs);
-                    if (first.Status != System.Net.NetworkInformation.IPStatus.Success) return -1;
-                    long best = first.RoundtripTime;
-                    var second = ping.Send(ip, SecondTimeoutMs);
-                    if (second.Status == System.Net.NetworkInformation.IPStatus.Success) best = Math.Min(best, second.RoundtripTime);
-                    return (int)Math.Max(1, best);
+                    var rtts = new List<int>(4);
+                    int sent = 0;
+                    for (int i = 0; i < 4; i++)
+                    {
+                        sent++;
+                        var rep = ping.Send(ip, i == 0 ? FirstTimeoutMs : SecondTimeoutMs);
+                        if (rep != null && rep.Status == System.Net.NetworkInformation.IPStatus.Success)
+                        {
+                            rtts.Add((int)Math.Max(1, rep.RoundtripTime));
+                        }
+                        else if (i == 0 && rtts.Count == 0)
+                        {
+                            return new Result(); // unresponsive/filtered host: fail fast after 1st timeout
+                        }
+                        if (i < 3) Thread.Sleep(30);
+                    }
+                    if (rtts.Count == 0) return new Result();
+                    int sum = 0;
+                    for (int i = 0; i < rtts.Count; i++) sum += rtts[i];
+                    int avgMs = Math.Max(1, (int)Math.Round(sum / (double)rtts.Count));
+                    int jitterSum = 0;
+                    for (int i = 1; i < rtts.Count; i++) jitterSum += Math.Abs(rtts[i] - rtts[i - 1]);
+                    int jitterMs = rtts.Count > 1 ? (int)Math.Round(jitterSum / (double)(rtts.Count - 1)) : 0;
+                    int lossPct = (int)Math.Round((sent - rtts.Count) * 100.0 / sent);
+                    return new Result { Ms = avgMs, JitterMs = jitterMs, LossPct = lossPct };
                 }
             }
-            catch { return -1; }
+            catch { return new Result(); }
         }
     }
 
@@ -2145,27 +2612,266 @@ namespace VpnPanel
         }
     }
 
-    // The wiresock-client process
+    // Manages the active VPN backend (WireGuard/Wintun in All mode when installed, or WireSock NDIS for split tunneling)
     static class Tunnel
     {
+        public const string WintunTunnelName = "VpnPanel";
+        public const string WintunServiceName = "WireGuardTunnel$VpnPanel";
+
         static readonly object stateLock = new object();
         static readonly object stopLock = new object();
         static int stoppingCount;
         static int currentPid;
         static IntPtr currentHandle;
-        static bool lockHint; // the tracked tunnel runs with -network-lock
-        public static string LastStartedConfig { get; private set; }
-        public static DateTime LastStartedAt { get; private set; }
-        public static bool Ipv6Isolated { get; private set; }
-        public static int LastExitCode { get; private set; }
+        static bool lockHint; // the tracked WireSock tunnel runs with -network-lock
+        static TunnelEngine activeEngine;
+        static TunnelEngine lastActiveEngine;
+        static string lastStartedConfig;
+        static DateTime lastStartedAt;
+        static bool ipv6Isolated;
+        static bool probeAppInjected;
+        static int lastExitCode;
+        static DateTime startTime;
+        static long startUtcUnix;
+        static readonly DateTime UnixEpoch = new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+
+        public static TunnelEngine ActiveEngine
+        {
+            get { lock (stateLock) return activeEngine; }
+            private set { lock (stateLock) activeEngine = value; }
+        }
+        public static TunnelEngine LastActiveEngine
+        {
+            get { lock (stateLock) return lastActiveEngine; }
+            private set { lock (stateLock) lastActiveEngine = value; }
+        }
+        public static string LastStartedConfig
+        {
+            get { lock (stateLock) return lastStartedConfig; }
+            private set { lock (stateLock) lastStartedConfig = value; }
+        }
+        public static DateTime LastStartedAt
+        {
+            get { lock (stateLock) return lastStartedAt; }
+            private set { lock (stateLock) lastStartedAt = value; }
+        }
+        public static bool Ipv6Isolated
+        {
+            get { lock (stateLock) return ipv6Isolated; }
+            private set { lock (stateLock) ipv6Isolated = value; }
+        }
+        public static bool ProbeAppInjected
+        {
+            get { lock (stateLock) return probeAppInjected; }
+            private set { lock (stateLock) probeAppInjected = value; }
+        }
+        public static int LastExitCode
+        {
+            get { lock (stateLock) return lastExitCode; }
+            private set { lock (stateLock) lastExitCode = value; }
+        }
         public static int Pid { get { lock (stateLock) return currentPid; } }
-        public static DateTime StartTime { get; private set; }
+        public static DateTime StartTime
+        {
+            get { lock (stateLock) return startTime; }
+            private set { lock (stateLock) startTime = value; }
+        }
         static volatile bool connecting;
         public static bool Connecting { get { return connecting; } set { connecting = value; } }
         public static bool IsStopping { get { return Interlocked.CompareExchange(ref stoppingCount, 0, 0) > 0; } }
         public static bool HasPendingNetworkLock
         {
-            get { return lockHint || File.Exists(Paths.NetworkLockFlag); }
+            get { lock (stateLock) return lockHint || File.Exists(Paths.NetworkLockFlag); }
+        }
+
+        static long ToUnixSeconds(DateTime utc)
+        {
+            return (long)(utc - UnixEpoch).TotalSeconds;
+        }
+
+        public static bool IsWintunServiceRunning()
+        {
+            try
+            {
+                using (var sc = new System.ServiceProcess.ServiceController(WintunServiceName))
+                {
+                    var st = sc.Status;
+                    return st == System.ServiceProcess.ServiceControllerStatus.Running ||
+                           st == System.ServiceProcess.ServiceControllerStatus.StartPending;
+                }
+            }
+            catch { return false; }
+        }
+
+        static bool WintunServiceExists()
+        {
+            try
+            {
+                using (var sc = new System.ServiceProcess.ServiceController(WintunServiceName))
+                {
+                    var st = sc.Status;
+                    return st != System.ServiceProcess.ServiceControllerStatus.Stopped || true;
+                }
+            }
+            catch { return false; }
+        }
+
+        public static string ReadWintunActiveConfig()
+        {
+            try
+            {
+                if (!File.Exists(Paths.WintunActiveFlag)) return null;
+                string s = File.ReadAllText(Paths.WintunActiveFlag).Trim();
+                return s.Length > 0 ? s : null;
+            }
+            catch { return null; }
+        }
+
+        public static DateTime FetchWintunServiceStartTime()
+        {
+            DateTime found = default(DateTime);
+            try
+            {
+                using (var searcher = new ManagementObjectSearcher(
+                    "SELECT ProcessId FROM Win32_Service WHERE Name='" + WintunServiceName.Replace("'", "''") + "'"))
+                {
+                    foreach (ManagementObject o in searcher.Get())
+                    {
+                        int pid = Convert.ToInt32(o["ProcessId"]);
+                        if (pid > 0)
+                        {
+                            IntPtr h = ProcUtil.OpenForMonitor(pid);
+                            if (h != IntPtr.Zero)
+                            {
+                                try { found = ProcUtil.StartTime(h); }
+                                finally { ProcUtil.Close(ref h); }
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            catch { }
+            lock (stateLock)
+            {
+                if (found != default(DateTime))
+                {
+                    startTime = found;
+                    startUtcUnix = ToUnixSeconds(found.ToUniversalTime());
+                }
+                else if (startTime == default(DateTime))
+                {
+                    startTime = DateTime.Now;
+                    startUtcUnix = ToUnixSeconds(DateTime.UtcNow);
+                }
+                return startTime;
+            }
+        }
+
+        public static TunnelEngine ResolveEngine(AppMode mode, VpnEnginePreference pref)
+        {
+            return ResolveEngine(null, mode, pref);
+        }
+
+        public static TunnelEngine ResolveEngine(string config, AppMode mode, VpnEnginePreference pref)
+        {
+            if (pref == VpnEnginePreference.Auto && mode == AppMode.All && Paths.WireGuard != null)
+            {
+                if (string.IsNullOrEmpty(config) || ConfFile.IsWintunCompatible(config))
+                    return TunnelEngine.Wintun;
+            }
+            return TunnelEngine.WireSock;
+        }
+
+        static bool StopWintunService(int waitMs)
+        {
+            int boundedWait = Math.Max(300, waitMs);
+            bool uninstalled = true;
+            string wgExe = Paths.WireGuard;
+            if (WintunServiceExists())
+            {
+                uninstalled = false;
+                if (wgExe != null)
+                {
+                    try
+                    {
+                        string outStr, errStr;
+                        int code = ProcUtil.RunBounded(wgExe, "/uninstalltunnelservice " + WintunTunnelName, boundedWait, out outStr, out errStr);
+                        if (code == 0 && !IsWintunServiceRunning()) uninstalled = true;
+                    }
+                    catch { }
+                }
+                if (!uninstalled)
+                {
+                    try
+                    {
+                        using (var sc = new System.ServiceProcess.ServiceController(WintunServiceName))
+                        {
+                            if (sc.Status != System.ServiceProcess.ServiceControllerStatus.Stopped &&
+                                sc.Status != System.ServiceProcess.ServiceControllerStatus.StopPending)
+                            {
+                                sc.Stop();
+                            }
+                            sc.WaitForStatus(System.ServiceProcess.ServiceControllerStatus.Stopped, TimeSpan.FromMilliseconds(boundedWait));
+                        }
+                    }
+                    catch { }
+                    try
+                    {
+                        string scOut, scErr;
+                        ProcUtil.RunBounded("sc.exe", "delete \"" + WintunServiceName + "\"", Math.Min(1500, boundedWait), out scOut, out scErr);
+                    }
+                    catch { }
+                    uninstalled = !IsWintunServiceRunning();
+                }
+            }
+            if (!IsWintunServiceRunning())
+            {
+                try { if (File.Exists(Paths.WintunActiveFlag)) File.Delete(Paths.WintunActiveFlag); } catch { }
+                try { if (File.Exists(Paths.WintunRuntimeConf)) File.Delete(Paths.WintunRuntimeConf); } catch { }
+            }
+            return uninstalled;
+        }
+
+        public static void PollWintunStatus(bool currentlyHandshakeOk, out bool sawHs, out bool hsOk, out bool hsFailed)
+        {
+            sawHs = false;
+            hsOk = false;
+            hsFailed = false;
+            string wgCli = Paths.WgCli;
+            if (wgCli == null) return;
+            try
+            {
+                string stdout, stderr;
+                int code = ProcUtil.RunBounded(wgCli, "show " + WintunTunnelName + " latest-handshakes", 1500, out stdout, out stderr);
+                if (code != 0 || string.IsNullOrWhiteSpace(stdout)) return;
+                long maxHsUnix = 0;
+                foreach (string rawLine in stdout.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries))
+                {
+                    string[] parts = rawLine.Split(new[] { '\t', ' ' }, StringSplitOptions.RemoveEmptyEntries);
+                    if (parts.Length < 2) continue;
+                    long ts;
+                    if (long.TryParse(parts[parts.Length - 1], out ts) && ts > maxHsUnix)
+                        maxHsUnix = ts;
+                }
+                sawHs = true;
+                if (maxHsUnix <= 0) return;
+
+                long sessStart;
+                lock (stateLock) sessStart = startUtcUnix;
+                long nowUnix = ToUnixSeconds(DateTime.UtcNow);
+                if (sessStart > 0 && maxHsUnix < sessStart - 5) return; // stale handshake from before this session
+                long age = nowUnix - maxHsUnix;
+                if (age <= 165)
+                {
+                    hsOk = true;
+                }
+                else if (currentlyHandshakeOk)
+                {
+                    hsFailed = true;
+                }
+            }
+            catch { }
         }
 
         static void WriteNetworkLockFlag(string config)
@@ -2202,7 +2908,8 @@ namespace VpnPanel
                 ProcUtil.Close(ref currentHandle);
                 currentPid = pid;
                 currentHandle = handle;
-                StartTime = ProcUtil.StartTime(handle);
+                startTime = ProcUtil.StartTime(handle);
+                startUtcUnix = startTime != default(DateTime) ? ToUnixSeconds(startTime.ToUniversalTime()) : ToUnixSeconds(DateTime.UtcNow);
             }
         }
 
@@ -2211,14 +2918,42 @@ namespace VpnPanel
         public static bool Active(bool allowScan)
         {
             if (Interlocked.CompareExchange(ref stoppingCount, 0, 0) > 0) return false;
+            bool wasWintun;
             lock (stateLock)
             {
                 if (currentPid != 0)
                 {
-                    if (ProcUtil.IsAlive(currentHandle)) return true;
-                    LastExitCode = ProcUtil.ExitCode(currentHandle);
+                    if (ProcUtil.IsAlive(currentHandle))
+                    {
+                        activeEngine = TunnelEngine.WireSock;
+                        lastActiveEngine = TunnelEngine.WireSock;
+                        return true;
+                    }
+                    lastExitCode = ProcUtil.ExitCode(currentHandle);
                     ProcUtil.Close(ref currentHandle);
                     currentPid = 0;
+                }
+                wasWintun = activeEngine == TunnelEngine.Wintun;
+            }
+            if (wasWintun || allowScan)
+            {
+                if (IsWintunServiceRunning())
+                {
+                    lock (stateLock)
+                    {
+                        activeEngine = TunnelEngine.Wintun;
+                        lastActiveEngine = TunnelEngine.Wintun;
+                        if (startTime == default(DateTime))
+                        {
+                            startTime = DateTime.Now;
+                            startUtcUnix = ToUnixSeconds(DateTime.UtcNow);
+                        }
+                    }
+                    return true;
+                }
+                lock (stateLock)
+                {
+                    if (activeEngine == TunnelEngine.Wintun) activeEngine = TunnelEngine.None;
                 }
             }
             if (!allowScan) return false;
@@ -2235,7 +2970,13 @@ namespace VpnPanel
             }
             lock (stateLock)
             {
-                if (found && currentPid == 0) StartTime = DateTime.Now;
+                if (found && currentPid == 0 && startTime == default(DateTime))
+                {
+                    startTime = DateTime.Now;
+                    startUtcUnix = ToUnixSeconds(DateTime.UtcNow);
+                }
+                activeEngine = found ? TunnelEngine.WireSock : TunnelEngine.None;
+                if (found) lastActiveEngine = TunnelEngine.WireSock;
             }
             return found;
         }
@@ -2243,12 +2984,20 @@ namespace VpnPanel
         // Called with the command line of a tunnel this instance did not start
         public static void NoteCommandLine(string commandLine)
         {
-            lockHint = commandLine != null && Regex.IsMatch(commandLine, "-network-lock\\s+(enabled|on)\\b", RegexOptions.IgnoreCase);
+            NoteCommandLine(commandLine, (bool?)null);
+        }
+
+        public static void NoteCommandLine(string commandLine, bool? probeAppInjectedOverride)
+        {
+            bool hasLock = commandLine != null && Regex.IsMatch(commandLine, "-network-lock\\s+(enabled|on)\\b", RegexOptions.IgnoreCase);
+            lock (stateLock) lockHint = hasLock;
             string cfg = ConfigOf(commandLine);
             ConfigInfo info = cfg != null ? ConfigInfo.Read(cfg) : null;
             Ipv6Isolated = commandLine != null &&
                            commandLine.IndexOf(Paths.Runtime, StringComparison.OrdinalIgnoreCase) >= 0 &&
                            (info == null || info.Mode != AppMode.All);
+            ProbeAppInjected = Ipv6Isolated && info != null && info.Mode == AppMode.Only &&
+                               (probeAppInjectedOverride.HasValue ? probeAppInjectedOverride.Value : NetDiag.RuntimeHasProbeApp(cfg));
         }
 
         public static string CommandLine(int pid)
@@ -2274,30 +3023,92 @@ namespace VpnPanel
 
         public static void Start(string exe, string config, bool networkLock)
         {
-            Start(exe, config, networkLock, 0);
+            Start(exe, config, networkLock, 0, 0, null, VpnEnginePreference.Auto);
         }
 
         public static void Start(string exe, string config, bool networkLock, int maxMtu)
         {
+            Start(exe, config, networkLock, maxMtu, 0, null, VpnEnginePreference.Auto);
+        }
+
+        public static void Start(string exe, string config, bool networkLock, int maxMtu, int keepaliveSec, string customDns)
+        {
+            Start(exe, config, networkLock, maxMtu, keepaliveSec, customDns, VpnEnginePreference.Auto);
+        }
+
+        public static void Start(string exe, string config, bool networkLock, int maxMtu, int keepaliveSec, string customDns, VpnEnginePreference enginePref)
+        {
             lock (stopLock)
             {
-                // Never leave an orphaned client fighting for the WireSock driver
+                bool hadPendingWsLock = HasPendingNetworkLock;
+                // Never leave an orphaned WireSock or Wintun tunnel fighting each other
+                bool allWsStopped = true;
                 foreach (Process existing in Find())
                 {
-                    ProcUtil.Shutdown(existing.Id, 2000);
+                    allWsStopped = ProcUtil.Shutdown(existing.Id, 2000) && allWsStopped;
                     existing.Dispose();
                 }
+                bool wintunStopped = StopWintunService(2500);
 
                 ConfigInfo info = ConfigInfo.Read(config);
+                AppMode mode = info != null ? info.Mode : AppMode.All;
                 // Kill switch blocks svchost.exe (local DNS) and non-tunneled apps in split-tunneling modes
-                if (info != null && info.Mode != AppMode.All) networkLock = false;
+                if (mode != AppMode.All) networkLock = false;
 
+                TunnelEngine wantedEngine = ResolveEngine(config, mode, enginePref);
+                if (wantedEngine == TunnelEngine.WireSock && !wintunStopped)
+                    throw new InvalidOperationException("O serviço WireGuard/Wintun anterior não encerrou a tempo.");
                 LastStartedConfig = config;
                 LastStartedAt = DateTime.UtcNow;
                 LastExitCode = 0;
-                bool v6Stripped;
-                string confPath = ConfFile.EffectivePath(config, maxMtu, out v6Stripped);
+
+                if (wantedEngine == TunnelEngine.Wintun)
+                {
+                    string wgExe = Paths.WireGuard;
+                    if (string.IsNullOrEmpty(wgExe))
+                        throw new InvalidOperationException("WireGuard (Wintun) não encontrado.");
+
+                    if (hadPendingWsLock || !allWsStopped)
+                        ResetNetworkLock(2500);
+
+                    Ipv6Isolated = false;
+                    ProbeAppInjected = false;
+                    lock (stateLock) lockHint = false;
+                    ClearNetworkLockFlag();
+                    if (ConfFile.HasGhostIpv6()) ConfFile.CleanGhostNetwork();
+
+                    string wgConf = ConfFile.WintunPath(config, maxMtu, keepaliveSec, customDns, networkLock);
+                    try
+                    {
+                        Directory.CreateDirectory(Paths.Data);
+                        File.WriteAllText(Paths.WintunActiveFlag, config ?? "");
+                    }
+                    catch { }
+
+                    string outText, errText;
+                    int code = ProcUtil.RunBounded(wgExe, "/installtunnelservice \"" + wgConf + "\"", 12000, out outText, out errText);
+                    if (code != 0 || !IsWintunServiceRunning())
+                    {
+                        StopWintunService(2000);
+                        string detail = !string.IsNullOrWhiteSpace(errText) ? errText.Trim() : outText.Trim();
+                        throw new InvalidOperationException(string.IsNullOrWhiteSpace(detail)
+                            ? "Falha ao iniciar o serviço WireGuard/Wintun (código " + code + ")."
+                            : detail);
+                    }
+                    lock (stateLock)
+                    {
+                        activeEngine = TunnelEngine.Wintun;
+                        lastActiveEngine = TunnelEngine.Wintun;
+                        startTime = DateTime.Now;
+                        startUtcUnix = ToUnixSeconds(DateTime.UtcNow);
+                    }
+                    return;
+                }
+
+                bool v6Stripped, probeInjected;
+                string confPath = ConfFile.EffectivePath(config, maxMtu, keepaliveSec, customDns, out v6Stripped, out probeInjected);
                 Ipv6Isolated = v6Stripped;
+                ProbeAppInjected = probeInjected;
                 if (v6Stripped && ConfFile.HasGhostIpv6()) ConfFile.CleanGhostNetwork();
                 if (networkLock) WriteNetworkLockFlag(config);
                 else ClearNetworkLockFlag();
@@ -2311,7 +3122,12 @@ namespace VpnPanel
                 {
                     IntPtr h = ProcUtil.StartLogged(exe, cmdLine, Paths.Log, out pid);
                     Track(pid, h);
-                    lockHint = networkLock;
+                    lock (stateLock)
+                    {
+                        activeEngine = TunnelEngine.WireSock;
+                        lastActiveEngine = TunnelEngine.WireSock;
+                        lockHint = networkLock;
+                    }
                 }
                 catch
                 {
@@ -2325,33 +3141,63 @@ namespace VpnPanel
         // so the lock is reset once every client is gone (harmless when no lock is active).
         public static void Stop(bool resetLock)
         {
+            Stop(resetLock, 5000);
+        }
+
+        // Bounded fast teardown used during Windows shutdown/logoff so WM_QUERYENDSESSION never stalls.
+        public static void StopForShutdown(bool resetLock)
+        {
+            Stop(resetLock, 1200);
+        }
+
+        static void Stop(bool resetLock, int waitMs)
+        {
             Interlocked.Increment(ref stoppingCount);
             try
             {
                 lock (stopLock)
                 {
-                    LastStartedConfig = null;
-                    Ipv6Isolated = false;
-                    resetLock |= lockHint || File.Exists(Paths.NetworkLockFlag);
-                    lockHint = false;
+                    bool hadWintun = IsWintunServiceRunning() || File.Exists(Paths.WintunActiveFlag);
+                    bool wintunStopped = StopWintunService(waitMs);
+                    bool hadLockFlag;
                     int pidToStop;
-                    lock (stateLock) pidToStop = currentPid;
+                    lock (stateLock)
+                    {
+                        hadLockFlag = lockHint || File.Exists(Paths.NetworkLockFlag);
+                        lockHint = false;
+                        pidToStop = currentPid;
+                    }
+                    resetLock |= hadLockFlag;
                     ReleaseCurrent();
                     bool anyFound = pidToStop != 0;
-                    bool stoppedCleanly = true;
+                    bool wsStopped = true;
                     // Ctrl+C first: WireSock then drops the tunnel and releases the lock by itself
-                    if (pidToStop != 0) stoppedCleanly = ProcUtil.Shutdown(pidToStop, 5000);
+                    if (pidToStop != 0) wsStopped = ProcUtil.Shutdown(pidToStop, waitMs);
                     foreach (Process p in Find())
                     {
                         anyFound = true;
-                        stoppedCleanly = ProcUtil.Shutdown(p.Id, 5000) && stoppedCleanly;
+                        wsStopped = ProcUtil.Shutdown(p.Id, waitMs) && wsStopped;
                         p.Dispose();
                     }
-                    if (!anyFound) stoppedCleanly = false;
+                    bool allStopped = wsStopped && (!hadWintun || wintunStopped);
+                    if (allStopped)
+                    {
+                        LastStartedConfig = null;
+                        Ipv6Isolated = false;
+                        ProbeAppInjected = false;
+                        ActiveEngine = TunnelEngine.None;
+                        StartTime = default(DateTime);
+                        lock (stateLock) startUtcUnix = 0;
+                    }
+                    else if (hadWintun && !wintunStopped)
+                    {
+                        NetMon.Record("WireGuard", NetMon.EventKind.Error, "Serviço Wintun não encerrou dentro do tempo limite");
+                    }
+                    if (!anyFound) wsStopped = hadWintun ? wintunStopped : false;
                     ConfFile.DeleteRuntimeCopies();
                     if (ConfFile.HasGhostIpv6()) ConfFile.CleanGhostNetwork(false);
-                    if (resetLock && !stoppedCleanly) ResetNetworkLock();
-                    else if (stoppedCleanly) ClearNetworkLockFlag();
+                    if (resetLock && !wsStopped && (anyFound || hadLockFlag || !hadWintun)) ResetNetworkLock(waitMs);
+                    else if (wsStopped) ClearNetworkLockFlag();
                 }
             }
             finally
@@ -2362,19 +3208,25 @@ namespace VpnPanel
 
         public static void ResetNetworkLock()
         {
+            ResetNetworkLock(5000);
+        }
+
+        static void ResetNetworkLock(int waitMs)
+        {
             lock (stopLock)
             {
-                ConfFile.CleanGhostNetwork(true);
+                ConfFile.CleanGhostNetwork(false);
                 string exe = Paths.WireSock;
                 if (exe != null)
                 {
                     try
                     {
                         var psi = new ProcessStartInfo(exe, "reset-network-lock") { UseShellExecute = false, CreateNoWindow = true };
-                        using (Process p = Process.Start(psi)) p.WaitForExit(5000);
+                        using (Process p = Process.Start(psi)) p.WaitForExit(waitMs);
                     }
                     catch { }
                 }
+                ConfFile.FlushDnsCache();
                 ClearNetworkLockFlag();
             }
         }
@@ -2391,12 +3243,27 @@ namespace VpnPanel
             out bool lockReset,
             out bool ghostOrDnsCleaned)
         {
+            return TryIdleCleanup(killOrphans, resetLockIfPending, false, forceDnsFlush, cleanGhostV6, isBusy,
+                out orphansKilled, out lockReset, out ghostOrDnsCleaned);
+        }
+
+        public static bool TryIdleCleanup(
+            bool killOrphans,
+            bool resetLockIfPending,
+            bool forceResetLock,
+            bool forceDnsFlush,
+            bool cleanGhostV6,
+            Func<bool> isBusy,
+            out int orphansKilled,
+            out bool lockReset,
+            out bool ghostOrDnsCleaned)
+        {
             orphansKilled = 0;
             lockReset = false;
             ghostOrDnsCleaned = false;
             lock (stopLock)
             {
-                bool activeNow = killOrphans ? Active(false) : Active(true);
+                bool activeNow = (killOrphans ? Active(false) : Active(true)) || IsWintunServiceRunning();
                 if (Connecting || IsStopping || activeNow || (isBusy != null && isBusy()))
                     return false;
 
@@ -2444,7 +3311,7 @@ namespace VpnPanel
                     try { hasGhost = ConfFile.HasGhostIpv6(); } catch { }
                 }
 
-                if ((resetLockIfPending && (hasLock || hasRuntime)) || orphansKilled > 0)
+                if (forceResetLock || (resetLockIfPending && (hasLock || hasRuntime)) || orphansKilled > 0)
                 {
                     ConfFile.DeleteRuntimeCopies();
                     ResetNetworkLock();
@@ -3182,6 +4049,37 @@ namespace VpnPanel
             catch { return null; }
         }
 
+        // Fast check for whether the host has an active physical uplink with a valid gateway
+        // (excludes virtual/VPN adapters so auto-reconnect never burns attempts during offline flaps).
+        public static bool HasPhysicalUplink()
+        {
+            try
+            {
+                if (!NetworkInterface.GetIsNetworkAvailable()) return false;
+                if (GetPhysicalGateway() != null) return true;
+                foreach (NetworkInterface ni in NetworkInterface.GetAllNetworkInterfaces())
+                {
+                    if (ni.OperationalStatus != OperationalStatus.Up) continue;
+                    if (IsVirtualOrTunnelAdapter(ni)) continue;
+                    try
+                    {
+                        foreach (GatewayIPAddressInformation gw in ni.GetIPProperties().GatewayAddresses)
+                        {
+                            if (gw == null || gw.Address == null) continue;
+                            if (gw.Address.AddressFamily == AddressFamily.InterNetwork && !IPAddress.Any.Equals(gw.Address))
+                                return true;
+                            if (gw.Address.AddressFamily == AddressFamily.InterNetworkV6 &&
+                                !gw.Address.IsIPv6LinkLocal && !IPAddress.IPv6None.Equals(gw.Address))
+                                return true;
+                        }
+                    }
+                    catch { }
+                }
+            }
+            catch { }
+            return false;
+        }
+
         public class MtuResult
         {
             public int MaxPayload;
@@ -3190,12 +4088,194 @@ namespace VpnPanel
             public string Detail;
         }
 
+        public static int RecommendSafeWireGuardMtu(int maxPayload, bool ipv6Endpoint)
+        {
+            if (maxPayload <= 0) return 0;
+            if (maxPayload >= 1472 && !ipv6Endpoint) return 1380;
+            int overhead = ipv6Endpoint ? 80 : 60;
+            int physMtu = maxPayload + 28;
+            int safe = (physMtu - overhead) & ~3;
+            if (safe < 1280) safe = 1280;
+            if (safe > 1380) safe = 1380;
+            return safe;
+        }
+
+        public static bool RuntimeHasProbeApp(string cfgName)
+        {
+            if (string.IsNullOrEmpty(cfgName)) return false;
+            try
+            {
+                string p = Path.Combine(Paths.Runtime, cfgName + ".conf");
+                if (!File.Exists(p)) return false;
+                string text = File.ReadAllText(p);
+                return text.IndexOf(ConfFile.ProbeProcessName, StringComparison.OrdinalIgnoreCase) >= 0;
+            }
+            catch { return false; }
+        }
+
+        static ProbeResult ParseProbeHelperLine(string line, string host, int port, bool fallbackCancel)
+        {
+            string target = host + ":" + port;
+            if (string.IsNullOrEmpty(line))
+                return new ProbeResult { Ok = false, LatencyMs = -1, Target = target, Detail = fallbackCancel ? "Cancelado" : "Sem resposta da sonda" };
+            string t = line.Trim();
+            if (t.StartsWith("OK ", StringComparison.OrdinalIgnoreCase))
+            {
+                int ms;
+                if (!int.TryParse(t.Substring(3).Trim(), out ms) || ms < 1) ms = 1;
+                return new ProbeResult { Ok = true, LatencyMs = ms, Target = target, Detail = "UDP túnel OK" };
+            }
+            if (t.StartsWith("ERR ", StringComparison.OrdinalIgnoreCase))
+                return new ProbeResult { Ok = false, LatencyMs = -1, Target = target, Detail = ShortErr(t.Substring(4)) };
+            return new ProbeResult { Ok = false, LatencyMs = -1, Target = target, Detail = ShortErr(t) };
+        }
+
+        public static ProbeResult ProbeTunnelUdpViaHelper(string host, int port, int timeoutMs, CancellationToken ct)
+        {
+            string target = (host ?? "1.1.1.1") + ":" + (port > 0 ? port : 53);
+            if (ct.IsCancellationRequested)
+                return new ProbeResult { Ok = false, LatencyMs = -1, Target = target, Detail = "Cancelado" };
+            string probeExe = ConfFile.EnsureProbeBinary();
+            if (string.IsNullOrEmpty(probeExe))
+                return new ProbeResult { Ok = false, LatencyMs = -1, Target = target, Detail = "Sonda indisponível" };
+
+            int timeout = Math.Max(300, timeoutMs);
+            var psi = new ProcessStartInfo(probeExe,
+                string.Format("--probe-udp {0} {1} {2}", host ?? "1.1.1.1", port > 0 ? port : 53, timeout))
+            {
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true
+            };
+            try
+            {
+                using (Process p = Process.Start(psi))
+                {
+                    Process localP = p;
+                    using (var killer = new System.Threading.Timer(_ => { try { if (!localP.HasExited) localP.Kill(); } catch { } },
+                        null, timeout + 1500, Timeout.Infinite))
+                    using (ct.Register(() => { try { if (!localP.HasExited) localP.Kill(); } catch { } }))
+                    {
+                        string line = p.StandardOutput.ReadLine();
+                        if (!p.WaitForExit(timeout + 1200))
+                        {
+                            try { p.Kill(); } catch { }
+                        }
+                        return ParseProbeHelperLine(line, host ?? "1.1.1.1", port > 0 ? port : 53, ct.IsCancellationRequested);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                return new ProbeResult { Ok = false, LatencyMs = -1, Target = target, Detail = ShortErr(ex.Message) };
+            }
+        }
+
+        public sealed class TunnelUdpSession : IDisposable
+        {
+            Process proc;
+            readonly object ioLock = new object();
+
+            public TunnelUdpSession()
+            {
+                string probeExe = ConfFile.EnsureProbeBinary();
+                if (string.IsNullOrEmpty(probeExe)) return;
+                var psi = new ProcessStartInfo(probeExe, "--probe-udp-loop")
+                {
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                    RedirectStandardInput = true,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true
+                };
+                try { proc = Process.Start(psi); }
+                catch { proc = null; }
+            }
+
+            public bool IsReady { get { return proc != null && !proc.HasExited; } }
+
+            public ProbeResult Query(string host, int port, int timeoutMs, CancellationToken ct)
+            {
+                string h = string.IsNullOrEmpty(host) ? "1.1.1.1" : host;
+                int pt = port > 0 ? port : 53;
+                lock (ioLock)
+                {
+                    if (ct.IsCancellationRequested)
+                        return new ProbeResult { Ok = false, LatencyMs = -1, Target = h + ":" + pt, Detail = "Cancelado" };
+                    Process pSnap = proc;
+                    if (!IsReady || pSnap == null)
+                        return new ProbeResult { Ok = false, LatencyMs = -1, Target = h + ":" + pt, Detail = "Sonda encerrada" };
+                    try
+                    {
+                        int waitLimit = Math.Max(400, timeoutMs) + 800;
+                        bool timedOut = false;
+                        using (var killer = new System.Threading.Timer(_ =>
+                            {
+                                timedOut = true;
+                                try { if (!pSnap.HasExited) pSnap.Kill(); } catch { }
+                            }, null, waitLimit, Timeout.Infinite))
+                        using (ct.Register(() => { try { if (!pSnap.HasExited) pSnap.Kill(); } catch { } }))
+                        {
+                            pSnap.StandardInput.WriteLine(h + " " + pt + " " + Math.Max(200, timeoutMs));
+                            pSnap.StandardInput.Flush();
+                            string line = pSnap.StandardOutput.ReadLine();
+                            if (timedOut || line == null)
+                            {
+                                proc = null;
+                                try { pSnap.Dispose(); } catch { }
+                                return new ProbeResult { Ok = false, LatencyMs = -1, Target = h + ":" + pt, Detail = timedOut ? "Tempo esgotado na sonda" : "Sonda encerrada" };
+                            }
+                            return ParseProbeHelperLine(line, h, pt, ct.IsCancellationRequested);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        proc = null;
+                        try { pSnap.Dispose(); } catch { }
+                        return new ProbeResult { Ok = false, LatencyMs = -1, Target = h + ":" + pt, Detail = ShortErr(ex.Message) };
+                    }
+                }
+            }
+
+            public void Dispose()
+            {
+                Process p = proc;
+                proc = null;
+                if (p == null) return;
+                try
+                {
+                    if (!p.HasExited)
+                    {
+                        try { p.StandardInput.WriteLine("QUIT"); p.StandardInput.Flush(); } catch { }
+                        if (!p.WaitForExit(400))
+                        {
+                            try { p.Kill(); } catch { }
+                        }
+                    }
+                }
+                catch { }
+                finally { try { p.Dispose(); } catch { } }
+            }
+        }
+
         public static MtuResult ProbeMtu(IPAddress target, CancellationToken ct)
+        {
+            return ProbeMtu(target, 1200, false, ct);
+        }
+
+        public static MtuResult ProbeMtu(IPAddress target, int timeoutMs, CancellationToken ct)
+        {
+            return ProbeMtu(target, timeoutMs, false, ct);
+        }
+
+        public static MtuResult ProbeMtu(IPAddress target, int timeoutMs, bool quickPreCheck, CancellationToken ct)
         {
             IPAddress dst = target ?? IPAddress.Parse("1.1.1.1");
             if (ct.IsCancellationRequested)
                 return new MtuResult { MaxPayload = 0, EstimatedMtu = 0, Ok = false, Detail = "Cancelado" };
 
+            int sendTimeout = Math.Max(400, timeoutMs);
             int[] payloads = new[] { 1472, 1392, 1352, 1312, 1252 };
             var opts = new PingOptions(64, true);
             bool sawPacketTooBig = false;
@@ -3209,7 +4289,10 @@ namespace VpnPanel
                             return new MtuResult { MaxPayload = 0, EstimatedMtu = 0, Ok = false, Detail = "Cancelado" };
                         int size = payloads[i];
                         byte[] buf = new byte[size];
-                        PingReply rep = ping.Send(dst, 1200, buf, opts);
+                        PingReply rep = ping.Send(dst, sendTimeout, buf, opts);
+                        // Avoid miscalibrating down to 1360 on a single stray packet loss at 1472
+                        if (i == 0 && (rep == null || (rep.Status == IPStatus.TimedOut)) && !ct.IsCancellationRequested)
+                            rep = ping.Send(dst, sendTimeout, buf, opts);
                         if (rep != null && rep.Status == IPStatus.Success)
                         {
                             int mtu = size + 28;
@@ -3219,6 +4302,17 @@ namespace VpnPanel
                             return new MtuResult { MaxPayload = size, EstimatedMtu = mtu, Ok = true, Detail = detail };
                         }
                         if (rep != null && rep.Status == IPStatus.PacketTooBig) sawPacketTooBig = true;
+                        // In fast pre-connect check, if both 1472 and 1392 timed out with no PacketTooBig, ICMP is blocked
+                        if (quickPreCheck && i >= 1 && !sawPacketTooBig)
+                        {
+                            return new MtuResult
+                            {
+                                MaxPayload = 0,
+                                EstimatedMtu = 0,
+                                Ok = false,
+                                Detail = "ICMP bloqueado ou sem resposta em " + dst
+                            };
+                        }
                     }
 
                     if (ct.IsCancellationRequested)
@@ -3256,8 +4350,13 @@ namespace VpnPanel
             public bool WireSockServiceRunning;
             public int WireSockProcessCount;
             public bool NdisDriverPresent;
+            public bool WintunActive;
+            public bool ExitLagUiRunning;
+            public bool ExitLagGameOverlap;
+            public List<string> OverlappingGames = new List<string>();
             public List<string> ConflictingAdapters = new List<string>();
             public List<string> LowMetricAdapters = new List<string>();
+            public List<string> DualPhysicalAdapters = new List<string>();
             public List<string> ConflictingServices = new List<string>();
             public List<string> PassiveAdapters = new List<string>();
             public List<string> PassiveServices = new List<string>();
@@ -3359,9 +4458,23 @@ namespace VpnPanel
             return hasGw;
         }
 
+        static readonly string[] KnownGameProcesses = new[]
+        {
+            "RobloxPlayerBeta", "RobloxPlayerLauncher", "VALORANT", "VALORANT-Win64-Shipping",
+            "cs2", "FortniteClient-Win64-Shipping", "League of Legends", "LeagueClientUx",
+            "Overwatch", "GenshinImpact", "Minecraft.Windows"
+        };
+
         public static ConflictReport DetectConflicts()
         {
+            return DetectConflicts(AppMode.All, null);
+        }
+
+        public static ConflictReport DetectConflicts(AppMode effMode, IList<string> effApps)
+        {
             var r = new ConflictReport();
+            bool tunnelActive = Tunnel.Active(true);
+            r.WintunActive = tunnelActive && Tunnel.ActiveEngine == TunnelEngine.Wintun;
             try { r.WireSockServiceRunning = Paths.WireSockServiceRunning; } catch { }
             try
             {
@@ -3404,6 +4517,44 @@ namespace VpnPanel
                 for (int i = 0; i < elProcs.Length; i++) { try { elProcs[i].Dispose(); } catch { } }
             }
             catch { }
+            r.ExitLagUiRunning = exitLagUiRunning;
+
+            if (exitLagUiRunning && tunnelActive)
+            {
+                if (effMode == AppMode.Only && effApps != null)
+                {
+                    for (int i = 0; i < effApps.Count; i++)
+                    {
+                        string app = (effApps[i] ?? "").Trim();
+                        string clean = app.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) ? app.Substring(0, app.Length - 4) : app;
+                        for (int j = 0; j < KnownGameProcesses.Length; j++)
+                        {
+                            if (clean.Equals(KnownGameProcesses[j], StringComparison.OrdinalIgnoreCase) &&
+                                !r.OverlappingGames.Contains(app))
+                            {
+                                r.OverlappingGames.Add(app);
+                            }
+                        }
+                    }
+                    if (r.OverlappingGames.Count > 0) r.ExitLagGameOverlap = true;
+                }
+                else if (effMode == AppMode.All)
+                {
+                    try
+                    {
+                        for (int i = 0; i < KnownGameProcesses.Length; i++)
+                        {
+                            Process[] gp = Process.GetProcessesByName(KnownGameProcesses[i]);
+                            bool running = gp.Length > 0;
+                            for (int j = 0; j < gp.Length; j++) { try { gp[j].Dispose(); } catch { } }
+                            if (running && !r.OverlappingGames.Contains(KnownGameProcesses[i]))
+                                r.OverlappingGames.Add(KnownGameProcesses[i]);
+                        }
+                    }
+                    catch { }
+                    r.ExitLagGameOverlap = true;
+                }
+            }
 
             // Scan adapters first so services (e.g., Tailscale) know whether a default route / Exit Node is active
             HashSet<int> v4DefaultRoutes = GetIpv4DefaultRouteIndices();
@@ -3413,16 +4564,17 @@ namespace VpnPanel
                 "proton", "cloudflare", "cloudflarewarp", "cloudflare warp", "mullvad",
                 "exitlag", "radmin", "hamachi", "zerotier"
             };
-            bool tunnelActive = Tunnel.Active(true);
             bool tailscaleDefaultGw = false;
             try
             {
                 var upPhysical = new List<string>();
+                var upPhysicalAllMetrics = new List<string>();
                 foreach (NetworkInterface ni in NetworkInterface.GetAllNetworkInterfaces())
                 {
                     try
                     {
                         if (ni.OperationalStatus != OperationalStatus.Up || ni.NetworkInterfaceType == NetworkInterfaceType.Loopback) continue;
+                        if (ni.Name.Equals(Tunnel.WintunTunnelName, StringComparison.OrdinalIgnoreCase)) continue;
                         string combined = ((ni.Description ?? "") + " " + (ni.Name ?? "")).ToLowerInvariant();
                         uint metric = 0;
                         bool hasMetric = false;
@@ -3484,7 +4636,11 @@ namespace VpnPanel
                         else if (!IsVirtualOrTunnelAdapter(ni))
                         {
                             string info = hasMetric ? ni.Name + " (métrica " + metric + ")" : ni.Name;
-                            if (hasMetric && metric <= 15 && hasDefaultGw) upPhysical.Add(info);
+                            if (hasDefaultGw)
+                            {
+                                upPhysicalAllMetrics.Add(info);
+                                if (hasMetric && metric <= 15) upPhysical.Add(info);
+                            }
                         }
                     }
                     catch { }
@@ -3493,6 +4649,11 @@ namespace VpnPanel
                 {
                     for (int i = 0; i < upPhysical.Count; i++)
                         if (!r.LowMetricAdapters.Contains(upPhysical[i])) r.LowMetricAdapters.Add(upPhysical[i]);
+                }
+                if (upPhysicalAllMetrics.Count > 1)
+                {
+                    for (int i = 0; i < upPhysicalAllMetrics.Count; i++)
+                        if (!r.DualPhysicalAdapters.Contains(upPhysicalAllMetrics[i])) r.DualPhysicalAdapters.Add(upPhysicalAllMetrics[i]);
                 }
             }
             catch { }
@@ -3514,6 +4675,7 @@ namespace VpnPanel
                         {
                             if (s.Status != System.ServiceProcess.ServiceControllerStatus.Running) continue;
                             if (s.ServiceName.StartsWith("wiresock-", StringComparison.OrdinalIgnoreCase)) continue;
+                            if (r.WintunActive && s.ServiceName.Equals(Tunnel.WintunServiceName, StringComparison.OrdinalIgnoreCase)) continue;
                             if (s.ServiceName.Equals("warpjitsvc", StringComparison.OrdinalIgnoreCase)) continue;
                             string low = (s.ServiceName + " " + s.DisplayName).ToLowerInvariant();
                             for (int i = 0; i < badSvcTokens.Length; i++)
@@ -3525,7 +4687,11 @@ namespace VpnPanel
                                     {
                                         if (exitLagUiRunning)
                                         {
-                                            string warnMsg = "ExitLag em execução (evite otimizar o mesmo jogo na VPN e no ExitLag ao mesmo tempo).";
+                                            string warnMsg = r.ExitLagGameOverlap
+                                                ? (r.OverlappingGames.Count > 0
+                                                    ? "Sobreposição VPN + ExitLag em " + string.Join(", ", r.OverlappingGames.ToArray()) + " (use o reparo para isolar o jogo)."
+                                                    : "ExitLag ativo junto do modo Todos (isole o jogo em Split ou feche um dos dois).")
+                                                : "ExitLag em execução (evite otimizar o mesmo jogo na VPN e no ExitLag ao mesmo tempo).";
                                             if (!r.Warnings.Contains(warnMsg)) r.Warnings.Add(warnMsg);
                                         }
                                         else
@@ -3561,12 +4727,14 @@ namespace VpnPanel
                 r.Warnings.Add("Serviço nativo do aplicativo oficial do WireSock em execução (conflito direto de driver).");
             if (r.WireSockProcessCount > 1)
                 r.Warnings.Add("Múltiplos processos wiresock-client.exe rodando ao mesmo tempo (" + r.WireSockProcessCount + ").");
-            if (!r.NdisDriverPresent)
+            if (!r.NdisDriverPresent && !r.WintunActive)
                 r.Warnings.Add("Driver NDIS do WireSock (ndiswgc) não está ativo no Windows.");
             if (r.ConflictingAdapters.Count > 0)
                 r.Warnings.Add("Adaptador VPN/virtual concorrente ativo: " + string.Join(", ", r.ConflictingAdapters.ToArray()) + ".");
             if (r.LowMetricAdapters.Count > 0)
                 r.Warnings.Add("Métrica de rota <= 15 concorrente (pode confundir o roteamento do WireSock): " + string.Join(", ", r.LowMetricAdapters.ToArray()) + ".");
+            if (r.DualPhysicalAdapters.Count > 1)
+                r.Warnings.Add("Múltiplas conexões físicas ativas ao mesmo tempo (" + string.Join(" + ", r.DualPhysicalAdapters.ToArray()) + ") — oscilações no Wi-Fi reiniciam o filtro do WireSock durante jogos.");
             if (r.ConflictingServices.Count > 0)
                 r.Warnings.Add("Serviço VPN/rede concorrente ativo: " + string.Join(", ", r.ConflictingServices.ToArray()) + ".");
 
@@ -3984,7 +5152,9 @@ namespace VpnPanel
             var report = new FixReport();
             if (!autoHealEnabled) return report;
 
-            lock (fixLock)
+            bool lockTaken = Monitor.TryEnter(fixLock, 250);
+            if (!lockTaken) return report;
+            try
             {
                 DateTime now = DateTime.UtcNow;
 
@@ -4038,6 +5208,97 @@ namespace VpnPanel
                 report.FixedCount = report.Applied.Count;
                 return report;
             }
+            finally
+            {
+                Monitor.Exit(fixLock);
+            }
+        }
+
+        // Unconditional post-drop recovery: cleans runtime copies, flushes Windows DNS negative cache,
+        // purges ghost IPv6, and resets WFP/network-lock if either a pending lock exists OR base UDP/TCP
+        // traffic fails despite an active physical gateway (network probes run outside fixLock so Connect never blocks).
+        public static FixReport TryPostDropRecovery(bool networkLockConfigured, bool verifyIfNoPendingLock, Func<bool> isBusy)
+        {
+            var report = new FixReport();
+            bool cleaned = false;
+            bool lockReset = false;
+
+            lock (fixLock)
+            {
+                int orphansKilled;
+                bool ghostOrDnsCleaned;
+                cleaned = Tunnel.TryIdleCleanup(
+                    true,
+                    true,
+                    false,
+                    true,
+                    true,
+                    isBusy,
+                    out orphansKilled,
+                    out lockReset,
+                    out ghostOrDnsCleaned);
+
+                if (!cleaned)
+                {
+                    report.Skipped.Add("Limpeza pós-queda ignorada porque uma nova conexão já iniciou");
+                    return report;
+                }
+
+                if (orphansKilled > 0)
+                {
+                    report.Applied.Add("Processos órfãos do WireSock encerrados (" + orphansKilled + ")");
+                    NetMon.Record("Autocura", NetMon.EventKind.Warn, "Processos órfãos encerrados após queda: " + orphansKilled + ".");
+                }
+                if (lockReset)
+                {
+                    report.Applied.Add("Kill Switch residual (WFP) liberado após queda");
+                    NetMon.Record("Autocura", NetMon.EventKind.Warn, "WFP / Kill Switch residual e temporários limpos após queda.");
+                }
+                if (ghostOrDnsCleaned)
+                {
+                    report.Applied.Add("Cache DNS renovado e rotas IPv6 fantasmas limpas");
+                    NetMon.Record("Autocura", NetMon.EventKind.Info, "Cache DNS renovado após encerramento do túnel.");
+                }
+                lastBgNetHealUtc = DateTime.UtcNow;
+            }
+
+            // Network probes run outside fixLock so manual Connect() / pre-connect heal is never blocked
+            if (!lockReset && (networkLockConfigured || verifyIfNoPendingLock) &&
+                (isBusy == null || !isBusy()) && NetDiag.HasPhysicalUplink())
+            {
+                bool trafficBlocked = false;
+                if (!networkLockConfigured)
+                {
+                    NetDiag.ProbeResult udp = NetDiag.ProbeUdpDns("1.1.1.1", 53, 800, CancellationToken.None);
+                    if ((udp == null || !udp.Ok) && (isBusy == null || !isBusy()))
+                    {
+                        NetDiag.ProbeResult tcp = NetDiag.ProbeTcp("1.1.1.1", 443, 800, CancellationToken.None);
+                        if (tcp == null || !tcp.Ok) trafficBlocked = true;
+                    }
+                }
+
+                if ((networkLockConfigured || trafficBlocked) && (isBusy == null || !isBusy()))
+                {
+                    lock (fixLock)
+                    {
+                        int extraOrphans;
+                        bool extraReset, extraDns;
+                        if (Tunnel.TryIdleCleanup(false, true, true, true, true, isBusy,
+                            out extraOrphans, out extraReset, out extraDns) && extraReset)
+                        {
+                            report.Applied.Add("Reset preventivo de bloqueio/driver aplicado após queda");
+                            NetMon.Record("Autocura", NetMon.EventKind.Warn,
+                                trafficBlocked
+                                    ? "Tráfego base falhou após queda com link físico ativo; reset preventivo do bloqueio WFP aplicado."
+                                    : "Reset preventivo de bloqueio WFP aplicado após queda.");
+                        }
+                        lastBgNetHealUtc = DateTime.UtcNow;
+                    }
+                }
+            }
+
+            report.FixedCount = report.Applied.Count;
+            return report;
         }
     }
 
@@ -4287,6 +5548,44 @@ namespace VpnPanel
         public static bool IsAlive(IntPtr handle)
         {
             return handle != IntPtr.Zero && WaitForSingleObject(handle, 0) == WAIT_TIMEOUT;
+        }
+
+        // Runs a hidden process with deadlock-free async stdout/stderr capture and bounded kill timeout.
+        public static int RunBounded(string exe, string args, int timeoutMs, out string stdout, out string stderr)
+        {
+            stdout = "";
+            stderr = "";
+            if (string.IsNullOrEmpty(exe)) return -1;
+            int waitMs = Math.Max(300, timeoutMs);
+            var outSb = new StringBuilder();
+            var errSb = new StringBuilder();
+            var psi = new ProcessStartInfo(exe, args ?? "")
+            {
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true
+            };
+            using (Process p = Process.Start(psi))
+            {
+                if (p == null) return -1;
+                p.OutputDataReceived += (s, e) => { if (e.Data != null) lock (outSb) outSb.AppendLine(e.Data); };
+                p.ErrorDataReceived += (s, e) => { if (e.Data != null) lock (errSb) errSb.AppendLine(e.Data); };
+                p.BeginOutputReadLine();
+                p.BeginErrorReadLine();
+                if (!p.WaitForExit(waitMs))
+                {
+                    try { p.Kill(); } catch { }
+                    p.WaitForExit(300);
+                    lock (outSb) stdout = outSb.ToString();
+                    lock (errSb) stderr = errSb.ToString();
+                    return -1;
+                }
+                p.WaitForExit(); // flush async output event handlers
+                lock (outSb) stdout = outSb.ToString();
+                lock (errSb) stderr = errSb.ToString();
+                return p.ExitCode;
+            }
         }
 
         public static int ExitCode(IntPtr handle)

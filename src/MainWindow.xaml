@@ -444,7 +444,7 @@
               <CheckBox x:Name="ChkReconnect" AutomationProperties.Name="Reconectar se a conexão cair" Style="{StaticResource Switch}">
                 <StackPanel>
                   <TextBlock Text="Reconectar se a conexão cair" FontWeight="SemiBold"/>
-                  <TextBlock Style="{StaticResource Caption}" Margin="0,2,0,0" Text="Tenta voltar sozinho até 3 vezes."/>
+                  <TextBlock Style="{StaticResource Caption}" Margin="0,2,0,0" Text="Tenta voltar sozinho até 4 vezes, aguarda rede e faz failover."/>
                 </StackPanel>
               </CheckBox>
               <Border Height="1" Background="{StaticResource Line}" Margin="0,14"/>
@@ -462,6 +462,41 @@
                   <TextBlock Style="{StaticResource Caption}" Margin="0,2,0,0" Text="Evita travamentos em telas compartilhadas e pacotes UDP grandes (MTU 1380). Vale na próxima conexão."/>
                 </StackPanel>
               </CheckBox>
+              <Border Height="1" Background="{StaticResource Line}" Margin="0,14"/>
+              <CheckBox x:Name="ChkGameMode" AutomationProperties.Name="Modo Estabilidade e Jogos UDP" Style="{StaticResource Switch}">
+                <StackPanel>
+                  <TextBlock Text="Modo Estabilidade / Jogos UDP" FontWeight="SemiBold"/>
+                  <TextBlock Style="{StaticResource Caption}" Margin="0,2,0,0" Text="Keepalive 15s (evita quedas em CGNAT), pré-calibra MTU antes de conectar e reaplica ajustes sozinho."/>
+                </StackPanel>
+              </CheckBox>
+              <Border Height="1" Background="{StaticResource Line}" Margin="0,14"/>
+              <StackPanel>
+                <TextBlock Text="DNS do túnel / Split" FontWeight="SemiBold"/>
+                <TextBlock Style="{StaticResource Caption}" Margin="0,2,0,10" Text="Use 1.1.1.1 ou 9.9.9.9 para evitar DNS lento da operadora mesmo em Split (Só estes) sem travar o Windows."/>
+                <Border Background="{StaticResource Surface2}" BorderBrush="{StaticResource Line}" BorderThickness="1" CornerRadius="10" Padding="3">
+                  <UniformGrid Columns="3">
+                    <RadioButton x:Name="SegDnsDefault" Style="{StaticResource Segment}" GroupName="dnsOpt" Content="Padrão"/>
+                    <RadioButton x:Name="SegDnsCloudflare" Style="{StaticResource Segment}" GroupName="dnsOpt" Content="1.1.1.1"/>
+                    <RadioButton x:Name="SegDnsQuad9" Style="{StaticResource Segment}" GroupName="dnsOpt" Content="9.9.9.9"/>
+                  </UniformGrid>
+                </Border>
+              </StackPanel>
+              <Border Height="1" Background="{StaticResource Line}" Margin="0,14"/>
+              <StackPanel>
+                <DockPanel>
+                  <Button x:Name="BtnInstallWireGuard" DockPanel.Dock="Right" Style="{StaticResource PrimaryButton}" Content="Instalar Wintun" Padding="10,5" FontSize="11.5" VerticalAlignment="Center" Visibility="Collapsed"/>
+                  <StackPanel>
+                    <TextBlock Text="Motor da VPN (Wintun / WireSock)" FontWeight="SemiBold"/>
+                    <TextBlock x:Name="TxtEngineStatus" Style="{StaticResource Caption}" Margin="0,2,0,10" Text="Automático usa WireGuard/Wintun no modo Todos e WireSock em Split."/>
+                  </StackPanel>
+                </DockPanel>
+                <Border Background="{StaticResource Surface2}" BorderBrush="{StaticResource Line}" BorderThickness="1" CornerRadius="10" Padding="3">
+                  <UniformGrid Columns="2">
+                    <RadioButton x:Name="SegEngineAuto" Style="{StaticResource Segment}" GroupName="engineOpt" Content="Automático (Recomendado)"/>
+                    <RadioButton x:Name="SegEngineWireSock" Style="{StaticResource Segment}" GroupName="engineOpt" Content="Sempre WireSock"/>
+                  </UniformGrid>
+                </Border>
+              </StackPanel>
               <Border Height="1" Background="{StaticResource Line}" Margin="0,14"/>
               <CheckBox x:Name="ChkAutoHeal" AutomationProperties.Name="Autocura automática de rede e MTU" Style="{StaticResource Switch}">
                 <StackPanel>

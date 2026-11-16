@@ -61,6 +61,7 @@ namespace VpnPanel
         public const string AppName = "VPN Panel";
         public static readonly string Dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), AppName);
         public static readonly string Exe = Path.Combine(Dir, "VpnPanel.exe");
+        public static readonly string ProbeExe = Path.Combine(Dir, "VpnPanelProbe.exe");
         static readonly string StartMenuLink = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonPrograms), AppName + ".lnk");
         static readonly string DesktopLink = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory), AppName + ".lnk");
         const string UninstallKey = @"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\VPN Panel";
@@ -161,6 +162,12 @@ namespace VpnPanel
                 try { File.WriteAllBytes(Exe, exe); break; }
                 catch (IOException) { if (i >= 10) throw; Thread.Sleep(300); }
             }
+            try
+            {
+                File.WriteAllBytes(ProbeExe, exe);
+                File.SetLastWriteTimeUtc(ProbeExe, File.GetLastWriteTimeUtc(Exe));
+            }
+            catch { }
 
             Shortcut(StartMenuLink);
             if (desktopShortcut) Shortcut(DesktopLink);
@@ -206,6 +213,22 @@ namespace VpnPanel
                 if (k != null) desktop = k.GetValue("DesktopShortcut") as string;
             foreach (string link in new[] { StartMenuLink, DesktopLink, desktop })
                 if (!string.IsNullOrEmpty(link) && File.Exists(link)) try { File.Delete(link); } catch { }
+            if (File.Exists(ProbeExe)) try { File.Delete(ProbeExe); } catch { }
+            try
+            {
+                string localProbeDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), AppName);
+                string localProbe = Path.Combine(localProbeDir, "VpnPanelProbe.exe");
+                if (File.Exists(localProbe)) File.Delete(localProbe);
+                if (Directory.Exists(localProbeDir) && Directory.GetFileSystemEntries(localProbeDir).Length == 0)
+                    Directory.Delete(localProbeDir);
+            }
+            catch { }
+            try
+            {
+                string legacyProbe = Path.Combine(Paths.Runtime, "VpnPanelProbe.exe");
+                if (File.Exists(legacyProbe)) File.Delete(legacyProbe);
+            }
+            catch { }
             try { Registry.LocalMachine.DeleteSubKeyTree(UninstallKey); } catch { }
 
             if (removeData && Directory.Exists(Paths.Data)) try { Directory.Delete(Paths.Data, true); } catch { }
