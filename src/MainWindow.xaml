@@ -565,6 +565,13 @@
                   <TextBlock Text="Verificar se há atualizações" VerticalAlignment="Center"/>
                 </DockPanel>
               </Button>
+              <Button x:Name="BtnRollback" AutomationProperties.Name="Voltar para versão anterior" Style="{StaticResource GhostButton}" Background="Transparent" HorizontalContentAlignment="Stretch" Padding="10,9" Visibility="Collapsed" ToolTip="Restaura a versão anterior salva antes da última atualização, mantendo servidores e ajustes">
+                <DockPanel>
+                  <TextBlock DockPanel.Dock="Right" Text="&#xE76C;" FontFamily="{StaticResource Icons}" FontSize="11" Foreground="{StaticResource Muted}" VerticalAlignment="Center"/>
+                  <TextBlock Text="&#xE7A7;" FontFamily="{StaticResource Icons}" FontSize="14" Foreground="{StaticResource Warn}" VerticalAlignment="Center" Margin="0,0,12,0"/>
+                  <TextBlock x:Name="TxtRollbackLabel" Text="Voltar para a versão anterior" VerticalAlignment="Center"/>
+                </DockPanel>
+              </Button>
               <Button x:Name="BtnBackup" AutomationProperties.Name="Fazer backup dos servidores" Style="{StaticResource GhostButton}" Background="Transparent" HorizontalContentAlignment="Stretch" Padding="10,9">
                 <DockPanel>
                   <TextBlock DockPanel.Dock="Right" Text="&#xE76C;" FontFamily="{StaticResource Icons}" FontSize="11" Foreground="{StaticResource Muted}" VerticalAlignment="Center"/>

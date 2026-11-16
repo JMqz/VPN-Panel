@@ -110,7 +110,7 @@ namespace VpnPanel
         }
 
         // Closes other running copies of the app (the VPN tunnel itself keeps running)
-        static void StopApp()
+        public static void StopApp()
         {
             int self = Process.GetCurrentProcess().Id;
             foreach (Process p in Process.GetProcessesByName("VpnPanel"))
@@ -156,6 +156,7 @@ namespace VpnPanel
         {
             StopApp();
             Directory.CreateDirectory(Dir);
+            RollbackManager.CapturePreUpdateSnapshot(exe);
             // the old exe can stay locked for a moment after its process ends
             for (int i = 0; ; i++)
             {
@@ -217,6 +218,7 @@ namespace VpnPanel
             foreach (string link in new[] { StartMenuLink, DesktopLink, desktop })
                 if (!string.IsNullOrEmpty(link) && File.Exists(link)) try { File.Delete(link); } catch { }
             if (File.Exists(ProbeExe)) try { File.Delete(ProbeExe); } catch { }
+            if (Directory.Exists(RollbackManager.RollbackDir)) try { Directory.Delete(RollbackManager.RollbackDir, true); } catch { }
             try
             {
                 string localProbeDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), AppName);
