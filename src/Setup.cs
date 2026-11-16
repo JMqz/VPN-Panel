@@ -219,6 +219,8 @@ namespace VpnPanel
                 string localProbeDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), AppName);
                 string localProbe = Path.Combine(localProbeDir, "VpnPanelProbe.exe");
                 if (File.Exists(localProbe)) File.Delete(localProbe);
+                string localIcons = Path.Combine(localProbeDir, "icons");
+                if (Directory.Exists(localIcons)) Directory.Delete(localIcons, true);
                 if (Directory.Exists(localProbeDir) && Directory.GetFileSystemEntries(localProbeDir).Length == 0)
                     Directory.Delete(localProbeDir);
             }

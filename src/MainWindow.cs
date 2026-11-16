@@ -137,7 +137,8 @@ namespace VpnPanel
         long waitingForNetSinceTick, lastDualNicWarnTick;
         readonly HashSet<string> failedServersThisDrop = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         uint msgTaskbarCreated;
-        IntPtr windowHandle;
+        IntPtr windowHandle, hTaskbarBigIcon, hTaskbarSmallIcon;
+        string lastTaskbarAccentId;
         bool hotkeyRegistered;
 
         const int HotkeyId = 9001;
@@ -145,6 +146,11 @@ namespace VpnPanel
         const uint ModControl = 0x0002;
         const uint VkV = 0x56;
         const int WmHotkey = 0x0312;
+        const int WmSetIcon = 0x0080;
+        const int IconSmall = 0;
+        const int IconBig = 1;
+        const int GclpHicon = -14;
+        const int GclpHiconSm = -34;
 
         [DllImport("user32.dll", SetLastError = true)]
         static extern bool RegisterHotKey(IntPtr hWnd, int id, uint fsModifiers, uint vk);
@@ -155,8 +161,72 @@ namespace VpnPanel
         [DllImport("user32.dll", SetLastError = true)]
         static extern bool DestroyIcon(IntPtr hIcon);
 
+        [DllImport("user32.dll", CharSet = CharSet.Auto)]
+        static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
+
+        [DllImport("user32.dll", EntryPoint = "SetClassLongPtrW", SetLastError = true)]
+        static extern IntPtr SetClassLongPtr64(IntPtr hWnd, int nIndex, IntPtr dwNewLong);
+
+        [DllImport("user32.dll", EntryPoint = "SetClassLongW", SetLastError = true)]
+        static extern int SetClassLong32(IntPtr hWnd, int nIndex, int dwNewLong);
+
+        [DllImport("shell32.dll")]
+        static extern int SHGetPropertyStoreForWindow(IntPtr hwnd, ref Guid iid, [MarshalAs(UnmanagedType.Interface)] out IPropertyStore propStore);
+
+        [DllImport("ole32.dll")]
+        static extern int PropVariantClear(ref PropVariant pv);
+
         [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
         static extern uint RegisterWindowMessage(string lpString);
+
+        [StructLayout(LayoutKind.Sequential, Pack = 4)]
+        struct PropertyKey
+        {
+            public Guid fmtid;
+            public uint pid;
+            public PropertyKey(Guid g, uint id) { fmtid = g; pid = id; }
+        }
+
+        [StructLayout(LayoutKind.Explicit)]
+        struct PropVariant
+        {
+            [FieldOffset(0)] public ushort vt;
+            [FieldOffset(2)] public ushort wReserved1;
+            [FieldOffset(4)] public ushort wReserved2;
+            [FieldOffset(6)] public ushort wReserved3;
+            [FieldOffset(8)] public IntPtr ptrVal;
+            [FieldOffset(16)] public long pad;
+        }
+
+        [ComImport, Guid("886D8EEB-8CF2-4446-8D02-CDBA1DBDCF99"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+        interface IPropertyStore
+        {
+            [PreserveSig] int GetCount(out uint cProps);
+            [PreserveSig] int GetAt(uint iProp, out PropertyKey pkey);
+            [PreserveSig] int GetValue(ref PropertyKey key, out PropVariant pv);
+            [PreserveSig] int SetValue(ref PropertyKey key, ref PropVariant pv);
+            [PreserveSig] int Commit();
+        }
+
+        [ComImport, Guid("56FDF342-FD6D-11d0-958A-006097C9A090"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+        interface ITaskbarList
+        {
+            [PreserveSig] int HrInit();
+            [PreserveSig] int AddTab(IntPtr hwnd);
+            [PreserveSig] int DeleteTab(IntPtr hwnd);
+            [PreserveSig] int ActivateTab(IntPtr hwnd);
+            [PreserveSig] int SetActiveAlt(IntPtr hwnd);
+        }
+
+        [ComImport, Guid("56FDF344-FD6D-11d0-958A-006097C9A090")]
+        class ComTaskbarList { }
+
+        static readonly Guid IidPropertyStore = new Guid("886D8EEB-8CF2-4446-8D02-CDBA1DBDCF99");
+        static readonly Guid PkeyFmtAppUserModel = new Guid("9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3");
+        static readonly PropertyKey PkeyAppUserModelId = new PropertyKey(PkeyFmtAppUserModel, 5);
+        static readonly PropertyKey PkeyAppUserModelRelaunchCmd = new PropertyKey(PkeyFmtAppUserModel, 2);
+        static readonly PropertyKey PkeyAppUserModelRelaunchIcon = new PropertyKey(PkeyFmtAppUserModel, 3);
+        static readonly PropertyKey PkeyAppUserModelRelaunchName = new PropertyKey(PkeyFmtAppUserModel, 4);
         DateTime startedAt, lastProcScan, lastHomePing, lastHomeAppsCheck;
         long connectTotalStartTick, connectLaunchTick, resumeGraceUntilTick, lastDropTick;
         long rehandshakeSuspectTick;
@@ -421,6 +491,7 @@ namespace VpnPanel
                 msgTaskbarCreated = RegisterWindowMessage("TaskbarCreated");
                 var src = HwndSource.FromHwnd(windowHandle);
                 if (src != null) src.AddHook(WndProc);
+                if (activePreset != null) ApplyTaskbarIcon(activePreset, null, false);
                 SyncHotkey();
             };
             w.IsVisibleChanged += (s, e) => OnVisibilityChanged();
@@ -973,6 +1044,11 @@ namespace VpnPanel
             {
                 tray.Visible = false;
                 tray.Visible = true;
+                if (activePreset != null)
+                {
+                    lastTaskbarAccentId = null;
+                    ApplyTaskbarIcon(activePreset, null, false);
+                }
             }
             return IntPtr.Zero;
         }
@@ -1062,6 +1138,8 @@ namespace VpnPanel
             if (trayOn != null) trayOn.Dispose();
             if (trayOff != null) trayOff.Dispose();
             if (trayWarn != null) trayWarn.Dispose();
+            if (hTaskbarBigIcon != IntPtr.Zero) { DestroyIcon(hTaskbarBigIcon); hTaskbarBigIcon = IntPtr.Zero; }
+            if (hTaskbarSmallIcon != IntPtr.Zero) { DestroyIcon(hTaskbarSmallIcon); hTaskbarSmallIcon = IntPtr.Zero; }
             Application.Current.Shutdown();
         }
 
@@ -5208,15 +5286,22 @@ namespace VpnPanel
             {
                 try
                 {
-                    using (var icon32 = TrayIcon(true, false, preset.GdiPrimary, 32))
+                    byte[] icoBytes = BuildAccentIcoBytes(preset.GdiPrimary);
+                    using (var ms = new MemoryStream(icoBytes))
                     {
-                        var icoSource = Imaging.CreateBitmapSourceFromHIcon(icon32.Handle, Int32Rect.Empty, BitmapSizeOptions.FromEmptyOptions());
-                        icoSource.Freeze();
-                        titleIcon.Source = icoSource;
-                        w.Icon = icoSource;
+                        var decoder = new IconBitmapDecoder(ms, BitmapCreateOptions.PreservePixelFormat, BitmapCacheOption.OnLoad);
+                        var frame32 = decoder.Frames.FirstOrDefault(f => f.PixelWidth == 32) ?? decoder.Frames[0];
+                        var frame48 = decoder.Frames.FirstOrDefault(f => f.PixelWidth == 48) ?? frame32;
+                        titleIcon.Source = frame32;
+                        w.Icon = frame48;
                     }
+                    ApplyTaskbarIcon(preset, icoBytes, saveSettings);
                 }
                 catch { }
+            }
+            else
+            {
+                try { ApplyTaskbarIcon(preset, null, saveSettings); } catch { }
             }
             UpdateTraffic();
 
@@ -5296,55 +5381,203 @@ namespace VpnPanel
             }
         }
 
+        static void SetClassLongPtrSafe(IntPtr hwnd, int index, IntPtr value)
+        {
+            if (IntPtr.Size == 8) SetClassLongPtr64(hwnd, index, value);
+            else SetClassLong32(hwnd, index, value.ToInt32());
+        }
+
+        static void SetWindowStringProp(IPropertyStore store, PropertyKey key, string value)
+        {
+            var pv = new PropVariant { vt = 31, ptrVal = Marshal.StringToCoTaskMemUni(value ?? "") };
+            try { store.SetValue(ref key, ref pv); }
+            finally { PropVariantClear(ref pv); }
+        }
+
+        static string EnsureAccentIcoFile(ColorThemePreset preset, byte[] icoBytes)
+        {
+            try
+            {
+                string dir = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "VPN Panel", "icons");
+                Directory.CreateDirectory(dir);
+                string path = System.IO.Path.Combine(dir, "accent-" + preset.Id.ToLowerInvariant() + "-v1.ico");
+                if (File.Exists(path) && new FileInfo(path).Length == icoBytes.Length) return path;
+                string tmp = path + ".tmp";
+                File.WriteAllBytes(tmp, icoBytes);
+                if (File.Exists(path)) File.Delete(path);
+                File.Move(tmp, path);
+                return path;
+            }
+            catch { return null; }
+        }
+
+        void ApplyTaskbarIcon(ColorThemePreset preset, byte[] icoBytes, bool allowTabRefresh)
+        {
+            if (windowHandle == IntPtr.Zero || preset == null) return;
+            if (icoBytes == null) icoBytes = BuildAccentIcoBytes(preset.GdiPrimary);
+
+            IntPtr newBig = IntPtr.Zero, newSmall = IntPtr.Zero;
+            try
+            {
+                using (var bigBmp = RenderMedallionBitmap(48, true, false, preset.GdiPrimary))
+                    newBig = bigBmp.GetHicon();
+                int smallSz = Math.Max(16, WF.SystemInformation.SmallIconSize.Width);
+                using (var smallBmp = RenderMedallionBitmap(smallSz, true, false, preset.GdiPrimary))
+                    newSmall = smallBmp.GetHicon();
+
+                SetClassLongPtrSafe(windowHandle, GclpHicon, newBig);
+                SetClassLongPtrSafe(windowHandle, GclpHiconSm, newSmall);
+                SendMessage(windowHandle, WmSetIcon, (IntPtr)IconBig, newBig);
+                SendMessage(windowHandle, WmSetIcon, (IntPtr)IconSmall, newSmall);
+
+                IntPtr prevBig = hTaskbarBigIcon;
+                IntPtr prevSmall = hTaskbarSmallIcon;
+                hTaskbarBigIcon = newBig;
+                hTaskbarSmallIcon = newSmall;
+                newBig = IntPtr.Zero;
+                newSmall = IntPtr.Zero;
+                if (prevBig != IntPtr.Zero) DestroyIcon(prevBig);
+                if (prevSmall != IntPtr.Zero) DestroyIcon(prevSmall);
+            }
+            catch
+            {
+                if (newBig != IntPtr.Zero) DestroyIcon(newBig);
+                if (newSmall != IntPtr.Zero) DestroyIcon(newSmall);
+            }
+
+            string icoPath = EnsureAccentIcoFile(preset, icoBytes);
+            try
+            {
+                Guid iid = IidPropertyStore;
+                IPropertyStore store;
+                if (SHGetPropertyStoreForWindow(windowHandle, ref iid, out store) == 0 && store != null)
+                {
+                    try
+                    {
+                        SetWindowStringProp(store, PkeyAppUserModelId, "JMqz.VpnPanel." + preset.Id);
+                        if (!string.IsNullOrEmpty(icoPath))
+                            SetWindowStringProp(store, PkeyAppUserModelRelaunchIcon, icoPath + ",0");
+                        SetWindowStringProp(store, PkeyAppUserModelRelaunchName, "VPN Panel");
+                        SetWindowStringProp(store, PkeyAppUserModelRelaunchCmd, "\"" + Paths.Exe + "\"");
+                        store.Commit();
+                    }
+                    finally { Marshal.ReleaseComObject(store); }
+                }
+            }
+            catch { }
+
+            if (allowTabRefresh && w.IsVisible && w.ShowInTaskbar &&
+                !string.Equals(lastTaskbarAccentId, preset.Id, StringComparison.OrdinalIgnoreCase))
+            {
+                try
+                {
+                    var tbl = (ITaskbarList)new ComTaskbarList();
+                    try
+                    {
+                        tbl.HrInit();
+                        tbl.DeleteTab(windowHandle);
+                        tbl.AddTab(windowHandle);
+                    }
+                    finally { Marshal.ReleaseComObject(tbl); }
+                }
+                catch { }
+            }
+            lastTaskbarAccentId = preset.Id;
+        }
+
+        static byte[] BuildAccentIcoBytes(SD.Color customAccent)
+        {
+            int[] sizes = new[] { 16, 20, 24, 32, 48, 64 };
+            var pngs = new byte[sizes.Length][];
+            for (int i = 0; i < sizes.Length; i++)
+            {
+                using (var bmp = RenderMedallionBitmap(sizes[i], true, false, customAccent))
+                using (var pngMs = new MemoryStream())
+                {
+                    bmp.Save(pngMs, SD.Imaging.ImageFormat.Png);
+                    pngs[i] = pngMs.ToArray();
+                }
+            }
+            using (var ms = new MemoryStream())
+            using (var bw = new BinaryWriter(ms))
+            {
+                bw.Write((ushort)0);
+                bw.Write((ushort)1);
+                bw.Write((ushort)sizes.Length);
+                int offset = 6 + 16 * sizes.Length;
+                for (int i = 0; i < sizes.Length; i++)
+                {
+                    bw.Write((byte)(sizes[i] % 256));
+                    bw.Write((byte)(sizes[i] % 256));
+                    bw.Write((byte)0);
+                    bw.Write((byte)0);
+                    bw.Write((ushort)1);
+                    bw.Write((ushort)32);
+                    bw.Write((uint)pngs[i].Length);
+                    bw.Write((uint)offset);
+                    offset += pngs[i].Length;
+                }
+                for (int i = 0; i < pngs.Length; i++) bw.Write(pngs[i]);
+                bw.Flush();
+                return ms.ToArray();
+            }
+        }
+
         // Cyber Shield Raven icon (Mullvad style: solid accent circle with dark navy raven cutout for maximum clarity)
+        static SD.Bitmap RenderMedallionBitmap(int s, bool active, bool warn, SD.Color? customAccent)
+        {
+            var bmp = new SD.Bitmap(s, s);
+            using (SD.Graphics g = SD.Graphics.FromImage(bmp))
+            {
+                g.SmoothingMode = SD.Drawing2D.SmoothingMode.AntiAlias;
+                g.PixelOffsetMode = SD.Drawing2D.PixelOffsetMode.HighQuality;
+                g.Clear(SD.Color.Transparent);
+
+                float inset = s <= 20 ? 0.5f : 1.0f;
+                if (warn)
+                {
+                    using (var bg = new SD.SolidBrush(SD.Color.FromArgb(255, 213, 36)))
+                        g.FillEllipse(bg, inset, inset, s - 2 * inset, s - 2 * inset);
+
+                    float cx = s / 2.0F, cy = s / 2.0F;
+                    g.TranslateTransform(cx - 0.5f, cy);
+                    using (var dark = new SD.SolidBrush(SD.Color.FromArgb(16, 28, 44)))
+                        DrawRavenShape(g, dark, dark, s / 115.0F);
+                }
+                else if (active)
+                {
+                    SD.Color baseCol = customAccent ?? SD.Color.FromArgb(68, 173, 77);
+                    using (var bg = new SD.SolidBrush(baseCol))
+                        g.FillEllipse(bg, inset, inset, s - 2 * inset, s - 2 * inset);
+
+                    float cx = s / 2.0F, cy = s / 2.0F;
+                    g.TranslateTransform(cx - 0.5f, cy);
+                    using (var dark = new SD.SolidBrush(SD.Color.FromArgb(16, 28, 44)))
+                        DrawRavenShape(g, dark, dark, s / 115.0F);
+                }
+                else
+                {
+                    using (var bg = new SD.SolidBrush(SD.Color.FromArgb(20, 30, 46)))
+                        g.FillEllipse(bg, inset, inset, s - 2 * inset, s - 2 * inset);
+
+                    float penWidth = s <= 20 ? 1.2f : Math.Max(1.5f, s / 20.0f);
+                    using (var ringPen = new SD.Pen(SD.Color.FromArgb(60, 75, 96), penWidth))
+                        g.DrawEllipse(ringPen, inset, inset, s - 2 * inset, s - 2 * inset);
+
+                    float cx = s / 2.0F, cy = s / 2.0F;
+                    g.TranslateTransform(cx - 0.5f, cy);
+                    using (var muted = new SD.SolidBrush(SD.Color.FromArgb(120, 138, 162)))
+                        DrawRavenShape(g, muted, muted, s / 125.0F);
+                }
+            }
+            return bmp;
+        }
+
         static SD.Icon TrayIcon(bool active, bool warn, SD.Color? customAccent = null, int? targetSize = null)
         {
             int s = targetSize.HasValue ? targetSize.Value : Math.Max(16, WF.SystemInformation.SmallIconSize.Width);
-            using (var bmp = new SD.Bitmap(s, s))
+            using (var bmp = RenderMedallionBitmap(s, active, warn, customAccent))
             {
-                using (SD.Graphics g = SD.Graphics.FromImage(bmp))
-                {
-                    g.SmoothingMode = SD.Drawing2D.SmoothingMode.AntiAlias;
-                    g.PixelOffsetMode = SD.Drawing2D.PixelOffsetMode.HighQuality;
-                    g.Clear(SD.Color.Transparent);
-
-                    float inset = s <= 20 ? 0.5f : 1.0f;
-                    if (warn)
-                    {
-                        using (var bg = new SD.SolidBrush(SD.Color.FromArgb(255, 213, 36)))
-                            g.FillEllipse(bg, inset, inset, s - 2 * inset, s - 2 * inset);
-
-                        float cx = s / 2.0F, cy = s / 2.0F;
-                        g.TranslateTransform(cx - 0.5f, cy);
-                        using (var dark = new SD.SolidBrush(SD.Color.FromArgb(16, 28, 44)))
-                            DrawRavenShape(g, dark, dark, s / 115.0F);
-                    }
-                    else if (active)
-                    {
-                        SD.Color baseCol = customAccent ?? SD.Color.FromArgb(68, 173, 77);
-                        using (var bg = new SD.SolidBrush(baseCol))
-                            g.FillEllipse(bg, inset, inset, s - 2 * inset, s - 2 * inset);
-
-                        float cx = s / 2.0F, cy = s / 2.0F;
-                        g.TranslateTransform(cx - 0.5f, cy);
-                        using (var dark = new SD.SolidBrush(SD.Color.FromArgb(16, 28, 44)))
-                            DrawRavenShape(g, dark, dark, s / 115.0F);
-                    }
-                    else
-                    {
-                        using (var bg = new SD.SolidBrush(SD.Color.FromArgb(20, 30, 46)))
-                            g.FillEllipse(bg, inset, inset, s - 2 * inset, s - 2 * inset);
-
-                        float penWidth = s <= 20 ? 1.2f : Math.Max(1.5f, s / 20.0f);
-                        using (var ringPen = new SD.Pen(SD.Color.FromArgb(60, 75, 96), penWidth))
-                            g.DrawEllipse(ringPen, inset, inset, s - 2 * inset, s - 2 * inset);
-
-                        float cx = s / 2.0F, cy = s / 2.0F;
-                        g.TranslateTransform(cx - 0.5f, cy);
-                        using (var muted = new SD.SolidBrush(SD.Color.FromArgb(120, 138, 162)))
-                            DrawRavenShape(g, muted, muted, s / 125.0F);
-                    }
-                }
                 IntPtr hIcon = bmp.GetHicon();
                 try { return (SD.Icon)SD.Icon.FromHandle(hIcon).Clone(); }
                 finally { DestroyIcon(hIcon); }
