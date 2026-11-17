@@ -92,9 +92,8 @@ namespace VpnPanel
         DateTime cachedPreMtuAtUtc = DateTime.MinValue;
         readonly TextBlock txtLockNote;
         readonly Border cardUpdate;
-        readonly Button btnApplyUpdate, btnCheckUpdate, btnResetLock, btnCleanLegacy, btnRollback;
-        readonly TextBlock txtRollbackLabel;
-        bool cleanLegacyRunning, rollbackRunning;
+        readonly Button btnApplyUpdate, btnCheckUpdate, btnResetLock, btnCleanLegacy;
+        bool cleanLegacyRunning;
         readonly TextBlock txtUpdateFoundTitle, txtUpdateFoundDetail, txtUpdateBadge;
         Updater.ReleaseInfo availableUpdate;
         bool pendingUpdatePrompt, updateDialogOpen, checkingForUpdates;
@@ -409,8 +408,6 @@ namespace VpnPanel
             btnCheckUpdate = E<Button>("BtnCheckUpdate");
             btnResetLock = E<Button>("BtnResetLock");
             btnCleanLegacy = E<Button>("BtnCleanLegacy");
-            btnRollback = E<Button>("BtnRollback");
-            txtRollbackLabel = E<TextBlock>("TxtRollbackLabel");
             txtUpdateFoundTitle = E<TextBlock>("TxtUpdateFoundTitle");
             txtUpdateFoundDetail = E<TextBlock>("TxtUpdateFoundDetail");
             txtUpdateBadge = E<TextBlock>("TxtUpdateBadge");
@@ -695,8 +692,6 @@ namespace VpnPanel
             btnApplyUpdate.Click += (s, e) => InstallUpdate();
             btnResetLock.Click += (s, e) => ResetNetworkLockAction();
             if (btnCleanLegacy != null) btnCleanLegacy.Click += (s, e) => CleanLegacyAction();
-            if (btnRollback != null) btnRollback.Click += (s, e) => RollbackAction();
-            UpdateRollbackUi();
             E<Button>("BtnBackup").Click += (s, e) => ExportBackup();
             E<Button>("BtnLog").Click += (s, e) => OpenLog();
             E<Button>("BtnDataDir").Click += (s, e) => Process.Start("explorer.exe", "\"" + Paths.Data + "\"");
@@ -1130,7 +1125,7 @@ namespace VpnPanel
         void Quit()
         {
             exiting = true;
-            if (!rollbackRunning) RollbackManager.MarkStartupHealthy();
+            RollbackManager.MarkStartupHealthy();
             CancelAllDiag();
             SaveWindowPosition();
             if (powerModeHandler != null) { try { Microsoft.Win32.SystemEvents.PowerModeChanged -= powerModeHandler; } catch { } }
@@ -5116,54 +5111,6 @@ namespace VpnPanel
                     }));
                 }
             });
-        }
-
-        void UpdateRollbackUi()
-        {
-            if (btnRollback == null || txtRollbackLabel == null) return;
-            string prev = RollbackManager.AvailablePrevVersion();
-            if (Paths.IsInstalled && !string.IsNullOrEmpty(prev))
-            {
-                txtRollbackLabel.Text = "Voltar para versão anterior (v" + prev + ")";
-                btnRollback.Visibility = Visibility.Visible;
-            }
-            else
-            {
-                btnRollback.Visibility = Visibility.Collapsed;
-            }
-        }
-
-        void RollbackAction()
-        {
-            if (rollbackRunning) return;
-            string prev = RollbackManager.AvailablePrevVersion();
-            if (!Paths.IsInstalled || string.IsNullOrEmpty(prev))
-            {
-                Dialogs.Info(w, "Sem versão anterior salva", "Nenhuma versão anterior foi encontrada para rollback neste computador.");
-                UpdateRollbackUi();
-                return;
-            }
-            if (!Dialogs.Confirm(w, "Voltar para a versão v" + prev + "?",
-                "Isso restaura o VPN Panel para a v" + prev + " salva antes da última atualização. Seus servidores, ajustes e túnel atual continuam preservados.",
-                "Restaurar v" + prev, true))
-                return;
-
-            rollbackRunning = true;
-            if (btnRollback != null) btnRollback.IsEnabled = false;
-            try
-            {
-                settings.SkippedUpdateVersion = Program.Version;
-                settings.Save();
-            }
-            catch { }
-            if (!RollbackManager.BeginRollback(false))
-            {
-                rollbackRunning = false;
-                if (btnRollback != null) btnRollback.IsEnabled = true;
-                Dialogs.Info(w, "Não foi possível iniciar o rollback", "Verifique se os arquivos em Program Files\\VPN Panel\\rollback estão acessíveis.");
-                return;
-            }
-            Quit();
         }
 
         void CleanLegacyAction()

@@ -1,0 +1,197 @@
+# Reverte o código de src\ na branch main para uma tag estável anterior, atualiza Program.Version
+# para uma nova tag hotfix, compila, assina (quando SignPath está configurado) e publica a Release no GitHub
+# para que o auto-updater dos clientes volte automaticamente para o código estável.
+
+name: Rollback Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_tag:
+        description: 'Tag boa para restaurar (ex.: v3.2.0)'
+        required: true
+      new_tag:
+        description: 'Nova tag a publicar (ex.: v3.2.3). Vazio = incrementa patch automaticamente.'
+        required: false
+      bad_tag:
+        description: 'Tag ruim opcional para marcar como pré-lançamento imediatamente (ex.: v3.2.2)'
+        required: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-rollback
+  cancel-in-progress: false
+
+jobs:
+  rollback:
+    runs-on: windows-latest
+    env:
+      SIGN: ${{ secrets.SIGNPATH_API_TOKEN != '' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Restore target_tag into src and bump new_tag
+        shell: pwsh
+        env:
+          INPUT_TARGET_TAG: ${{ inputs.target_tag }}
+          INPUT_NEW_TAG: ${{ inputs.new_tag }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $target = ([string]$env:INPUT_TARGET_TAG).Trim()
+          if (-not $target.StartsWith('v')) { $target = "v$target" }
+          $targetFound = git tag --list $target
+          if ($LASTEXITCODE -ne 0) { throw "git tag failed ($LASTEXITCODE)" }
+          if (-not $targetFound) { throw "Tag '$target' not found" }
+
+          $parsed = @(git tag --list "v*" | Where-Object { $_ -match '^v(\d+)\.(\d+)(?:\.(\d+))?$' } | ForEach-Object {
+            $vt = $_.Substring(1)
+            if ($vt -notmatch '^\d+\.\d+\.\d+$') { $vt = "$vt.0" }
+            [Version]$vt
+          } | Sort-Object -Descending)
+          if ($LASTEXITCODE -ne 0) { throw "git tag list failed ($LASTEXITCODE)" }
+          if ($parsed.Count -eq 0) { throw "No existing version tags found" }
+          $top = $parsed[0]
+
+          $newTag = ([string]$env:INPUT_NEW_TAG).Trim()
+          if ([string]::IsNullOrWhiteSpace($newTag)) {
+            $newTag = "v$($top.Major).$($top.Minor).$($top.Build + 1)"
+          }
+          if (-not $newTag.StartsWith('v')) { $newTag = "v$newTag" }
+          $newVer = $newTag.TrimStart('v')
+          if ($newVer -notmatch '^\d+\.\d+\.\d+$') { throw "Invalid version format: $newTag (expected vX.Y.Z)" }
+          if ([Version]$newVer -le $top) { throw "New tag ($newTag) must be strictly greater than latest tag (v$top)" }
+          $newFound = git tag --list $newTag
+          if ($LASTEXITCODE -ne 0) { throw "git tag check failed ($LASTEXITCODE)" }
+          if ($newFound) { throw "Tag '$newTag' already exists" }
+
+          git rm -rf --ignore-unmatch src | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "git rm failed ($LASTEXITCODE)" }
+          git checkout $target -- src
+          if ($LASTEXITCODE -ne 0) { throw "Failed to checkout src from $target ($LASTEXITCODE)" }
+
+          $appCs = "src/App.cs"
+          $txt = [System.IO.File]::ReadAllText($appCs, [System.Text.Encoding]::UTF8)
+          $txt = [regex]::Replace($txt, '\[assembly:\s*AssemblyVersion\("[^"]+"\)\]', "[assembly: AssemblyVersion(`"$newVer.0`")]")
+          $txt = [regex]::Replace($txt, '\[assembly:\s*AssemblyFileVersion\("[^"]+"\)\]', "[assembly: AssemblyFileVersion(`"$newVer.0`")]")
+          $txt = [regex]::Replace($txt, '(public\s+const\s+string\s+Version\s*=\s*")[^"]+(")', "`${1}$newVer`${2}")
+          [System.IO.File]::WriteAllText($appCs, $txt, (New-Object System.Text.UTF8Encoding $false))
+
+          "TAG=$newTag" >> $env:GITHUB_ENV
+          "VER=$newVer" >> $env:GITHUB_ENV
+          "TARGET=$target" >> $env:GITHUB_ENV
+
+      - name: Mark bad release as prerelease immediately
+        if: inputs.bad_tag != ''
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_BAD_TAG: ${{ inputs.bad_tag }}
+        run: |
+          $bad = ([string]$env:INPUT_BAD_TAG).Trim()
+          if ($bad -and -not $bad.StartsWith('v')) { $bad = "v$bad" }
+          if ($bad) {
+            gh release edit $bad --prerelease 2>$null
+            if ($LASTEXITCODE -ne 0) { Write-Warning "Could not mark $bad as prerelease ($LASTEXITCODE)" }
+          }
+
+      - name: Build VpnPanel.exe
+        shell: powershell
+        run: ./src/build.ps1 -Target App
+
+      - name: Upload unsigned app
+        id: app-unsigned
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-unsigned
+          path: dist/VpnPanel.exe
+          if-no-files-found: error
+
+      - name: Sign app (SignPath)
+        if: env.SIGN == 'true'
+        uses: signpath/github-action-submit-signing-request@v1
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG || 'VPN-Panel' }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG || 'release-signing' }}
+          github-artifact-id: ${{ steps.app-unsigned.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: signed-app
+
+      - name: Use signed app
+        if: env.SIGN == 'true'
+        shell: pwsh
+        run: Copy-Item signed-app/VpnPanel.exe dist/VpnPanel.exe -Force
+
+      - name: Build installer
+        shell: powershell
+        run: ./src/build.ps1 -Target Setup
+
+      - name: Upload unsigned installer
+        id: setup-unsigned
+        uses: actions/upload-artifact@v4
+        with:
+          name: setup-unsigned
+          path: dist/VPN Panel Setup.exe
+          if-no-files-found: error
+
+      - name: Sign installer (SignPath)
+        if: env.SIGN == 'true'
+        uses: signpath/github-action-submit-signing-request@v1
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG || 'VPN-Panel' }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG || 'release-signing' }}
+          github-artifact-id: ${{ steps.setup-unsigned.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: signed-setup
+
+      - name: Use signed installer
+        if: env.SIGN == 'true'
+        shell: pwsh
+        run: Copy-Item "signed-setup/VPN Panel Setup.exe" "dist/VPN Panel Setup.exe" -Force
+
+      - name: Check signatures
+        if: env.SIGN == 'true'
+        shell: pwsh
+        run: |
+          foreach ($f in 'dist/VpnPanel.exe', 'dist/VPN Panel Setup.exe') {
+            $s = Get-AuthenticodeSignature $f
+            "$f -> $($s.Status) ($($s.SignerCertificate.Subject))"
+            if ($s.Status -ne 'Valid') { throw "$f is not validly signed" }
+          }
+
+      - name: Commit, tag and publish rollback release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $v = $env:VER
+          New-Item -ItemType Directory -Force out | Out-Null
+          Copy-Item "dist/VPN Panel Setup.exe" "out/VPN-Panel-Setup-$v.exe"
+          Copy-Item "dist/VpnPanel.exe" "out/VpnPanel-$v-portatil.exe"
+          Compress-Archive -Path "dist/VPN Panel Setup.exe" -DestinationPath "out/VPN-Panel-Setup-$v.zip"
+          Compress-Archive -Path "dist/VpnPanel.exe" -DestinationPath "out/VpnPanel-$v-portatil.zip"
+          $files = Get-ChildItem out/* | ForEach-Object { $_.FullName }
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A src
+          if ($LASTEXITCODE -ne 0) { throw "git add failed ($LASTEXITCODE)" }
+          git commit -m "$($env:TAG): Rollback do código para $($env:TARGET)"
+          if ($LASTEXITCODE -ne 0) { throw "git commit failed ($LASTEXITCODE)" }
+          git tag $env:TAG
+          if ($LASTEXITCODE -ne 0) { throw "git tag failed ($LASTEXITCODE)" }
+          git push --atomic origin main $env:TAG
+          if ($LASTEXITCODE -ne 0) { throw "git push failed ($LASTEXITCODE)" }
+
+          $notes = "Rollback publicado para restaurar a versão estável **$($env:TARGET)**."
+          gh release create $env:TAG @files --title "VPN Panel $v (Rollback para $($env:TARGET))" --notes $notes
+          if ($LASTEXITCODE -ne 0) { throw "gh release create failed ($LASTEXITCODE)" }

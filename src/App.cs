@@ -34,8 +34,8 @@ using System.Windows.Shell;
 [assembly: AssemblyTrademark("VPN Panel")]
 [assembly: ComVisible(false)]
 [assembly: Guid("b7c93e48-8120-4a87-8d2b-65c71d798a21")]
-[assembly: AssemblyVersion("3.2.1.0")]
-[assembly: AssemblyFileVersion("3.2.1.0")]
+[assembly: AssemblyVersion("3.2.2.0")]
+[assembly: AssemblyFileVersion("3.2.2.0")]
 
 namespace VpnPanel
 {
@@ -44,7 +44,7 @@ namespace VpnPanel
         // Same mutex as the old vpn-panel.ps1, so they never run together
         const string MutexName = @"Global\VpnPanelWireSock";
         public const string ShowEventName = @"Global\VpnPanelWireSockShow";
-        public const string Version = "3.2.1";
+        public const string Version = "3.2.2";
 
         static int RunProbeCli(string[] args)
         {
@@ -6074,9 +6074,17 @@ namespace VpnPanel
 
                 Directory.CreateDirectory(rollbackDir);
                 string tmp = prevExePath + ".tmp";
-                File.WriteAllBytes(tmp, existingBytes);
-                try { File.Replace(tmp, prevExePath, null); }
-                catch (IOException) { File.Copy(tmp, prevExePath, true); File.Delete(tmp); }
+                try
+                {
+                    File.WriteAllBytes(tmp, existingBytes);
+                    try { File.Replace(tmp, prevExePath, null); }
+                    catch (IOException) { File.Copy(tmp, prevExePath, true); File.Delete(tmp); }
+                    tmp = null;
+                }
+                finally
+                {
+                    if (!string.IsNullOrEmpty(tmp) && File.Exists(tmp)) { try { File.Delete(tmp); } catch { } }
+                }
                 try { File.SetLastWriteTimeUtc(prevExePath, File.GetLastWriteTimeUtc(currentExePath)); } catch { }
 
                 WriteMeta(metaPath, new RollbackMeta
