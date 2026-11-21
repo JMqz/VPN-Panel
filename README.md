@@ -16,7 +16,7 @@ Você vai precisar de:
 
 ### 1. Instale o VPN Panel
 
-1. Abra a [página de downloads](https://github.com/JMqz/VPN-Panel/releases/latest) e baixe o arquivo **`VPN-Panel-Setup-2.6.exe`** (ou o arquivo **`VPN-Panel-Setup-2.6.zip`** caso o navegador bloqueie o download do `.exe`).
+1. Abra a [página de downloads](https://github.com/JMqz/VPN-Panel/releases/latest) e baixe o arquivo **`VPN-Panel-Setup-<versão>.exe`** (ou o arquivo **`VPN-Panel-Setup-<versão>.zip`** caso o navegador bloqueie o download do `.exe`).
 2. Abra o arquivo baixado (se baixou o `.zip`, extraia o instalador antes).
 3. Se aparecer a tela azul **"O Windows protegeu o computador"**, clique em **Mais informações** e depois em **Executar assim mesmo**. O aviso aparece porque o aplicativo não tem assinatura digital paga.
 4. O Windows pede permissão de administrador: clique em **Sim**.
@@ -89,6 +89,8 @@ Pronto, já dá para usar. Os ajustes abaixo são opcionais.
 - **Só estes:** só os programas da lista usam a VPN; o resto usa a sua internet normal. Por exemplo, só o navegador ou só o Discord.
 - **Todos, exceto:** tudo passa pela VPN, menos os programas da lista. Por exemplo, um jogo que fica lento com VPN.
 
+Para o uso mais comum, o botão **Só o Discord** já deixa tudo pronto: voz, vídeo e transmissão de tela do Discord passam pela VPN, e jogos e o resto usam a sua internet normal. Se a voz ou a transmissão falharem, desligue no Discord a opção **Qualidade de serviço: prioridade alta de pacotes** (Configurações → Voz e vídeo).
+
 Adicione programas por **Apps abertos**, por **Procurar programa** ou digitando o nome (ex.: `chrome`). As mudanças são salvas sozinhas. Se a VPN estiver ligada, clique em **Reconectar** para aplicá-las.
 
 Com **Usar em todos os servidores** ligado, a mesma lista de programas vale para qualquer servidor, e você não precisa montá-la de novo ao trocar. Desligado, cada servidor guarda a sua própria lista.
@@ -97,7 +99,10 @@ Com **Usar em todos os servidores** ligado, a mesma lista de programas vale para
 
 | Opção | Para que serve |
 |---|---|
-| Reconectar se a conexão cair | Tenta voltar sozinho até 3 vezes. Vem ligada. |
+| Reconectar se a conexão cair | Tenta voltar sozinho até 4 vezes (a primeira em 1 s), espera a rede voltar e, se o servidor continuar fora, troca para outro. Vem ligada. |
+| Otimizar para chamadas, transmissões e jogos | Usa MTU 1380, que evita travamentos em tela compartilhada. Vem ligada. |
+| Modo Estabilidade / Jogos UDP | Mantém o túnel ativo com sinal a cada 15 s e calibra o MTU antes de conectar. Vem ligado. |
+| Autocura automática de rede e MTU | Limpa sozinho restos de conexões anteriores (bloqueio preso, DNS, rotas). Ajustes que exigem reconectar só são sugeridos: o aplicativo nunca reinicia sozinho um túnel que está funcionando. |
 | Bloquear a internet se a VPN cair | Enquanto a VPN estiver ligada, nada sai do computador sem proteção. |
 | Atalho global (Ctrl + Alt + V) | Liga ou desliga a VPN em qualquer momento, mesmo com outro app ou jogo em tela cheia. |
 | Iniciar com o Windows | O aplicativo abre escondido perto do relógio. |
@@ -121,7 +126,7 @@ Com **Usar em todos os servidores** ligado, a mesma lista de programas vale para
 | **"O WireSock não conseguiu preparar a rede"** | Reinstale o WireSock e reinicie o computador. |
 | O **IP mostrado continua o meu**, mesmo conectado | É normal no modo **Só estes**: o aplicativo mostra o IP dos programas fora da VPN. No modo **Todos**, deve aparecer o IP do servidor. Clique em ↻ ao lado de "Seu IP" para verificar de novo. |
 | **Fiquei sem internet** | Se "Bloquear a internet se a VPN cair" estiver ligada e o servidor parar de responder, a internet fica bloqueada. Clique em **Liberar internet (reset do bloqueio)** na aba Opções ou no menu da bandeja perto do relógio. |
-| O **navegador bloqueou o download** | Navegadores como Edge e Chrome bloqueiam downloads diretos de `.exe` sem assinatura. Baixe a versão em **`.zip`** (`VPN-Panel-Setup-2.6.zip`), extraia e execute o instalador. |
+| O **navegador bloqueou o download** | Navegadores como Edge e Chrome bloqueiam downloads diretos de `.exe` sem assinatura. Baixe a versão em **`.zip`** (`VPN-Panel-Setup-<versão>.zip`), extraia e execute o instalador. |
 | O **antivírus** reclamou do instalador ou do Controle Inteligente | Acontece com aplicativos sem assinatura digital paga. Se o Windows bloquear, clique com o botão direito no arquivo baixado → **Propriedades** → marque a caixinha **Desbloquear** no rodapé e clique em **OK**. |
 | Quero ver o que aconteceu | **Opções → Ver log da conexão** (falhas críticas também são gravadas em `crash.log`). |
 
@@ -133,7 +138,7 @@ A VPN é desconectada e o aplicativo é removido. Os seus servidores e configura
 
 ## Sem instalar (versão portátil)
 
-Na [página de downloads](https://github.com/JMqz/VPN-Panel/releases/latest) também tem o **`VpnPanel-2.6-portatil.exe`** (e em **`.zip`**). É o mesmo aplicativo, sem instalador e sem atalho no menu Iniciar. Basta abrir.
+Na [página de downloads](https://github.com/JMqz/VPN-Panel/releases/latest) também tem o **`VpnPanel-<versão>-portatil.exe`** (e em **`.zip`**). É o mesmo aplicativo, sem instalador e sem atalho no menu Iniciar. Basta abrir.
 
 ---
 
@@ -178,9 +183,13 @@ Gera `dist\VpnPanel.exe` e `dist\VPN Panel Setup.exe` usando o compilador `csc.e
 - **Status:** "Conectado" exige a confirmação do servidor (o *handshake* do WireGuard). O aplicativo acompanha o `wiresock.log` procurando as linhas `Handshake initiation sent` (pedido enviado) e `Handshake response received` (servidor respondeu).
   - **15 s** sem resposta: mostra "Sem resposta".
   - **60 s** sem resposta: se a conexão já tinha funcionado, reconecta; se nunca funcionou, derruba o túnel e avisa. Assim o bloqueio de internet nunca fica ativo sem a pessoa saber.
+  - O WireSock grava o log em blocos, então uma linha pode demorar a aparecer. Por isso o aplicativo também pergunta ao próprio túnel: se nenhum *handshake* aparecer no log, uma consulta DNS (UDP) enviada por dentro do túnel confirma a conexão em vez de ela ser presumida.
+  - No modo **Só estes**, essa consulta se repete a cada 10 s pelo `VpnPanelProbe.exe` (uma cópia do aplicativo incluída na lista de programas da VPN). Três falhas seguidas, com a internet direta funcionando, reconectam o túnel em cerca de 25 s. Sem internet direta nada é feito, porque reconectar não resolveria.
   - Se o WireSock fechar em menos de 10 s, conta como falha, e o aviso traduz o erro registrado.
   - Túneis iniciados fora do aplicativo não têm registro para conferir e aparecem como conectados.
 - **Programas na VPN:** grava `AllowedApps` (só estes) ou `DisallowedApps` (todos, exceto) na seção `[Peer]` do `.conf` e mantém todas as outras linhas idênticas, byte a byte. Segundo relatos no fórum do WireSock, `DisallowedApps` falhou em algumas versões.
+- **Atualização:** o instalador baixado só é executado se o SHA-256 dele for igual ao que o GitHub publica para o arquivo da release, e fica travado contra troca entre a conferência e a execução.
+- **Motor:** no modo **Todos**, se o WireGuard oficial estiver instalado, o túnel sobe como serviço do WireGuard (Wintun); nos modos por programa, sempre pelo WireSock. A aba **Testes** mostra diagnósticos e a linha do tempo de eventos da rede.
 - **Uma janela só:** o mutex `Global\VpnPanelWireSock` impede uma segunda cópia. Abrir o aplicativo de novo sinaliza `Global\VpnPanelWireSockShow`, e a janela que já está aberta aparece.
 - **Desinstalar:** `VpnPanel.exe --uninstall` remove as tarefas, os atalhos, a chave `HKLM\...\Uninstall\VPN Panel` e os arquivos em Arquivos de Programas. O próprio `VpnPanel.exe` em uso e a pasta vazia são removidos pelo Windows na próxima reinicialização (`MoveFileEx` com `MOVEFILE_DELAY_UNTIL_REBOOT`).
 

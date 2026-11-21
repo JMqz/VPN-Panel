@@ -32,7 +32,8 @@ namespace VpnPanel
     class MainWindow
     {
         const int MaxReconnects = 4;
-        static readonly int[] ReconnectDelaysSec = new[] { 3, 6, 12, 20 };
+        // first retry almost at once: in split tunneling the apps fall back to the real IP while the tunnel is down
+        static readonly int[] ReconnectDelaysSec = new[] { 1, 5, 12, 20 };
 
         readonly Window w;
         readonly Settings settings = Settings.Load();
@@ -233,6 +234,14 @@ namespace VpnPanel
         long rehandshakeSuspectTick;
         int rehandshakeGen;
         bool connectPausedForDialog, activeProbeRunning, rehandshakeConfirmedDown, rehandshakeOnlyChecked10s;
+
+        // active probing through the tunnel (see RunLivenessProbe): the WireSock log is block-buffered,
+        // so a dead server can take minutes to show up there
+        const int LivenessEverySec = 10, LivenessRetrySec = 5, LivenessFailLimit = 3;
+        NetDiag.TunnelUdpSession livenessSession;
+        bool livenessRunning, livenessArmed;
+        int livenessFails, livenessGen, graceProbeFails;
+        long lastLivenessTick;
         bool wireSockScanRunning, cmdLineLookupRunning, runningAppsScanRunning;
         long lastWireSockBgCheckTick;
         string lastHomeAppsRunningKey = "";
@@ -574,6 +583,7 @@ namespace VpnPanel
             txtAppName.KeyDown += (s, e) => { if (e.Key == Key.Enter) { AddApps(new[] { txtAppName.Text }); txtAppName.Clear(); } };
             E<Button>("BtnRunningApps").Click += (s, e) => AddApps(Dialogs.PickProcesses(w, AppIcon));
             E<Button>("BtnBrowseExe").Click += (s, e) => BrowseExe();
+            E<Button>("BtnPresetDiscord").Click += (s, e) => ApplyDiscordPreset();
             E<Button>("BtnVerifyApps").Click += (s, e) =>
             {
                 if (active != null)
@@ -785,6 +795,8 @@ namespace VpnPanel
                             if (pendingSinceTick != null) pendingSinceTick = NowTicks();
                             if (rehandshakeSuspectTick > 0) { rehandshakeSuspectTick = 0; rehandshakeGen++; }
                             rehandshakeConfirmedDown = false;
+                            livenessFails = 0;
+                            lastLivenessTick = NowTicks();
                             if (connectLaunchTick > 0) connectLaunchTick = NowTicks();
                             if (isResume)
                             {
@@ -1138,6 +1150,7 @@ namespace VpnPanel
             }
             pollTimer.Stop();
             if (updateCheckTimer != null) updateCheckTimer.Stop();
+            ResetLiveness(true);
             CloseLogStream();
             Geo.Flush();
             if (showWaitReg != null) { try { showWaitReg.Unregister(null); } catch { } }
@@ -1409,28 +1422,34 @@ namespace VpnPanel
                                 throw new InvalidOperationException("O instalador baixado é inválido ou está incompleto.");
                             }
 
-                            status.Foreground = Dialogs.B("Accent");
-                            status.Text = "Instalando atualização...";
-                            btnNow.Content = "Instalando...";
-                            txtUpdateFoundDetail.Text = "Instalando atualização...";
-                            btnApplyUpdate.Content = "Instalando...";
-
-                            string targetDigest = !string.IsNullOrEmpty(info.SetupDigest) ? info.SetupDigest : info.AppDigest;
-                            if (!string.IsNullOrEmpty(targetDigest))
+                            // The installer runs with admin rights from a folder any program of this user can
+                            // write to, so it is held open (no one can swap it) from the check until it starts.
+                            string verifyError = null;
+                            using (var lockStream = new FileStream(tempFile, FileMode.Open, FileAccess.Read, FileShare.Read))
                             {
-                                settings.InstalledDigest = targetDigest;
-                                settings.SkippedUpdateVersion = "";
-                                settings.Save();
-                            }
-                            else if (!string.IsNullOrEmpty(settings.SkippedUpdateVersion))
-                            {
-                                settings.SkippedUpdateVersion = "";
-                                settings.Save();
-                            }
+                                verifyError = Updater.VerifyDownload(tempFile, info.SetupDigest);
+                                if (verifyError == null)
+                                {
+                                    status.Foreground = Dialogs.B("Accent");
+                                    status.Text = "Instalando atualização...";
+                                    btnNow.Content = "Instalando...";
+                                    txtUpdateFoundDetail.Text = "Instalando atualização...";
+                                    btnApplyUpdate.Content = "Instalando...";
 
-                            bool installed = Paths.ExeDir.Equals(Installer.Dir, StringComparison.OrdinalIgnoreCase);
-                            var psi = new ProcessStartInfo(tempFile, installed ? "--silent" : "") { UseShellExecute = true };
-                            Process.Start(psi);
+                                    settings.InstalledDigest = info.SetupDigest;
+                                    settings.SkippedUpdateVersion = "";
+                                    settings.Save();
+
+                                    bool installed = Paths.ExeDir.Equals(Installer.Dir, StringComparison.OrdinalIgnoreCase);
+                                    var psi = new ProcessStartInfo(tempFile, installed ? "--silent" : "") { UseShellExecute = true };
+                                    Process.Start(psi);
+                                }
+                            }
+                            if (verifyError != null)
+                            {
+                                try { File.Delete(tempFile); } catch { }
+                                throw new InvalidOperationException(verifyError);
+                            }
                             d.Close();
                             Quit();
                         }
@@ -1975,10 +1994,13 @@ namespace VpnPanel
             });
         }
 
+        // The kill switch only exists in "Todos" mode (Tunnel.Start turns it off for split tunneling)
+        bool EffectiveNetLock { get { return settings.NetworkLock && EffectiveAppMode() == AppMode.All; } }
+
         void QueuePostDropCleanup(bool unexpectedDrop)
         {
             int dropSeq = ++postDropCleanupSeq;
-            bool netLockSnap = settings.NetworkLock;
+            bool netLockSnap = EffectiveNetLock;
             ThreadPool.QueueUserWorkItem(_ =>
             {
                 AutoHealer.TryPostDropRecovery(netLockSnap, unexpectedDrop,
@@ -2108,7 +2130,7 @@ namespace VpnPanel
                 {
                     if (needPreCleanup)
                     {
-                        if (Tunnel.HasPendingNetworkLock || settings.NetworkLock) Tunnel.ResetNetworkLock();
+                        if (Tunnel.HasPendingNetworkLock || netLock) Tunnel.ResetNetworkLock();
                         else ConfFile.CleanGhostNetwork();
                         if (seq != connectSeq) return;
                     }
@@ -2327,7 +2349,7 @@ namespace VpnPanel
                 failedServersThisDrop.Clear();
                 ResetAutoReconnectState();
             }
-            bool netLock = settings.NetworkLock;
+            bool netLock = EffectiveNetLock;
             bool autoHealSnap = settings.AutoHeal;
             bool willReconnect = reconnectPending || scheduleReconnectAfterStop;
             UpdateState();
@@ -2394,6 +2416,7 @@ namespace VpnPanel
             rehandshakeConfirmedDown = false;
             rehandshakeOnlyChecked10s = false;
             activeProbeRunning = false;
+            ResetLiveness(true);
             CloseLogStream();
         }
 
@@ -2411,11 +2434,192 @@ namespace VpnPanel
             rehandshakeConfirmedDown = false;
             rehandshakeOnlyChecked10s = false;
             activeProbeRunning = false;
+            ResetLiveness(true);
             mtuLogBurstCount = 0;
             mtuLogWindowStartTick = 0;
             logPos = 0;
             logRest = "";
             logDecoder.Reset();
+        }
+
+        void ResetLiveness(bool dropSession)
+        {
+            livenessGen++;
+            livenessRunning = false;
+            livenessArmed = false;
+            livenessFails = 0;
+            graceProbeFails = 0;
+            lastLivenessTick = 0;
+            if (dropSession && livenessSession != null)
+            {
+                NetDiag.TunnelUdpSession old = livenessSession;
+                livenessSession = null;
+                ThreadPool.QueueUserWorkItem(_ => { try { old.Dispose(); } catch { } });
+            }
+        }
+
+        // Is traffic really crossing the tunnel? true/false, or null when there is no way to tell
+        // (no probe inside the tunnel, or the internet itself is down, which a reconnect would not fix).
+        static bool? TestTunnelAlive(AppMode mode, NetDiag.TunnelUdpSession session)
+        {
+            if (mode == AppMode.Only)
+            {
+                // Only the listed apps are tunneled, so the question goes through VpnPanelProbe (added to
+                // the runtime AllowedApps); the panel itself is outside the tunnel and works as the control.
+                if (session == null || !session.IsReady) return null;
+                NetDiag.ProbeResult r = session.Query("1.1.1.1", 53, 1500, CancellationToken.None);
+                if (r != null && r.Ok) return true;
+                if (!session.IsReady) return null;
+                r = session.Query("8.8.8.8", 53, 1500, CancellationToken.None);
+                if (r != null && r.Ok) return true;
+                if (!session.IsReady) return null;
+                if (!NetDiag.HasPhysicalUplink()) return null;
+                NetDiag.ProbeResult direct = NetDiag.ProbeUdpDns("1.1.1.1", 53, 1500, CancellationToken.None);
+                if (direct == null || !direct.Ok) return null;
+                return false;
+            }
+            // Todos / Exceto: the panel's own traffic goes through the tunnel
+            NetDiag.ProbeResult udp = NetDiag.ProbeUdpDns("1.1.1.1", 53, 1500, CancellationToken.None);
+            if (udp != null && udp.Ok) return true;
+            NetDiag.ProbeResult tcp = NetDiag.ProbeTcp("1.1.1.1", 443, 1500, CancellationToken.None);
+            if (tcp != null && tcp.Ok) return true;
+            if (!NetDiag.HasPhysicalUplink()) return null;
+            return false;
+        }
+
+        // initial: the grace window ended with no handshake line in the log, so ask the tunnel itself
+        // instead of assuming it works. Otherwise: periodic check of an established split tunnel.
+        void RunLivenessProbe(bool initial)
+        {
+            if (livenessRunning) return;
+            livenessRunning = true;
+            lastLivenessTick = NowTicks();
+            int gen = livenessGen;
+            string cfgName = runningConfig ?? (active != null ? active.Name : null);
+            AppMode mode = cfgName != null ? ConfigInfo.Read(cfgName).Mode : AppMode.All;
+            bool useHelper = mode == AppMode.Only && Tunnel.ProbeAppInjected;
+            NetDiag.TunnelUdpSession session = useHelper ? livenessSession : null;
+            ThreadPool.QueueUserWorkItem(_ =>
+            {
+                bool? alive = null;
+                NetDiag.TunnelUdpSession created = null;
+                try
+                {
+                    if (useHelper && (session == null || !session.IsReady))
+                    {
+                        created = new NetDiag.TunnelUdpSession();
+                        session = created;
+                    }
+                    alive = TestTunnelAlive(mode, session);
+                }
+                catch { alive = null; }
+                var ui = Application.Current != null ? Application.Current.Dispatcher : null;
+                if (ui == null)
+                {
+                    if (created != null) { try { created.Dispose(); } catch { } }
+                    return;
+                }
+                ui.BeginInvoke(new Action(() =>
+                {
+                    bool current = gen == livenessGen && !exiting && monitoring && wasRunning == true;
+                    if (created != null)
+                    {
+                        NetDiag.TunnelUdpSession stale = current ? livenessSession : created;
+                        if (current) livenessSession = created;
+                        if (stale != null) ThreadPool.QueueUserWorkItem(__ => { try { stale.Dispose(); } catch { } });
+                    }
+                    if (gen != livenessGen) return;
+                    livenessRunning = false;
+                    if (!current) return;
+                    if (initial) OnInitialProbeResult(alive);
+                    else OnLivenessResult(alive);
+                }));
+            });
+        }
+
+        void OnInitialProbeResult(bool? alive)
+        {
+            if (handshakeOk) return;
+            if (alive == false)
+            {
+                // keep waiting: "Sem resposta" shows after WarnAfter and the connection is dropped after GiveUpAfter
+                if (++graceProbeFails == 1)
+                    NetMon.Record("Túnel", NetMon.EventKind.Warn, "Sem handshake no log e a sonda não atravessou o túnel — aguardando o servidor");
+                return;
+            }
+            // true: proven. null: nothing to test with, so assume it works as older versions did
+            // (a WireSock version that logs handshakes differently, or output still in its 4 KB buffer).
+            handshakeOk = true;
+            pendingSinceTick = null;
+            if (alive == true)
+            {
+                livenessArmed = true;
+                NetMon.Record("Túnel", NetMon.EventKind.Info, "Conexão confirmada por sonda no túnel (handshake ainda não apareceu no log)");
+            }
+        }
+
+        void OnLivenessResult(bool? alive)
+        {
+            if (!handshakeOk || alive == null) return;
+            if (alive == true)
+            {
+                livenessArmed = true;
+                if (livenessFails > 0 || rehandshakeSuspectTick > 0)
+                {
+                    if (livenessFails > 0)
+                        NetMon.Record("Túnel", NetMon.EventKind.Info, "Sonda no túnel voltou a responder — conexão preservada");
+                    rehandshakeSuspectTick = 0;
+                    rehandshakeGen++;
+                    rehandshakeConfirmedDown = false;
+                    rehandshakeOnlyChecked10s = false;
+                }
+                livenessFails = 0;
+                return;
+            }
+            // Only judge a tunnel whose probe has already worked in this session: a provider that
+            // filters the probe targets must never cause reconnect loops.
+            if (!livenessArmed) return;
+            livenessFails++;
+            if (livenessFails == 1)
+                NetMon.Record("Túnel", NetMon.EventKind.Warn, "Sonda no túnel sem resposta (internet direta OK) — verificando de novo");
+            if (livenessFails == 2)
+            {
+                rehandshakeConfirmedDown = true; // shows "Sem resposta"
+                if (rehandshakeSuspectTick == 0)
+                {
+                    rehandshakeSuspectTick = NowTicks();
+                    rehandshakeGen++;
+                }
+            }
+            if (livenessFails >= LivenessFailLimit)
+            {
+                livenessFails = 0;
+                NetMon.Record("Túnel", NetMon.EventKind.Error, "Túnel parou de passar tráfego (" + LivenessFailLimit + " sondas seguidas sem resposta)");
+                HandleTunnelConfirmedDown();
+            }
+        }
+
+        // The tunnel process is alive but the server stopped answering
+        void HandleTunnelConfirmedDown()
+        {
+            if (settings.AutoReconnect && reconnectAttempts < MaxReconnects)
+            {
+                reconnectAttempts++;
+                lastDropTick = NowTicks();
+                if (!WindowShowing)
+                    Balloon("O servidor " + (active != null ? active.Name : "") + " parou de responder. Reconectando...");
+                Reconnect();
+            }
+            else
+            {
+                Disconnect(false);
+                bool hasMultiple = Paths.ConfigNames().Length > 1;
+                ShowBanner(false, "O servidor parou de responder",
+                    "O servidor parou de responder após a conexão. Tente reconectar ou troque para o mais rápido.",
+                    hasMultiple ? "Ir para o mais rápido" : "Tentar de novo",
+                    hasMultiple ? (Action)ConnectFastest : Connect,
+                    "Trocar servidor", () => tabServers.IsChecked = true);
+            }
         }
 
         static string ExtractLogMessage(string line, out string level)
@@ -2483,20 +2687,11 @@ namespace VpnPanel
                             if (hr != null && hr.SuggestedMtu > 0) bgMtuReducedThisSession = true;
                             if (hr != null && hr.NeedReconnect && hr.SuggestedMtu > 0 && wasRunning == true)
                             {
-                                if (settings.GameStabilityMode && settings.AutoReconnect)
-                                {
-                                    if (!WindowShowing)
-                                        Balloon("MTU ajustado para " + hr.SuggestedMtu + " B — reconectando automaticamente.");
-                                    Reconnect();
-                                }
-                                else
-                                {
-                                    if (!WindowShowing)
-                                        Balloon("MTU adaptado para " + hr.SuggestedMtu + " B. Reconecte para aplicar.");
-                                    ShowBanner(true, "MTU adaptado para " + hr.SuggestedMtu + " bytes",
-                                        "O log acusou pacotes acima do MTU. Reconecte para aplicar o ajuste automático.",
-                                        "Reconectar agora", Reconnect, "Depois", HideBanner);
-                                }
+                                // Never restart a working tunnel by itself: that would cut a call or a live
+                                // stream for an optimization. The new MTU is saved and used on the next connection.
+                                ShowBanner(true, "MTU adaptado para " + hr.SuggestedMtu + " bytes",
+                                    "O log acusou pacotes acima do MTU. O ajuste vale na próxima conexão; reconecte quando puder (isso interrompe chamadas e transmissões por alguns segundos).",
+                                    "Reconectar agora", Reconnect, "Depois", HideBanner);
                             }
                             else if (hr != null && hr.FixedCount > 0)
                             {
@@ -3072,10 +3267,27 @@ namespace VpnPanel
                 // assume initial connection succeeded after the grace window, keeping log monitoring active
                 if (!sawHandshake && (DateTime.Now - startedAt).TotalSeconds > (logPos > 0 ? 10 : 25))
                 {
-                    handshakeOk = true;
-                    pendingSinceTick = null;
+                    // A connection this instance just started on WireSock is asked for proof (a probe through
+                    // the tunnel) instead of being assumed; anything else keeps the old assumption.
+                    if (Tunnel.ActiveEngine == TunnelEngine.Wintun || pendingSinceTick == null)
+                    {
+                        handshakeOk = true;
+                        pendingSinceTick = null;
+                    }
+                    else if (!handshakeOk && !livenessRunning &&
+                             (lastLivenessTick == 0 || ElapsedSeconds(lastLivenessTick) >= LivenessRetrySec))
+                    {
+                        RunLivenessProbe(true);
+                    }
                 }
                 bool pastResumeGrace = resumeGraceUntilTick == 0 || NowTicks() >= resumeGraceUntilTick;
+                // Established split tunnel ("Só estes"): check that traffic still crosses it
+                if (handshakeOk && pastResumeGrace && !livenessRunning && !userStopped && !reconnectPending &&
+                    Tunnel.ActiveEngine == TunnelEngine.WireSock && Tunnel.ProbeAppInjected &&
+                    (lastLivenessTick == 0 || ElapsedSeconds(lastLivenessTick) >= (livenessFails > 0 ? LivenessRetrySec : LivenessEverySec)))
+                {
+                    RunLivenessProbe(false);
+                }
                 // Pre-handshake initial connection timeout (monotonic clock, paused on sleep)
                 if (!handshakeOk && pendingSinceTick != null && pastResumeGrace && ElapsedSeconds(pendingSinceTick.Value) > GiveUpAfter)
                 {
@@ -3117,26 +3329,7 @@ namespace VpnPanel
                     }
 
                     if (rehandshakeConfirmedDown && ElapsedSeconds(rehandshakeSuspectTick) > GiveUpAfter)
-                    {
-                        if (settings.AutoReconnect && reconnectAttempts < MaxReconnects)
-                        {
-                            reconnectAttempts++;
-                            lastDropTick = NowTicks();
-                            if (!WindowShowing)
-                                Balloon("O servidor " + (active != null ? active.Name : "") + " parou de responder. Reconectando...");
-                            Reconnect();
-                        }
-                        else
-                        {
-                            Disconnect(false);
-                            bool hasMultiple = Paths.ConfigNames().Length > 1;
-                            ShowBanner(false, "O servidor parou de responder",
-                                "O servidor parou de responder após a conexão. Tente reconectar ou troque para o mais rápido.",
-                                hasMultiple ? "Ir para o mais rápido" : "Tentar de novo",
-                                hasMultiple ? (Action)ConnectFastest : Connect,
-                                "Trocar servidor", () => tabServers.IsChecked = true);
-                        }
-                    }
+                        HandleTunnelConfirmedDown();
                 }
             }
 
@@ -3167,7 +3360,7 @@ namespace VpnPanel
             {
                 if (now == Conn.NoResponse)
                     ShowBanner(true, "O servidor não está respondendo",
-                        settings.NetworkLock ? "Continuo tentando. Enquanto isso, o kill switch mantém a internet bloqueada."
+                        EffectiveNetLock ? "Continuo tentando. Enquanto isso, o kill switch mantém a internet bloqueada."
                                              : "Continuo tentando. Se não voltar em instantes, escolha outro servidor.",
                         "Trocar servidor", () => tabServers.IsChecked = true, "Desconectar", () => Disconnect(true));
                 else if (shown == Conn.NoResponse && errorBanner.Visibility == Visibility.Visible && now != Conn.Off) HideBanner();
@@ -4719,6 +4912,40 @@ namespace VpnPanel
             txtAppsSaved.Visibility = showApply ? Visibility.Collapsed : Visibility.Visible;
             txtAppsSaved.Text = incomplete ? "Adicione pelo menos um app para usar este modo." : "As mudanças são salvas automaticamente.";
             txtAppsSaved.Foreground = incomplete ? B("Warn") : B("Muted");
+        }
+
+        // One click for the most common use: only Discord (voice, video and screen sharing) through the VPN
+        void ApplyDiscordPreset()
+        {
+            if (active == null) return;
+            bool onlyDiscord = editMode == AppMode.Only && editApps.Count == 1 &&
+                               editApps[0].Equals("Discord", StringComparison.OrdinalIgnoreCase);
+            if (!onlyDiscord)
+            {
+                if (editMode == AppMode.Only)
+                {
+                    if (!editApps.Any(a => a.Equals("Discord", StringComparison.OrdinalIgnoreCase))) editApps.Add("Discord");
+                }
+                else
+                {
+                    if (editMode == AppMode.Except && editApps.Count > 0 &&
+                        !Dialogs.Confirm(w, "Trocar para Só o Discord?",
+                            "A lista atual do modo \"Todos, exceto\" será substituída: só o Discord vai passar pela VPN.",
+                            "Trocar", false))
+                        return;
+                    editApps = new List<string> { "Discord" };
+                    editMode = AppMode.Only;
+                    loading = true;
+                    segOnly.IsChecked = true;
+                    loading = false;
+                }
+                RenderApps();
+                PersistApps();
+            }
+            Dialogs.Info(w, "Só o Discord na VPN",
+                "Voz, vídeo e transmissão de tela do Discord passam pela VPN; jogos e o resto usam a sua internet normal." +
+                (wasRunning == true ? " Reconecte para aplicar." : "") +
+                "\n\nDica: se a voz ou a transmissão falharem, desligue no Discord a opção \"Qualidade de serviço: prioridade alta de pacotes\" (Configurações → Voz e vídeo).");
         }
 
         void AddApps(IEnumerable<string> names)

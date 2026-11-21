@@ -34,8 +34,8 @@ using System.Windows.Shell;
 [assembly: AssemblyTrademark("VPN Panel")]
 [assembly: ComVisible(false)]
 [assembly: Guid("b7c93e48-8120-4a87-8d2b-65c71d798a21")]
-[assembly: AssemblyVersion("3.2.2.0")]
-[assembly: AssemblyFileVersion("3.2.2.0")]
+[assembly: AssemblyVersion("3.2.3.0")]
+[assembly: AssemblyFileVersion("3.2.3.0")]
 
 namespace VpnPanel
 {
@@ -44,7 +44,7 @@ namespace VpnPanel
         // Same mutex as the old vpn-panel.ps1, so they never run together
         const string MutexName = @"Global\VpnPanelWireSock";
         public const string ShowEventName = @"Global\VpnPanelWireSockShow";
-        public const string Version = "3.2.2";
+        public const string Version = "3.2.3";
 
         static int RunProbeCli(string[] args)
         {
@@ -621,10 +621,29 @@ namespace VpnPanel
                     d["windowLeft"] = Math.Round(WindowLeft);
                     d["windowTop"] = Math.Round(WindowTop);
                 }
-                File.WriteAllText(Paths.Settings, new JavaScriptSerializer().Serialize(d));
+                // Written to a side file and swapped in: an interrupted write must never leave a half file,
+                // because Load() would then silently fall back to the defaults for every option.
+                string json = new JavaScriptSerializer().Serialize(d);
+                lock (saveLock)
+                {
+                    string tmp = Paths.Settings + ".tmp";
+                    File.WriteAllText(tmp, json);
+                    try
+                    {
+                        if (File.Exists(Paths.Settings)) File.Replace(tmp, Paths.Settings, null);
+                        else File.Move(tmp, Paths.Settings);
+                    }
+                    catch (IOException)
+                    {
+                        File.Copy(tmp, Paths.Settings, true);
+                        File.Delete(tmp);
+                    }
+                }
             }
             catch { }
         }
+
+        static readonly object saveLock = new object();
     }
 
     enum AppMode { All, Only, Except }
@@ -973,9 +992,12 @@ namespace VpnPanel
             catch { return null; }
         }
 
+        // PreUp/PostUp/PreDown/PostDown are left out on purpose: they are commands, and an imported .conf
+        // must never get to run one through the WireGuard service (it only obeys them when a registry
+        // switch is on, but there is no reason to hand them over).
         static readonly HashSet<string> StandardWgInterfaceKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
-            "PrivateKey", "Address", "ListenPort", "MTU", "DNS", "Table", "PreUp", "PostUp", "PreDown", "PostDown"
+            "PrivateKey", "Address", "ListenPort", "MTU", "DNS", "Table"
         };
 
         static readonly HashSet<string> StandardWgPeerKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
@@ -2304,6 +2326,28 @@ namespace VpnPanel
         }
 
         static string cachedLocalExeDigest;
+
+        public static bool DigestMatches(string actual, string expected)
+        {
+            if (string.IsNullOrWhiteSpace(actual) || string.IsNullOrWhiteSpace(expected)) return false;
+            string a = actual.Trim(), e = expected.Trim();
+            if (!e.StartsWith("sha256:", StringComparison.OrdinalIgnoreCase)) return false;
+            return a.Equals(e, StringComparison.OrdinalIgnoreCase);
+        }
+
+        // Checks a downloaded installer against the SHA-256 that GitHub publishes for the release file.
+        // Returns null when it matches, otherwise the message to show. Without a published digest
+        // nothing can be checked, so the file is refused instead of being run with admin rights.
+        public static string VerifyDownload(string path, string expectedDigest)
+        {
+            if (string.IsNullOrWhiteSpace(expectedDigest))
+                return "A release não informou o código de verificação (SHA-256) do instalador. Baixe a atualização pela página do projeto.";
+            string actual = FileSha256(path);
+            if (actual == null) return "Não foi possível ler o instalador baixado.";
+            if (!DigestMatches(actual, expectedDigest))
+                return "O instalador baixado não confere com o publicado na release (SHA-256 diferente). Ele foi descartado.";
+            return null;
+        }
 
         public static void Check(Action<ReleaseInfo, Exception> callback)
         {
