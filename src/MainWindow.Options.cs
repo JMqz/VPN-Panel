@@ -208,7 +208,7 @@ namespace VpnPanel
             if (exiting || wasRunning != true) return;
             ShowBanner(true, "Ajuste salvo para a próxima conexão",
                 "Reconecte a VPN para aplicar a mudança de Motor / Modo Jogos / DNS no túnel atual.",
-                "Reconectar agora", Reconnect, "Depois", HideBanner);
+                "Reconectar agora", ReconnectByUser, "Depois", HideBanner);
         }
 
         void SaveSettings()

@@ -593,7 +593,7 @@ namespace VpnPanel
                     Dialogs.VerifyRouting(w, preview, Tunnel.Ipv6Isolated || editMode != AppMode.All, AppIcon, appsNeedReconnect);
                 }
             };
-            E<Button>("BtnApplyNow").Click += (s, e) => Reconnect();
+            E<Button>("BtnApplyNow").Click += (s, e) => ReconnectByUser();
 
             // Testes & Saúde
             btnDiagQuick.Click += (s, e) => RunQuickDiag();
@@ -697,6 +697,7 @@ namespace VpnPanel
             onToggle(chkSkipUac, () => { SaveSettings(); SyncTasks(); });
             onToggle(chkHotkey, () => { SaveSettings(); SyncHotkey(); });
             onToggle(chkUpdates, SaveSettings);
+            InitLive();
             onToggle(chkStartup, ToggleStartup);
             onToggle(chkSharedApps, ToggleSharedApps);
             btnCheckUpdate.Click += (s, e) => CheckForUpdates(true);
@@ -907,7 +908,7 @@ namespace VpnPanel
                 if (ipDirty) CheckIp();
                 MeasureLatency(false);
                 ApplyPowerButtonVisuals(shown, false);
-                if (pendingUpdatePrompt && availableUpdate != null && availableUpdate.IsNewer)
+                if (pendingUpdatePrompt && availableUpdate != null && availableUpdate.IsNewer && !LiveNow)
                 {
                     pendingUpdatePrompt = false;
                     Updater.ReleaseInfo info = availableUpdate;

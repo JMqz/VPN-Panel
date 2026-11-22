@@ -173,6 +173,8 @@ namespace VpnPanel
             public DateTime At;
             public bool Ok { get { return Ms >= 0; } }
             public int Score { get { return !Ok ? int.MaxValue : Ms + JitterMs * 2 + LossPct * 8; } }
+            // For calls and streams a steady path matters more than a short one
+            public int LiveScore { get { return !Ok ? int.MaxValue : Ms + JitterMs * 4 + LossPct * 20; } }
         }
 
         const int MaxConcurrent = 4;
@@ -210,7 +212,7 @@ namespace VpnPanel
                 int gen = generation;
                 queue.Enqueue(new KeyValuePair<string, Action>(h, () =>
                 {
-                    Result measured = Probe(h);
+                    Result measured = Probe(h, 4, 30);
                     ui.BeginInvoke(new Action(() =>
                     {
                         active--;
@@ -255,8 +257,15 @@ namespace VpnPanel
             }
         }
 
-        // Measures 4 echoes when responsive to compute average latency, jitter, and packet loss.
-        static Result Probe(string host)
+        // Longer burst (20 echoes, ~3 s) for the "best server for live" test: enough samples for jitter and loss
+        // to mean something. Blocking; not cached.
+        public static Result ProbeStability(string host)
+        {
+            return Probe(host, 20, 100);
+        }
+
+        // Measures "count" echoes when responsive to compute average latency, jitter, and packet loss.
+        static Result Probe(string host, int count, int gapMs)
         {
             try
             {
@@ -279,9 +288,9 @@ namespace VpnPanel
                 }
                 using (var ping = new System.Net.NetworkInformation.Ping())
                 {
-                    var rtts = new List<int>(4);
+                    var rtts = new List<int>(count);
                     int sent = 0;
-                    for (int i = 0; i < 4; i++)
+                    for (int i = 0; i < count; i++)
                     {
                         sent++;
                         var rep = ping.Send(ip, i == 0 ? FirstTimeoutMs : SecondTimeoutMs);
@@ -293,7 +302,7 @@ namespace VpnPanel
                         {
                             return new Result(); // unresponsive/filtered host: fail fast after 1st timeout
                         }
-                        if (i < 3) Thread.Sleep(30);
+                        if (i < count - 1) Thread.Sleep(gapMs);
                     }
                     if (rtts.Count == 0) return new Result();
                     int sum = 0;

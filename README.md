@@ -91,6 +91,15 @@ Pronto, já dá para usar. Os ajustes abaixo são opcionais.
 
 Para o uso mais comum, o botão **Só o Discord** já deixa tudo pronto: voz, vídeo e transmissão de tela do Discord passam pela VPN, e jogos e o resto usam a sua internet normal. Se a voz ou a transmissão falharem, desligue no Discord a opção **Qualidade de serviço: prioridade alta de pacotes** (Configurações → Voz e vídeo).
 
+**Chamadas e transmissões no Discord (Modo Live):** o aplicativo percebe sozinho quando o Discord entra em chamada ou começa a transmitir e passa a cuidar para não atrapalhar.
+
+- No **Início** aparece um cartão do Discord com a qualidade do caminho pela VPN, medida a cada poucos segundos: ping, oscilação (jitter) e perda de pacotes, mais um selo **Ótima**, **Boa**, **Instável**, **Ruim** ou **Distante** (servidor estável, mas longe: a voz e a imagem chegam atrasadas).
+- Durante a chamada o túnel só é reiniciado se duas medições independentes concordarem que ele caiu, a autocura e os avisos de atualização esperam, e desligar a VPN ou trocar de servidor pede confirmação.
+- Cada falha fica registrada com a causa provável (a VPN ou a sua internet) na linha do tempo da aba **Testes** e no arquivo `live-history.log`, e ao fim da chamada sai um resumo.
+- Na aba **Servidores**, o botão de antena ao lado do ping (**Melhor servidor para live**) testa cada servidor com 20 pacotes e ordena pelo que mais importa para voz e vídeo: pouca oscilação e pouca perda.
+
+Dica: quanto mais perto de você o servidor, melhor. Se só houver servidores distantes, coloque a **região do canal de voz** do Discord (Editar canal → Substituição de região) perto do servidor da VPN; assim o áudio não precisa ir e voltar.
+
 Adicione programas por **Apps abertos**, por **Procurar programa** ou digitando o nome (ex.: `chrome`). As mudanças são salvas sozinhas. Se a VPN estiver ligada, clique em **Reconectar** para aplicá-las.
 
 Com **Usar em todos os servidores** ligado, a mesma lista de programas vale para qualquer servidor, e você não precisa montá-la de novo ao trocar. Desligado, cada servidor guarda a sua própria lista.
@@ -102,6 +111,7 @@ Com **Usar em todos os servidores** ligado, a mesma lista de programas vale para
 | Reconectar se a conexão cair | Tenta voltar sozinho até 4 vezes (a primeira em 1 s), espera a rede voltar e, se o servidor continuar fora, troca para outro. Vem ligada. |
 | Otimizar para chamadas, transmissões e jogos | Usa MTU 1380, que evita travamentos em tela compartilhada. Vem ligada. |
 | Modo Estabilidade / Jogos UDP | Mantém o túnel ativo com sinal a cada 15 s e calibra o MTU antes de conectar. Vem ligado. |
+| Modo Live (Discord) | Protege chamadas e transmissões do Discord contra reinícios, reparos e avisos no meio da conversa (veja acima). Vem ligado. |
 | Autocura automática de rede e MTU | Limpa sozinho restos de conexões anteriores (bloqueio preso, DNS, rotas). Ajustes que exigem reconectar só são sugeridos: o aplicativo nunca reinicia sozinho um túnel que está funcionando. |
 | Bloquear a internet se a VPN cair | Enquanto a VPN estiver ligada, nada sai do computador sem proteção. |
 | Atalho global (Ctrl + Alt + V) | Liga ou desliga a VPN em qualquer momento, mesmo com outro app ou jogo em tela cheia. |
@@ -148,12 +158,13 @@ Na [página de downloads](https://github.com/JMqz/VPN-Panel/releases/latest) tam
 
 | Caminho | O que é |
 |---|---|
-| `src\` | Código-fonte: `App.cs`, `MainWindow.cs`, `Dialogs.cs`, `Setup.cs`, `WireSockSetup.cs`, `MainWindow.xaml`, `Theme.xaml`, `app.manifest`, `setup.manifest`, `build.ps1` |
+| `src\` | Código-fonte: um arquivo `.cs` por classe (`Tunnel.cs`, `ConfFile.cs`, `NetDiag.cs`...), a janela principal dividida por área em `MainWindow.*.cs`, mais `MainWindow.xaml`, `Theme.xaml`, `app.manifest`, `setup.manifest` e `build.ps1` |
 | `C:\Program Files\VPN Panel\VpnPanel.exe` | Aplicativo instalado (pasta que só administradores alteram) |
 | `%APPDATA%\VPN Panel\configs\*.conf` | Servidores importados (contêm chaves privadas) |
 | `%APPDATA%\VPN Panel\settings.json` | Servidor ativo e opções |
 | `%APPDATA%\VPN Panel\locations.json` | País e cidade de cada servidor, guardados para não consultar de novo |
 | `%APPDATA%\VPN Panel\wiresock.log` | Registro do WireSock na última conexão |
+| `%APPDATA%\VPN Panel\live-history.log` | Histórico das chamadas do Discord: início, falhas do túnel com a causa provável e resumo |
 
 ### Compilar
 
@@ -187,6 +198,7 @@ Gera `dist\VpnPanel.exe` e `dist\VPN Panel Setup.exe` usando o compilador `csc.e
   - No modo **Só estes**, essa consulta se repete a cada 10 s pelo `VpnPanelProbe.exe` (uma cópia do aplicativo incluída na lista de programas da VPN). Três falhas seguidas, com a internet direta funcionando, reconectam o túnel em cerca de 25 s. Sem internet direta nada é feito, porque reconectar não resolveria.
   - Se o WireSock fechar em menos de 10 s, conta como falha, e o aviso traduz o erro registrado.
   - Túneis iniciados fora do aplicativo não têm registro para conferir e aparecem como conectados.
+- **Modo Live (Discord):** a chamada é detectada lendo a tabela de sockets UDP do Windows (`GetExtendedUdpTable`): o motor de voz e vídeo do Discord abre um socket UDP por conexão de mídia em um processo que não é o serviço de rede do Chromium. Nada é injetado no Discord e nenhum pacote é capturado. Com a chamada ativa, uma consulta DNS (UDP) cruza o túnel a cada 2 ou 3 s por um segundo `VpnPanelProbe.exe`, separado do que confere se o túnel está vivo; uma consulta perdida é comparada com a internet direta para apontar a causa. Se a conferência de vida acusar queda, mas essa medição tiver respondido nos últimos 6 s, o túnel não é reiniciado.
 - **Programas na VPN:** grava `AllowedApps` (só estes) ou `DisallowedApps` (todos, exceto) na seção `[Peer]` do `.conf` e mantém todas as outras linhas idênticas, byte a byte. Segundo relatos no fórum do WireSock, `DisallowedApps` falhou em algumas versões.
 - **Atualização:** o instalador baixado só é executado se o SHA-256 dele for igual ao que o GitHub publica para o arquivo da release, e fica travado contra troca entre a conferência e a execução.
 - **Motor:** no modo **Todos**, se o WireGuard oficial estiver instalado, o túnel sobe como serviço do WireGuard (Wintun); nos modos por programa, sempre pelo WireSock. A aba **Testes** mostra diagnósticos e a linha do tempo de eventos da rede.

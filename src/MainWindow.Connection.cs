@@ -354,7 +354,13 @@ namespace VpnPanel
                 if (needCleanup) QueuePostDropCleanup(false);
                 return;
             }
-            if ((wasRunning == true && !userStopped) || connecting || reconnectPending) Disconnect(true);
+            if ((wasRunning == true && !userStopped) || connecting || reconnectPending)
+            {
+                if (!ConfirmLiveInterruption("Desligar a VPN durante a chamada?",
+                        "Desligar agora trava a chamada ou a transmissão por alguns segundos, e o Discord passa a usar o seu IP real.", "Desligar"))
+                    return;
+                Disconnect(true);
+            }
             else Connect();
         }
 

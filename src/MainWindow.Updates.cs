@@ -78,7 +78,12 @@ namespace VpnPanel
                         : "Nova versão " + info.Version + " disponível";
                     txtUpdateFoundDetail.Text = "Clique em Atualizar agora para instalar.";
                     cardUpdate.Visibility = Visibility.Visible;
-                    if (manual || WindowShowing)
+                    if (!manual && LiveNow)
+                    {
+                        // no dialogs or balloons over a call: the card in Opções shows it, the prompt comes later
+                        pendingUpdatePrompt = true;
+                    }
+                    else if (manual || WindowShowing)
                     {
                         pendingUpdatePrompt = false;
                         PromptUpdate(info, false);

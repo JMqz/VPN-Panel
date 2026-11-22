@@ -155,7 +155,8 @@ namespace VpnPanel
             ApplyPowerButtonVisuals(st, busy);
             bool partial = on && active != null && active.Mode == AppMode.Only;
             txtIpNote.Text = partial ? "Este é o IP dos apps fora da VPN. " + JoinPt(active.Apps) + " usa o IP do servidor." : "";
-            txtIpNote.Visibility = partial ? Visibility.Visible : Visibility.Collapsed;
+            UpdateDiscordCard();
+            SyncIpNote();
             UpdateAppsSaved();
             UpdateDiagRouteBadge();
         }
@@ -296,7 +297,7 @@ namespace VpnPanel
                 apps = active.Apps;
             }
 
-            if (!on || mode == AppMode.All || apps == null || apps.Count == 0)
+            if (!on || mode == AppMode.All || apps == null || apps.Count == 0 || DiscordCardReplacesChips(mode, apps))
             {
                 txtScope.Visibility = Visibility.Visible;
                 homeAppsPanel.Visibility = Visibility.Collapsed;

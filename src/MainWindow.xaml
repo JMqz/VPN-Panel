@@ -115,6 +115,7 @@
           <RowDefinition Height="Auto"/>
           <RowDefinition Height="Auto"/>
           <RowDefinition Height="Auto"/>
+          <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
         <!-- Error banner -->
@@ -223,7 +224,32 @@
           </Grid>
         </StackPanel>
 
-        <Button x:Name="BtnServerCard" Grid.Row="4" AutomationProperties.Name="Trocar de servidor" Style="{StaticResource CardButton}" ToolTip="Trocar de servidor">
+        <!-- Discord: call detection and live quality of the tunnel (MainWindow.Live.cs) -->
+        <Border x:Name="DiscordCard" Grid.Row="4" Style="{StaticResource Card}" Padding="12,7" Margin="0,6,0,8"
+                Cursor="Hand" Visibility="Collapsed" AutomationProperties.Name="Discord na VPN">
+          <Grid>
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition Width="Auto"/>
+              <ColumnDefinition Width="*"/>
+              <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+            <Image x:Name="ImgDiscord" Width="24" Height="24" VerticalAlignment="Center" RenderOptions.BitmapScalingMode="HighQuality"/>
+            <StackPanel Grid.Column="1" Margin="10,0,8,0" VerticalAlignment="Center">
+              <StackPanel Orientation="Horizontal">
+                <Ellipse x:Name="DiscordDot" Width="7" Height="7" Fill="{StaticResource Muted}" VerticalAlignment="Center" Margin="0,1,6,0"/>
+                <TextBlock x:Name="TxtDiscordState" Text="Discord" FontWeight="SemiBold" FontSize="12.5" TextTrimming="CharacterEllipsis"/>
+              </StackPanel>
+              <TextBlock x:Name="TxtDiscordDetail" Text="" Foreground="{StaticResource Muted}" FontSize="11.5" TextWrapping="NoWrap"
+                         TextTrimming="CharacterEllipsis" Margin="0,1,0,0"/>
+            </StackPanel>
+            <Border x:Name="DiscordBadge" Grid.Column="2" CornerRadius="9" Padding="8,2,8,3" VerticalAlignment="Center"
+                    Background="{StaticResource Surface2}" Visibility="Collapsed">
+              <TextBlock x:Name="TxtDiscordBadge" Text="" FontSize="11" FontWeight="SemiBold"/>
+            </Border>
+          </Grid>
+        </Border>
+
+        <Button x:Name="BtnServerCard" Grid.Row="5" AutomationProperties.Name="Trocar de servidor" Style="{StaticResource CardButton}" ToolTip="Trocar de servidor">
           <Grid>
             <Grid.ColumnDefinitions>
               <ColumnDefinition Width="Auto"/>
@@ -254,7 +280,7 @@
           </Grid>
         </Button>
 
-        <Border x:Name="IpCard" Grid.Row="5" Style="{StaticResource Card}" Margin="0,10,0,0">
+        <Border x:Name="IpCard" Grid.Row="6" Style="{StaticResource Card}" Margin="0,10,0,0">
           <Grid>
             <Grid.ColumnDefinitions>
               <ColumnDefinition Width="Auto"/>
@@ -271,14 +297,14 @@
                       Padding="5" Margin="4,-4,0,-4" ToolTip="Verificar de novo"/>
             </StackPanel>
             <TextBlock x:Name="TxtIp" Grid.Column="1" Text="—" HorizontalAlignment="Right" FontWeight="SemiBold" VerticalAlignment="Center"/>
-            <TextBlock Grid.Row="1" Text="Localização" Foreground="{StaticResource Muted}" Margin="0,9,0,0"/>
+            <TextBlock x:Name="LblIpLoc" Grid.Row="1" Text="Localização" Foreground="{StaticResource Muted}" Margin="0,9,0,0"/>
             <TextBlock x:Name="TxtLoc" Grid.Row="1" Grid.Column="1" Text="—" HorizontalAlignment="Right" Margin="16,9,0,0" TextTrimming="CharacterEllipsis"/>
-            <TextBlock Grid.Row="2" Text="Provedor" Foreground="{StaticResource Muted}" Margin="0,9,0,0"/>
+            <TextBlock x:Name="LblIpOrg" Grid.Row="2" Text="Provedor" Foreground="{StaticResource Muted}" Margin="0,9,0,0"/>
             <TextBlock x:Name="TxtOrg" Grid.Row="2" Grid.Column="1" Text="—" HorizontalAlignment="Right" Margin="16,9,0,0" TextTrimming="CharacterEllipsis"/>
           </Grid>
         </Border>
 
-        <TextBlock x:Name="TxtIpNote" Grid.Row="6" Style="{StaticResource Caption}" Margin="4,8,4,0" Visibility="Collapsed"/>
+        <TextBlock x:Name="TxtIpNote" Grid.Row="7" Style="{StaticResource Caption}" Margin="4,8,4,0" Visibility="Collapsed"/>
       </Grid>
 
       <!-- ===== Servidores ===== -->
@@ -305,6 +331,9 @@
           </Button>
           <Button x:Name="BtnPing" AutomationProperties.Name="Medir latência dos servidores" DockPanel.Dock="Right" Style="{StaticResource IconButton}"
                   Content="&#xE72C;" FontSize="12" Padding="8" Margin="0,0,6,0" VerticalAlignment="Center" ToolTip="Medir a latência (ping) de novo"/>
+          <Button x:Name="BtnLiveTest" AutomationProperties.Name="Testar servidores para live" DockPanel.Dock="Right" Style="{StaticResource IconButton}"
+                  Content="&#xE93E;" FontSize="12" Padding="8" Margin="0,0,2,0" VerticalAlignment="Center"
+                  ToolTip="Melhor servidor para live: testa a estabilidade (oscilação e perda) de cada servidor"/>
           <StackPanel>
             <TextBlock Text="Servidores" Style="{StaticResource Title}"/>
             <TextBlock Text="Escolha por onde sua conexão vai passar" Style="{StaticResource Caption}" Margin="0,2,0,0"/>
@@ -472,6 +501,13 @@
                 <StackPanel>
                   <TextBlock Text="Modo Estabilidade / Jogos UDP" FontWeight="SemiBold"/>
                   <TextBlock Style="{StaticResource Caption}" Margin="0,2,0,0" Text="Keepalive 15s (evita quedas em CGNAT) e pré-calibra o MTU antes de conectar."/>
+                </StackPanel>
+              </CheckBox>
+              <Border Height="1" Background="{StaticResource Line}" Margin="0,14"/>
+              <CheckBox x:Name="ChkLiveGuard" AutomationProperties.Name="Modo Live para chamadas e transmissões do Discord" Style="{StaticResource Switch}">
+                <StackPanel>
+                  <TextBlock Text="Modo Live (Discord)" FontWeight="SemiBold"/>
+                  <TextBlock Style="{StaticResource Caption}" Margin="0,2,0,0" Text="Enquanto o Discord estiver em chamada ou transmitindo: o túnel só é reiniciado com uma segunda confirmação de que caiu, a autocura e os avisos de atualização esperam, e desligar ou trocar de servidor pede confirmação."/>
                 </StackPanel>
               </CheckBox>
               <Border Height="1" Background="{StaticResource Line}" Margin="0,14"/>

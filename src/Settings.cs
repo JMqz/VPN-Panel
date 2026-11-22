@@ -34,6 +34,7 @@ namespace VpnPanel
         public bool AutoReconnect = true;
         public bool AutoHeal = true;
         public bool GameStabilityMode = true;
+        public bool LiveGuard = true; // Modo Live: protects Discord calls and streams (see MainWindow.Live.cs)
         public string CustomDns = "";
         public VpnEnginePreference EnginePreference = VpnEnginePreference.Auto;
         public int AdaptiveMtu = 0;
@@ -85,6 +86,7 @@ namespace VpnPanel
                 if (d.TryGetValue("autoReconnect", out v) && v is bool) s.AutoReconnect = (bool)v;
                 if (d.TryGetValue("autoHeal", out v) && v is bool) s.AutoHeal = (bool)v;
                 if (d.TryGetValue("gameStabilityMode", out v) && v is bool) s.GameStabilityMode = (bool)v;
+                if (d.TryGetValue("liveGuard", out v) && v is bool) s.LiveGuard = (bool)v;
                 if (d.TryGetValue("customDns", out v) && v is string)
                 {
                     string dns = ((string)v).Trim();
@@ -151,7 +153,7 @@ namespace VpnPanel
                     { "config", savedCfg }, { "networkLock", NetworkLock }, { "autoConnect", AutoConnect },
                     { "autoReconnect", AutoReconnect }, { "autoHeal", AutoHeal }, { "gameStabilityMode", GameStabilityMode },
                     { "customDns", CustomDns ?? "" }, { "enginePreference", EnginePreference.ToString() }, { "adaptiveMtu", AdaptiveMtu },
-                    { "optimizeMtu", OptimizeMtu }, { "skipUac", SkipUac },
+                    { "optimizeMtu", OptimizeMtu }, { "skipUac", SkipUac }, { "liveGuard", LiveGuard },
                     { "recent", Recent }, { "sharedApps", SharedApps }, { "appsMode", AppsMode.ToString() },
                     { "apps", Apps }, { "hotkey", Hotkey }, { "checkUpdates", CheckUpdates },
                     { "accentColor", AccentColor ?? "green" },

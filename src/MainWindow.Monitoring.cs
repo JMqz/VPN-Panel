@@ -47,6 +47,7 @@ namespace VpnPanel
             rehandshakeOnlyChecked10s = false;
             activeProbeRunning = false;
             ResetLiveness(true);
+            ResetLinkQuality(true);
             CloseLogStream();
         }
 
@@ -65,6 +66,7 @@ namespace VpnPanel
             rehandshakeOnlyChecked10s = false;
             activeProbeRunning = false;
             ResetLiveness(true);
+            ResetLinkQuality(true);
             mtuLogBurstCount = 0;
             mtuLogWindowStartTick = 0;
             logPos = 0;
@@ -223,6 +225,7 @@ namespace VpnPanel
             }
             if (livenessFails >= LivenessFailLimit)
             {
+                if (TryHoldTunnelForLive()) return;
                 livenessFails = 0;
                 NetMon.Record("Túnel", NetMon.EventKind.Error, "Túnel parou de passar tráfego (" + LivenessFailLimit + " sondas seguidas sem resposta)");
                 HandleTunnelConfirmedDown();
@@ -232,6 +235,7 @@ namespace VpnPanel
         // The tunnel process is alive but the server stopped answering
         void HandleTunnelConfirmedDown()
         {
+            if (TryHoldTunnelForLive()) return;
             if (settings.AutoReconnect && reconnectAttempts < MaxReconnects)
             {
                 reconnectAttempts++;
@@ -270,6 +274,16 @@ namespace VpnPanel
         void QueueBackgroundAutoHeal(bool tunnelRunning, bool repeatedMtuError)
         {
             if (exiting || !settings.AutoHeal) return;
+            if (tunnelRunning && LiveNow)
+            {
+                // repairs can wait for the call to end; the next event after it queues them again
+                if (!liveHealSkipNoted)
+                {
+                    liveHealSkipNoted = true;
+                    RecordLive(NetMon.EventKind.Info, "Autocura adiada: chamada do Discord em andamento");
+                }
+                return;
+            }
             if (repeatedMtuError)
             {
                 if (!settings.OptimizeMtu || bgMtuReducedThisSession) return;
@@ -321,7 +335,7 @@ namespace VpnPanel
                                 // stream for an optimization. The new MTU is saved and used on the next connection.
                                 ShowBanner(true, "MTU adaptado para " + hr.SuggestedMtu + " bytes",
                                     "O log acusou pacotes acima do MTU. O ajuste vale na próxima conexão; reconecte quando puder (isso interrompe chamadas e transmissões por alguns segundos).",
-                                    "Reconectar agora", Reconnect, "Depois", HideBanner);
+                                    "Reconectar agora", ReconnectByUser, "Depois", HideBanner);
                             }
                             else if (hr != null && hr.FixedCount > 0)
                             {

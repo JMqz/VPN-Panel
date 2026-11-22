@@ -354,6 +354,10 @@ namespace VpnPanel
         {
             if (!File.Exists(Paths.Conf(name))) return;
             bool same = active != null && active.Name.Equals(name, StringComparison.OrdinalIgnoreCase);
+            if (!same && wasRunning == true && !userStopped &&
+                !ConfirmLiveInterruption("Trocar de servidor durante a chamada?",
+                    "Trocar de servidor reinicia o túnel e derruba a chamada ou a transmissão por alguns segundos.", "Trocar"))
+                return;
             if (!same)
             {
                 StopContinuousDiag("Interrompido: servidor alterado");

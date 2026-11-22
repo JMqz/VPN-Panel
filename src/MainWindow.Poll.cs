@@ -372,6 +372,7 @@ namespace VpnPanel
             }
             if (WindowShowing && pageDiag != null && pageDiag.Visibility == Visibility.Visible)
                 UpdateDiagTimeline();
+            PollLive();
             UpdatePollInterval();
         }
 

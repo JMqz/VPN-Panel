@@ -1229,6 +1229,9 @@ namespace VpnPanel
         void RepairDiagNetwork()
         {
             if (exiting) return;
+            if (wasRunning == true && !ConfirmLiveInterruption("Reparar a rede durante a chamada?",
+                    "O reparo pode reiniciar o túnel e derrubar a chamada ou a transmissão por alguns segundos.", "Reparar"))
+                return;
             StopContinuousDiag("Interrompido para reparo");
             pendingPostHealDiagNote = null;
 
