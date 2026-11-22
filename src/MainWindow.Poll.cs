@@ -33,6 +33,7 @@ namespace VpnPanel
     {
         void Poll()
         {
+            PollLan();
             if (!wireSockInstalled && !wireSockScanRunning && (lastWireSockBgCheckTick == 0 || ElapsedSeconds(lastWireSockBgCheckTick) >= 5))
             {
                 wireSockScanRunning = true;

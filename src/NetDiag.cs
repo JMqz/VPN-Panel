@@ -578,6 +578,8 @@ namespace VpnPanel
             if (ni.NetworkInterfaceType == NetworkInterfaceType.Tunnel ||
                 ni.NetworkInterfaceType == NetworkInterfaceType.Loopback)
                 return true;
+            // the panel's own Rede de amigos adapter: never a physical card, never a competing VPN
+            if (Lan.IsLanAdapter(ni)) return true;
             string d = ((ni.Description ?? "") + " " + (ni.Name ?? "")).ToLowerInvariant();
             string[] tokens = new[]
             {

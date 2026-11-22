@@ -698,6 +698,7 @@ namespace VpnPanel
             onToggle(chkHotkey, () => { SaveSettings(); SyncHotkey(); });
             onToggle(chkUpdates, SaveSettings);
             InitLive();
+            InitLan();
             onToggle(chkStartup, ToggleStartup);
             onToggle(chkSharedApps, ToggleSharedApps);
             btnCheckUpdate.Click += (s, e) => CheckForUpdates(true);
@@ -728,13 +729,16 @@ namespace VpnPanel
             allDrop.ShowCheckMargin = true;
             miServersEnd = new WF.ToolStripSeparator();
             menu.Items.Add(miServersEnd);
+            // only shown while the optional Rede de amigos is enabled and has a network (see UpdateLanTray)
+            miLan = (WF.ToolStripMenuItem)menu.Items.Add("Rede de amigos: ligar", null, (s, e) => SetLanOn(!settings.LanOn));
+            miLan.Visible = false;
             menu.Items.Add("Restaurar internet padrão", null, (s, e) => ResetNetworkLockAction());
             menu.Items.Add("Abrir VPN Panel", null, (s, e) => ShowWindow());
             menu.Items.Add(new WF.ToolStripSeparator());
             menu.Items.Add("Sair (a VPN continua como está)", null, (s, e) => Quit());
             foreach (WF.ToolStripItem item in menu.Items) item.Padding = TrayPadding;
             // built when the menu opens, never in the background
-            menu.Opening += (s, e) => UpdateTrayServers();
+            menu.Opening += (s, e) => { UpdateTrayServers(); UpdateLanTray(); };
             tray = new WF.NotifyIcon { Icon = trayOff, Text = "VPN Panel", ContextMenuStrip = menu, Visible = true };
             tray.MouseClick += (s, e) => { if (e.Button == WF.MouseButtons.Left) ShowWindow(); };
             tray.BalloonTipClicked += (s, e) =>
@@ -942,6 +946,7 @@ namespace VpnPanel
         {
             Poll();
             pollTimer.Start();
+            StartLanOnLaunch();
             // WireSock is required: install it as soon as someone is looking (not on a silent tray start)
             if (w.IsVisible && !wireSockInstalled) InstallWireSock();
             if (wasRunning == true)

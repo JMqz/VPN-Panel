@@ -209,6 +209,7 @@ namespace VpnPanel
         {
             StopApp();
             Tunnel.Stop(true); // never leave the kill switch blocking a machine without the panel
+            try { Lan.StopForUninstall(); } catch { } // the optional Rede de amigos: engine, adapter and firewall rules
             try { Tasks.Delete(Tasks.Logon); } catch { }
             try { Tasks.Delete(Tasks.Open); } catch { }
 

@@ -104,10 +104,22 @@ Adicione programas por **Apps abertos**, por **Procurar programa** ou digitando 
 
 Com **Usar em todos os servidores** ligado, a mesma lista de programas vale para qualquer servidor, e você não precisa montá-la de novo ao trocar. Desligado, cada servidor guarda a sua própria lista.
 
+**Rede de amigos (opcional):** uma rede local pela internet, no estilo do Radmin VPN, para jogar com amigos jogos que só funcionam "em LAN". Ela vem desligada e não tem relação com a VPN: ligar ou desligar a rede nunca mexe no túnel.
+
+- Ligue em **Opções → Rede de amigos**. Aparece a aba **Rede**. Desligando ali, a aba some e nada fica rodando.
+- **Entrar:** cole o convite que um amigo mandou em **Entrar com um convite**. Na primeira vez o aplicativo baixa o componente da rede (uns 30 MB) e confere o arquivo antes de usar.
+- **Criar:** em **Criar uma rede**, dê um nome e informe o endereço do **nó de encontro** (veja abaixo). O convite já sai copiado para mandar aos amigos.
+- Com a rede ligada, a aba mostra o seu IP na rede (10.126.126.x), quem está online, o ping e se a conexão é direta ou passa pelo nó. Clique em alguém para copiar o IP e usar no jogo.
+- O interruptor ao lado do nome da rede liga e desliga na hora; o mesmo comando fica no menu do ícone perto do relógio. Desligada, o adaptador de rede e as regras de firewall somem.
+- **Proteger este PC na rede** (vem ligado) bloqueia pastas compartilhadas e área de trabalho remota para quem está na rede; os jogos continuam funcionando.
+
+O **nó de encontro** é um computador com endereço acessível pela internet que ajuda os PCs a se acharem; depois disso eles conversam direto, e o nó só repassa o tráfego quando a conexão direta não é possível. O convite já leva o endereço, então só quem cria a rede precisa saber dele. Como montar um está em [Para desenvolvedores](#como-funciona).
+
 **Opções** (aba **Opções**):
 
 | Opção | Para que serve |
 |---|---|
+| Rede de amigos (LAN virtual) | Mostra a aba **Rede** (veja acima). Vem desligada: nada é baixado nem fica rodando. |
 | Reconectar se a conexão cair | Tenta voltar sozinho até 4 vezes (a primeira em 1 s), espera a rede voltar e, se o servidor continuar fora, troca para outro. Vem ligada. |
 | Otimizar para chamadas, transmissões e jogos | Usa MTU 1380, que evita travamentos em tela compartilhada. Vem ligada. |
 | Modo Estabilidade / Jogos UDP | Mantém o túnel ativo com sinal a cada 15 s e calibra o MTU antes de conectar. Vem ligado. |
@@ -165,6 +177,8 @@ Na [página de downloads](https://github.com/JMqz/VPN-Panel/releases/latest) tam
 | `%APPDATA%\VPN Panel\locations.json` | País e cidade de cada servidor, guardados para não consultar de novo |
 | `%APPDATA%\VPN Panel\wiresock.log` | Registro do WireSock na última conexão |
 | `%APPDATA%\VPN Panel\live-history.log` | Histórico das chamadas do Discord: início, falhas do túnel com a causa provável e resumo |
+| `C:\Program Files\VPN Panel\lan\` | Componente da Rede de amigos (EasyTier), baixado só quando a rede é ligada pela primeira vez. Na versão portátil fica em `%APPDATA%\VPN Panel\lan\` |
+| `%APPDATA%\VPN Panel\lan.log` | Registro do componente da Rede de amigos na última vez em que foi ligada |
 
 ### Compilar
 
@@ -202,6 +216,14 @@ Gera `dist\VpnPanel.exe` e `dist\VPN Panel Setup.exe` usando o compilador `csc.e
 - **Programas na VPN:** grava `AllowedApps` (só estes) ou `DisallowedApps` (todos, exceto) na seção `[Peer]` do `.conf` e mantém todas as outras linhas idênticas, byte a byte. Segundo relatos no fórum do WireSock, `DisallowedApps` falhou em algumas versões.
 - **Atualização:** o instalador baixado só é executado se o SHA-256 dele for igual ao que o GitHub publica para o arquivo da release, e fica travado contra troca entre a conferência e a execução.
 - **Motor:** no modo **Todos**, se o WireGuard oficial estiver instalado, o túnel sobe como serviço do WireGuard (Wintun); nos modos por programa, sempre pelo WireSock. A aba **Testes** mostra diagnósticos e a linha do tempo de eventos da rede.
+- **Rede de amigos:** o motor é o [EasyTier](https://github.com/EasyTier/EasyTier) (LGPL-3.0), usado como programa separado, sem alterações.
+  - **Instalação:** o zip da release 2.6.4 é baixado do GitHub do EasyTier e só é extraído se o SHA-256 for igual ao fixado em `Lan.cs`. Os executáveis do EasyTier não têm assinatura digital, por isso a conferência é pelo hash. Só entram `easytier-core.exe`, `easytier-cli.exe`, `wintun.dll` e `Packet.dll`.
+  - **Ligar:** inicia `easytier-core --network-name <id> -d -p <nó> --hostname <nome> --dev-name "VPN Panel LAN"` com portas de escuta aleatórias e o RPC só em `127.0.0.1`. A senha da rede vai pela variável de ambiente `ET_NETWORK_SECRET`, nunca pela linha de comando. Como o túnel, a rede continua ligada se o aplicativo fechar, e a próxima cópia a reconhece.
+  - **Quem está online:** `easytier-cli -o json peer`, só com a aba **Rede** aberta. Na bandeja o aplicativo apenas confere se o processo está vivo.
+  - **Desligar:** Ctrl+C no processo (o adaptador some) e remoção das regras que o EasyTier cria no Firewall do Windows e nunca apaga.
+  - **Convite:** `VPL1-` seguido de um JSON em base64 com o nome, o identificador (`vp-...`), a senha e os nós de encontro. Quem tem o convite entra na rede, então trate-o como uma senha.
+  - **Nó de encontro:** qualquer `easytier-core` alcançável pela internet serve, por exemplo `easytier-core --network-name meu-no --network-secret <outra senha> -l udp://0.0.0.0:11010 tcp://0.0.0.0:11010 --relay-network-whitelist "vp-*"` em um Linux, sem root. Sem IP público, um túnel UDP (playit.gg e similares) apontando para a porta 11010 resolve. O EasyTier não tem mais nó público oficial, por isso o aplicativo não traz nenhum embutido.
+  - **Com a VPN ligada:** no modo **Só estes** a rede de amigos usa a internet normal. No modo **Todos** o tráfego dela passa por dentro da VPN (funciona, com ping maior); em **Todos, exceto**, adicione `easytier-core` à lista.
 - **Uma janela só:** o mutex `Global\VpnPanelWireSock` impede uma segunda cópia. Abrir o aplicativo de novo sinaliza `Global\VpnPanelWireSockShow`, e a janela que já está aberta aparece.
 - **Desinstalar:** `VpnPanel.exe --uninstall` remove as tarefas, os atalhos, a chave `HKLM\...\Uninstall\VPN Panel` e os arquivos em Arquivos de Programas. O próprio `VpnPanel.exe` em uso e a pasta vazia são removidos pelo Windows na próxima reinicialização (`MoveFileEx` com `MOVEFILE_DELAY_UNTIL_REBOOT`).
 
@@ -232,6 +254,7 @@ O VPN Panel não coleta nem envia dados pessoais para o autor. Ele só se comuni
 - **winget / wiresock.net:** para baixar e instalar o WireSock, quando ele ainda não está instalado.
 - **Endereço dos servidores VPN:** ping (ICMP) para medir a latência, só quando a aba Servidores está aberta.
 - **O provedor de VPN escolhido por você**, através do WireSock, quando você conecta.
+- **Rede de amigos (só se você ligar):** o GitHub, para baixar o EasyTier; o nó de encontro que está no convite, que vê o endereço IP de cada participante; e os próprios participantes, com quem o seu PC se conecta direto. O EasyTier também consulta servidores STUN públicos para descobrir o seu endereço de internet.
 
 Servidores, chaves e configurações ficam apenas no seu computador, em `%APPDATA%\VPN Panel`.
 

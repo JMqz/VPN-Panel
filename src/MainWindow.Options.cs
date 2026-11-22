@@ -33,14 +33,15 @@ namespace VpnPanel
     {
         void ShowPage(FrameworkElement page)
         {
-            foreach (FrameworkElement p in new[] { pageSetup, pageHome, pageServers, pageApps, pageDiag, pageOptions })
-                p.Visibility = p == page ? Visibility.Visible : Visibility.Collapsed;
+            foreach (FrameworkElement p in new[] { pageSetup, pageHome, pageServers, pageApps, pageLan, pageDiag, pageOptions })
+                if (p != null) p.Visibility = p == page ? Visibility.Visible : Visibility.Collapsed;
             page.BeginAnimation(UIElement.OpacityProperty, new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(160)));
             if (page == pageServers && serversDirty) RenderServerList();
             // pings nobody will see: drop what hasn't started (going back to Servidores queues them again)
             if (page != pageServers) Latency.CancelQueued();
             if (page == pageHome) { UpdateTraffic(); if (shown == Conn.On) UpdateUptimeText(); }
             if (page == pageDiag) OnDiagPageShown();
+            if (page == pageLan) { lastLanQueryTick = 0; UpdateLanUi(); } // fresh member list on the next poll
         }
 
         void UpdateSetup()

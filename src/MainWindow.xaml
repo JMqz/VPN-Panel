@@ -555,6 +555,16 @@
             </StackPanel>
           </Border>
 
+          <TextBlock Text="REDE DE AMIGOS" FontSize="10.5" FontWeight="SemiBold" Foreground="{StaticResource Muted}" Margin="4,18,0,8"/>
+          <Border Style="{StaticResource Card}" Padding="16,14">
+            <CheckBox x:Name="ChkLanFeature" AutomationProperties.Name="Rede de amigos (LAN virtual)" Style="{StaticResource Switch}">
+              <StackPanel>
+                <TextBlock Text="Rede de amigos (LAN virtual)" FontWeight="SemiBold"/>
+                <TextBlock Style="{StaticResource Caption}" Margin="0,2,0,0" Text="Mostra a aba Rede: uma rede local pela internet para jogar com os amigos, como o Radmin. Desligada, nada é baixado nem fica rodando."/>
+              </StackPanel>
+            </CheckBox>
+          </Border>
+
           <TextBlock Text="PERSONALIZAÇÃO DE CORES" FontSize="10.5" FontWeight="SemiBold" Foreground="{StaticResource Muted}" Margin="4,18,0,8"/>
           <Border Style="{StaticResource Card}" Padding="16,14">
             <StackPanel>
@@ -651,6 +661,107 @@
           </Border>
 
           <TextBlock x:Name="TxtAbout" Style="{StaticResource Caption}" TextAlignment="Center" Margin="0,16,0,0"/>
+        </StackPanel>
+      </ScrollViewer>
+
+      <!-- ===== Rede de amigos: optional virtual LAN (MainWindow.Lan.cs / Lan.cs) ===== -->
+      <ScrollViewer x:Name="PageLan" VerticalScrollBarVisibility="Auto" Visibility="Collapsed">
+        <StackPanel Margin="20,8,20,16">
+          <TextBlock Text="Rede de amigos" Style="{StaticResource Title}"/>
+          <TextBlock Style="{StaticResource Caption}" Margin="0,2,0,0" Text="Uma rede local pela internet: quem está na mesma rede joga junto como se estivesse na mesma casa."/>
+
+          <!-- Not in a network yet -->
+          <StackPanel x:Name="LanEmpty" Margin="12,34,12,0" Visibility="Collapsed">
+            <Border Width="64" Height="64" CornerRadius="32" Background="{StaticResource Surface2}" HorizontalAlignment="Center">
+              <TextBlock Text="&#xE716;" FontFamily="{StaticResource Icons}" FontSize="26" Foreground="{StaticResource Muted}"
+                         HorizontalAlignment="Center" VerticalAlignment="Center"/>
+            </Border>
+            <TextBlock Text="Você ainda não está em nenhuma rede" FontSize="15" FontWeight="SemiBold" HorizontalAlignment="Center" Margin="0,16,0,6"/>
+            <TextBlock Style="{StaticResource Caption}" TextAlignment="Center"
+                       Text="Entre com o convite que um amigo mandou, ou crie uma rede e mande o convite para eles."/>
+            <Button x:Name="BtnLanJoin" AutomationProperties.Name="Entrar com um convite" Style="{StaticResource PrimaryButton}" Margin="0,20,0,0">
+              <StackPanel Orientation="Horizontal">
+                <TextBlock Text="&#xE8FA;" FontFamily="{StaticResource Icons}" FontSize="12" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                <TextBlock Text="Entrar com um convite"/>
+              </StackPanel>
+            </Button>
+            <Button x:Name="BtnLanCreate" AutomationProperties.Name="Criar uma rede" Style="{StaticResource GhostButton}" Margin="0,8,0,0">
+              <StackPanel Orientation="Horizontal">
+                <TextBlock Text="&#xE710;" FontFamily="{StaticResource Icons}" FontSize="12" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                <TextBlock Text="Criar uma rede"/>
+              </StackPanel>
+            </Button>
+          </StackPanel>
+
+          <!-- In a network -->
+          <StackPanel x:Name="LanMain" Visibility="Collapsed">
+            <Border Style="{StaticResource Card}" Padding="16,14" Margin="0,14,0,0">
+              <StackPanel>
+                <CheckBox x:Name="ChkLanOn" AutomationProperties.Name="Ligar a rede de amigos" Style="{StaticResource Switch}">
+                  <StackPanel>
+                    <TextBlock x:Name="TxtLanName" Text="—" FontWeight="SemiBold" FontSize="14" TextTrimming="CharacterEllipsis"/>
+                    <DockPanel Margin="0,3,0,0">
+                      <Ellipse x:Name="LanDot" DockPanel.Dock="Left" Width="7" Height="7" Fill="{StaticResource Muted}" VerticalAlignment="Top" Margin="0,5,6,0"/>
+                      <TextBlock x:Name="TxtLanState" Style="{StaticResource Caption}" Text="Desligada"/>
+                    </DockPanel>
+                  </StackPanel>
+                </CheckBox>
+                <TextBlock x:Name="TxtLanNote" Style="{StaticResource Caption}" Foreground="{StaticResource Warn}" Margin="0,8,0,0" Visibility="Collapsed"/>
+                <Border Height="1" Background="{StaticResource Line}" Margin="0,12"/>
+                <DockPanel>
+                  <Button x:Name="BtnLanCopyIp" DockPanel.Dock="Right" AutomationProperties.Name="Copiar meu IP" Style="{StaticResource IconButton}" Content="&#xE8C8;" FontSize="12"
+                          Padding="6" Margin="4,-4,-6,-4" ToolTip="Copiar meu IP"/>
+                  <TextBlock x:Name="TxtLanIp" DockPanel.Dock="Right" Text="—" FontWeight="SemiBold" VerticalAlignment="Center"/>
+                  <TextBlock Text="Seu IP na rede" Foreground="{StaticResource Muted}" VerticalAlignment="Center"/>
+                </DockPanel>
+                <DockPanel Margin="0,9,0,0">
+                  <Button x:Name="BtnLanNick" DockPanel.Dock="Right" AutomationProperties.Name="Mudar meu nome na rede" Style="{StaticResource IconButton}" Content="&#xE70F;" FontSize="12"
+                          Padding="6" Margin="4,-4,-6,-4" ToolTip="Mudar meu nome"/>
+                  <TextBlock x:Name="TxtLanNick" DockPanel.Dock="Right" Text="—" FontWeight="SemiBold" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
+                  <TextBlock Text="Seu nome" Foreground="{StaticResource Muted}" VerticalAlignment="Center"/>
+                </DockPanel>
+              </StackPanel>
+            </Border>
+
+            <UniformGrid Columns="2" Margin="0,10,0,0">
+              <Button x:Name="BtnLanInvite" AutomationProperties.Name="Copiar convite" Style="{StaticResource GhostButton}" Margin="0,0,4,0"
+                      ToolTip="Copia o convite para mandar aos amigos">
+                <StackPanel Orientation="Horizontal">
+                  <TextBlock Text="&#xE8C8;" FontFamily="{StaticResource Icons}" FontSize="12" VerticalAlignment="Center" Margin="0,0,7,0"/>
+                  <TextBlock x:Name="TxtLanInvite" Text="Copiar convite"/>
+                </StackPanel>
+              </Button>
+              <Button x:Name="BtnLanLeave" AutomationProperties.Name="Sair da rede" Style="{StaticResource GhostButton}" Margin="4,0,0,0">
+                <StackPanel Orientation="Horizontal">
+                  <TextBlock Text="&#xE7E8;" FontFamily="{StaticResource Icons}" FontSize="12" VerticalAlignment="Center" Margin="0,0,7,0"/>
+                  <TextBlock Text="Sair da rede"/>
+                </StackPanel>
+              </Button>
+            </UniformGrid>
+
+            <TextBlock Text="QUEM ESTÁ ONLINE" FontSize="10.5" FontWeight="SemiBold" Foreground="{StaticResource Muted}" Margin="4,18,0,8"/>
+            <Border Style="{StaticResource Card}" Padding="6">
+              <StackPanel>
+                <StackPanel x:Name="LanPeerList"/>
+                <TextBlock x:Name="TxtLanPeersEmpty" Style="{StaticResource Caption}" TextAlignment="Center" Margin="10,12"
+                           Text="Ligue a rede para ver quem está online."/>
+              </StackPanel>
+            </Border>
+
+            <Border Style="{StaticResource Card}" Padding="16,14" Margin="0,14,0,0">
+              <CheckBox x:Name="ChkLanProtect" AutomationProperties.Name="Proteger este PC na rede" Style="{StaticResource Switch}">
+                <StackPanel>
+                  <TextBlock Text="Proteger este PC na rede" FontWeight="SemiBold"/>
+                  <TextBlock Style="{StaticResource Caption}" Margin="0,2,0,0" Text="Os jogos funcionam normalmente; pastas compartilhadas e área de trabalho remota ficam bloqueadas para quem está na rede."/>
+                </StackPanel>
+              </CheckBox>
+            </Border>
+
+            <Button x:Name="BtnLanLog" AutomationProperties.Name="Ver log da rede" Style="{StaticResource GhostButton}" Background="Transparent" HorizontalAlignment="Center"
+                    Padding="10,6" Margin="0,8,0,0">
+              <TextBlock Text="Ver log da rede" Foreground="{StaticResource Muted}" FontSize="12"/>
+            </Button>
+          </StackPanel>
         </StackPanel>
       </ScrollViewer>
 
@@ -888,10 +999,12 @@
 
     <!-- Bottom navigation -->
     <Border Grid.Row="2" Background="{StaticResource NavBg}" BorderBrush="{StaticResource Line}" BorderThickness="0,1,0,0">
-      <UniformGrid Columns="5" Margin="8,0">
+      <!-- Rows="1" with no Columns: the grid counts only the visible tabs, so the optional Rede tab takes no room while hidden -->
+      <UniformGrid Rows="1" Margin="8,0">
         <RadioButton x:Name="TabHome" Style="{StaticResource Tab}" GroupName="tabs" Tag="&#xE80F;" Content="Início" IsChecked="True"/>
         <RadioButton x:Name="TabServers" Style="{StaticResource Tab}" GroupName="tabs" Tag="&#xE774;" Content="Servidores"/>
         <RadioButton x:Name="TabApps" Style="{StaticResource Tab}" GroupName="tabs" Tag="&#xE71D;" Content="Apps"/>
+        <RadioButton x:Name="TabLan" Style="{StaticResource Tab}" GroupName="tabs" AutomationProperties.Name="Rede de amigos" Tag="&#xE716;" Content="Rede" Visibility="Collapsed"/>
         <RadioButton x:Name="TabDiag" Style="{StaticResource Tab}" GroupName="tabs" AutomationProperties.Name="Testes" Tag="&#xE9D9;" Content="Testes"/>
         <RadioButton x:Name="TabOptions" Style="{StaticResource Tab}" GroupName="tabs" Tag="&#xE713;" Content="Opções"/>
       </UniformGrid>

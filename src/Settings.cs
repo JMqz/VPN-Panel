@@ -52,6 +52,13 @@ namespace VpnPanel
         public double WindowLeft = double.NaN;
         public double WindowTop = double.NaN;
         public List<string> Recent = new List<string>(); // servers connected to, newest first
+        // Rede de amigos (see Lan.cs / MainWindow.Lan.cs): off by default, nothing is downloaded or run until enabled
+        public bool LanEnabled;                 // shows the Rede tab
+        public bool LanOn;                      // the user wants the network up (comes back with the app)
+        public bool LanProtect = true;          // block file sharing / remote desktop for people in the network
+        public string LanNick = "";
+        public LanNetwork LanNet;               // the network this PC is in, or null
+        public List<string> LanNodes = new List<string>(); // meeting nodes last used, offered when creating a network
         // Not serialized: preserves user's preferred server on disk during temporary auto-failover
         public string PreferredConfigOverride;
 
@@ -128,6 +135,28 @@ namespace VpnPanel
                         if (!string.IsNullOrEmpty(a) && !s.Apps.Contains(a, StringComparer.OrdinalIgnoreCase)) s.Apps.Add(a);
                     }
                 }
+                if (d.TryGetValue("lanEnabled", out v) && v is bool) s.LanEnabled = (bool)v;
+                if (d.TryGetValue("lanOn", out v) && v is bool) s.LanOn = (bool)v;
+                if (d.TryGetValue("lanProtect", out v) && v is bool) s.LanProtect = (bool)v;
+                if (d.TryGetValue("lanNick", out v) && v is string) s.LanNick = (string)v;
+                if (d.TryGetValue("lanNodes", out v)) s.LanNodes = ReadNodes(v);
+                var lanNet = d.TryGetValue("lanNet", out v) ? v as Dictionary<string, object> : null;
+                if (lanNet != null)
+                {
+                    object nv;
+                    var net = new LanNetwork
+                    {
+                        Name = lanNet.TryGetValue("name", out nv) ? nv as string : null,
+                        Id = lanNet.TryGetValue("id", out nv) ? nv as string : null,
+                        Secret = lanNet.TryGetValue("secret", out nv) ? nv as string : null,
+                        Nodes = ReadNodes(lanNet.TryGetValue("nodes", out nv) ? nv : null),
+                    };
+                    if (!string.IsNullOrEmpty(net.Id) && !string.IsNullOrEmpty(net.Secret) && net.Nodes.Count > 0)
+                    {
+                        if (string.IsNullOrEmpty(net.Name)) net.Name = net.Id;
+                        s.LanNet = net;
+                    }
+                }
                 var list = d.TryGetValue("recent", out v) ? v as System.Collections.IEnumerable : null;
                 if (list != null && !(list is string))
                 {
@@ -141,6 +170,19 @@ namespace VpnPanel
             }
             catch { }
             return s;
+        }
+
+        static List<string> ReadNodes(object value)
+        {
+            var nodes = new List<string>();
+            var items = value as System.Collections.IEnumerable;
+            if (items == null || value is string) return nodes;
+            foreach (object o in items)
+            {
+                string node = Lan.NormalizeNode(o as string);
+                if (node != null && nodes.Count < 4 && !nodes.Contains(node)) nodes.Add(node);
+            }
+            return nodes;
         }
 
         public void Save()
@@ -159,7 +201,16 @@ namespace VpnPanel
                     { "accentColor", AccentColor ?? "green" },
                     { "installedDigest", InstalledDigest ?? "" },
                     { "skippedUpdateVersion", SkippedUpdateVersion ?? "" },
+                    { "lanEnabled", LanEnabled }, { "lanOn", LanOn }, { "lanProtect", LanProtect },
+                    { "lanNick", LanNick ?? "" }, { "lanNodes", LanNodes ?? new List<string>() },
                 };
+                if (LanNet != null)
+                {
+                    d["lanNet"] = new Dictionary<string, object>
+                    {
+                        { "name", LanNet.Name }, { "id", LanNet.Id }, { "secret", LanNet.Secret }, { "nodes", LanNet.Nodes },
+                    };
+                }
                 if (!double.IsNaN(WindowLeft) && !double.IsNaN(WindowTop))
                 {
                     d["windowLeft"] = Math.Round(WindowLeft);
