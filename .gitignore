@@ -11,7 +11,3 @@ dist/
 out/
 src/vpn.ico
 CLAUDE.md
-
-# Old PowerShell version (personal paths)
-vpn-panel.ps1
-ligar-vpn.bat

@@ -1,6 +1,6 @@
 # Builds ..\dist\VpnPanel.exe and the installer ..\dist\VPN Panel Setup.exe from the .cs/.xaml files here,
 # with the C# compiler that ships with Windows (.NET Framework 4.8).
-# Usage: powershell -NoProfile -ExecutionPolicy Bypass -File C:\VPN\src\build.ps1 [-Target All|App|Setup]
+# Usage: powershell -NoProfile -ExecutionPolicy Bypass -File src\build.ps1 [-Target All|App|Setup]
 #   All   (default) builds both.
 #   App   builds only dist\VpnPanel.exe.
 #   Setup builds only the installer, embedding whatever dist\VpnPanel.exe is there. The release workflow
